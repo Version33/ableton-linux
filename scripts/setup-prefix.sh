@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # End-user step 2: create or refresh the Ableton Wine prefix. Idempotent.
 # Does not install Ableton Live itself and carries no license.
+# --refresh: maintenance pass on an EXISTING prefix (used by the .run's update
+# mode) — re-applies registry policy and heals runtime DLLs, but skips the slow
+# winetricks pass; the fonts/runtimes it installs are already in the prefix.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+
+refresh=0
+case "${1:-}" in
+    --refresh) refresh=1 ;;
+    "") ;;
+    *) echo "!! unknown option: $1 (only --refresh is supported)" >&2; exit 2 ;;
+esac
 
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
@@ -98,6 +108,10 @@ check_mutter_knob() {  # warn when mutter's xwayland-native-scaling disagrees
 
 fresh_prefix=0
 [ -f "$WINEPREFIX/system.reg" ] || fresh_prefix=1
+if [ "$refresh" -eq 1 ] && [ "$fresh_prefix" -eq 1 ]; then
+    echo "!! --refresh needs an existing prefix at $WINEPREFIX — run without it to create one" >&2
+    exit 2
+fi
 
 # Resolve the mode now so a fresh prefix fails fast, before wineboot/winetricks run.
 dpi_mode="${ABLETON_DPI_MODE:-auto}"
@@ -148,21 +162,25 @@ echo "== [1/5] initialize prefix at $WINEPREFIX =="
 wineboot -u
 "$WINESERVER" -w
 
-echo "== [2/5] winetricks: corefonts vcrun2022 mfc42 =="
-export W_CACHE_OVERRIDE=""            # unused
-export WINETRICKS_LATEST_VERSION_CHECK=disabled
-export WINETRICKS_SUPER_QUIET=1
-# Use the bundled payload cache if present (mfc42 downloads if not vendored).
-tmpc=""
-if [ -d "$root/vendor/winetricks-cache" ]; then
-    tmpc="$(mktemp -d)"
-    ln -s "$root/vendor/winetricks-cache" "$tmpc/winetricks"
-    export XDG_CACHE_HOME="$tmpc"
-    echo "   using bundled winetricks cache ($root/vendor/winetricks-cache)"
+if [ "$refresh" -eq 1 ]; then
+    echo "== [2/5] winetricks: skipped (--refresh keeps the installed fonts/runtimes) =="
+else
+    echo "== [2/5] winetricks: corefonts vcrun2022 mfc42 =="
+    export W_CACHE_OVERRIDE=""            # unused
+    export WINETRICKS_LATEST_VERSION_CHECK=disabled
+    export WINETRICKS_SUPER_QUIET=1
+    # Use the bundled payload cache if present (mfc42 downloads if not vendored).
+    tmpc=""
+    if [ -d "$root/vendor/winetricks-cache" ]; then
+        tmpc="$(mktemp -d)"
+        ln -s "$root/vendor/winetricks-cache" "$tmpc/winetricks"
+        export XDG_CACHE_HOME="$tmpc"
+        echo "   using bundled winetricks cache ($root/vendor/winetricks-cache)"
+    fi
+    WINE="$WINE_ROOT/bin/wine" bash "$root/vendor/winetricks" -q -f corefonts vcrun2022 mfc42
+    [ -n "$tmpc" ] && rm -rf "$tmpc"
+    "$WINESERVER" -w
 fi
-WINE="$WINE_ROOT/bin/wine" bash "$root/vendor/winetricks" -q -f corefonts vcrun2022 mfc42
-[ -n "$tmpc" ] && rm -rf "$tmpc"
-"$WINESERVER" -w
 
 # wineboot -u replaces redist natives (msvcp140 etc.) with wine's higher-versioned stubs, which
 # Live aborts on. Re-copy every builtin-identical or missing redist DLL, then gate: none may remain.

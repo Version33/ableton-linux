@@ -3,12 +3,14 @@
 # Usage:  sh ableton-wine-setup-@VERSION@.run [options]
 # Options:
 #   --runtime-only   install the patched Wine only; skip making the Wine prefix
+#   --update         update an existing installation in place (Live, settings, license kept)
 #   --no-launch      never run the Ableton installer (zip/exe) automatically
 #   --extract DIR    unpack this installer's files into DIR and exit
 #   --uninstall      remove the installed Wine, launcher, and menu entries
 #   --help           this text
 # Environment:
-#   ABLETON_DPI_MODE  auto|preserve|100|fractional (overrides scale auto-detection)
+#   ABLETON_DPI_MODE    auto|preserve|100|fractional (overrides scale auto-detection)
+#   ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
 # Everything after the marker line is a tar archive; this header never changes it.
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
@@ -28,8 +30,9 @@ do_launch=1
 extract_dir=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --help|-h)      head -12 "$self" | sed -n '2,12{s/^# \{0,1\}//;p}'; exit 0 ;;
+        --help|-h)      head -14 "$self" | sed -n '2,14{s/^# \{0,1\}//;p}'; exit 0 ;;
         --runtime-only) mode=runtime ;;
+        --update)       mode=update ;;
         --no-launch)    do_launch=0 ;;
         --uninstall)    mode=uninstall ;;
         --extract)      mode=extract; extract_dir="${2:?--extract needs a directory}"; shift ;;
@@ -39,6 +42,29 @@ while [ $# -gt 0 ]; do
 done
 
 say "== Ableton-on-Wine installer $VERSION =="
+
+# --- offer an in-place update when an installation is already here ------------
+# Rerunning the full install always worked (dated rollbacks throughout), but it
+# demands an Ableton download and walks every prompt again; update mode brings
+# runtime, launcher, and prefix policy to this kit's version and touches
+# nothing else — not Live, not settings, not the license.
+if [ "$mode" = install ] && [ -x "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" ] \
+   && [ -f "${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}/system.reg" ]; then
+    installed_ver="$(cat "$HOME/.local/share/ableton-wine/VERSION" 2>/dev/null || true)"
+    say ""
+    say "An existing installation was found${installed_ver:+ (version $installed_ver)}."
+    if [ -t 0 ]; then
+        printf 'Update it to %s? Ableton Live, your settings, and the license are kept. [Y/n] ' "$VERSION"
+        read -r ans || ans=""
+        case "$ans" in
+            [Nn]*) say "-- full install it is — the existing runtime gets a dated rollback" ;;
+            *)     mode=update ;;
+        esac
+    else
+        say "-- updating it to $VERSION (Ableton Live, settings, and the license are kept)"
+        mode=update
+    fi
+fi
 
 # --- find the Ableton payload next to this file, up front ---------------------
 # Any edition (Intro/Lite/Standard/Suite/Trial) and any major version works:
@@ -167,6 +193,20 @@ if ! command -v cabextract >/dev/null; then
     say "   this machine has no 'cabextract' — using the copy bundled in this installer"
 fi
 export PATH="$kit/bin:$PATH"
+
+# --- update an existing installation ------------------------------------------
+if [ "$mode" = update ]; then
+    say "-- updating the patched Wine (a dated rollback of the old runtime is kept)"
+    bash "$kit/scripts/install.sh"
+    say "-- refreshing the Wine prefix (registry policy + runtime DLL healing; Live untouched)"
+    bash "$kit/scripts/setup-prefix.sh" --refresh
+    say ""
+    say "================================================================"
+    say "Done — updated to $VERSION. Ableton Live itself was not touched."
+    say "Launch Live:   ~/.local/bin/ableton-live"
+    say "================================================================"
+    exit 0
+fi
 
 # --- install the runtime ------------------------------------------------------
 say "-- installing the patched Wine (goes to ~/.local/opt, touches nothing else)"

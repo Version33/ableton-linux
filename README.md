@@ -12,13 +12,13 @@ Place this installer + an Ableton Live zip file downloaded from Ableton.com in t
 
 ## Features
 
-- All Live 12 editions (Intro, Standard, Suite, Trial) and Beta support — the installer and launcher detect whichever you have
+- Support for all Live 12 editions (Intro, Standard, Suite, Trial), and experimental Live 12 Beta support.
 - Push 1 + 2 support.
 - Device recovery: audio and MIDI devices (Push included) survive in-session disconnect and reconnect.
 - Experimental Max/MSP and Max for Live support.
-- Native file dialogs including open/save dialogs are your desktop's (XDG portal).
-- Dark/light theme mode follows the system setting.
-- System font support, Ableton's UI renders with your desktop's fonts.
+- File dialogues including open/save dialogs are handled by your system's native file picker. 
+- Dark/light theme mode that follows your system's settings.
+- System font support, Display Ableton's AI with your desktop interface fonts.
 - Low-latency audio via autobuilt WineASIO → JACK/PipeWire at 256 frames, with additional hardening to prevent crashes.
 - VST3/JUCE/OpenGL editor windows render, take input, and scale correctly.
 - HiDPI support display scale auto-detected and recalibrated on every launch.
@@ -38,6 +38,12 @@ You can do that either by double clicking the `install-ableton-latest.run` insta
 sh ~/Downloads/install-ableton-latest.run
 ```
 
+## Updating
+
+You can update your existing installation by downloading a new version of the run script, and running it:
+
+`sh install-ableton-latest.run --update`
+
 ## Issues?
 
 File an issue on GitHub, there's some diagnostics scripts that will help diagnose the problem in ./beta/scripts.
@@ -53,7 +59,9 @@ WineASIO can be tempermental. If you encounter any unexpected behaviour, open an
 
 ## Push 1 + 2 support
 
-This is built in. Use Preferences → Link, Tempo & MIDI → enable one `Push2` row, Live Port for both input and output, and the remote toggles. Like all other MIDI and Audio devices, Push will survive in-session disconnects. 
+This is built in. Use Preferences → Link, Tempo & MIDI → enable one `Push2` row, Live Port for both input and output, and enable the remote toggles. 
+
+Like all other MIDI and Audio devices, Push will survive in-session disconnects. 
 
 
 ## Development
@@ -110,6 +118,7 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_WINE_ROOT` runtime path (default `~/.local/opt/wine-d2d1-nspa-11.11`)
 - `ABLETON_WINEPREFIX` prefix path (default `~/.wine-ableton`)
 - `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional`
+- `ABLETON_THEME_MODE` `auto` | `dark` | `light` | `preserve` — the launcher syncs Live's light/dark theme key to the desktop scheme on every start; this overrides it
 - `ABLETON_LIVE_EXE` full path to a Live exe inside the prefix, when more than one edition/version is installed (default: the newest found)
 - `ENGINE=docker` for `build.sh` / `make-installer.sh`
 
@@ -124,18 +133,6 @@ sudo pacman -S cabextract binutils pipewire-jack
 sudo steamos-readonly enable
 ```
 
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| WineASIO missing from Live's device list | install `pipewire-jack`, restart Live |
-| Live hangs/crashes at startup opening audio | needs build `2026.07.13.3`+ (`ABLETON-WINE-BUILD-INFO.txt` in the runtime); still failing → run `./scripts/check-live-audio.sh` and report |
-| Crackling / dropouts | WineASIO panel → buffer 512 |
-| No hardware MIDI in Live | re-run `./scripts/install.sh` with a current tarball, restart Live |
-| File dialogs look like Windows 95 | install your desktop's `xdg-desktop-portal`; 32-bit programs always get the Wine dialog |
-| Windows resize endlessly / wrong UI size | restart Live (the launcher re-detects DPI); if it persists, re-run `setup-prefix.sh` with an explicit `ABLETON_DPI_MODE` |
-| `install.sh` says the runtime is in use | close Live, wait a few seconds, retry |
-
 ## More
 
 You can learn all about the patches here: [patches/BASE.txt](patches/BASE.txt).
@@ -144,4 +141,4 @@ Questions? [cade@parare.al](mailto:cade@parare.al)
 
 ### AI Disclosure
 
-Local models (Qwen 3.6) and Claude Opus were used during QA testing, documentation checking, and to help setup the build pipleline at the very end of this project's release.
+Local models (Qwen 3.6) and Claude Opus were used during QA testing, documentation checking, and to help setup the build pipeline at the very end of this project's release.

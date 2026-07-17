@@ -119,6 +119,11 @@ mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
 
+# Record the kit version so a later installer can tell what it is updating
+# (the kit and the repo both carry VERSION at the root).
+printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \
+    > "$HOME/.local/share/ableton-wine/VERSION"
+
 echo "== install missing desktop entries -> $APPS =="
 mkdir -p "$APPS"
 for d in ableton-live wine-protocol-ableton; do
