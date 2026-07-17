@@ -43,6 +43,9 @@ live_exe_names() {   # basenames of every Live exe installed in this prefix
 . "$here/detect-scale.sh"
 detect_display_scale() { ableton_detect_scale; }
 
+# Shared host light/dark-scheme detection (see detect-theme.sh).
+. "$here/detect-theme.sh"
+
 block_for_scale() {  # scale -> calibrated block name, fails on uncalibrated
     case "$1" in
         1|1.0)  echo 100 ;;
@@ -228,6 +231,20 @@ case "$dpi_block" in
     fi
     ;;
 esac
+"$WINESERVER" -w
+
+echo "== [3b/5] theme: mirror the host light/dark scheme =="
+# Live's "Follow system" theme reads AppsUseLightTheme; without the key it always renders
+# light. Seed it from the host scheme (the launcher re-syncs on every start), plus the
+# EnableTransparency=0 the known-good prefixes carry.
+if host_scheme="$(ableton_detect_theme)"; then
+    case "$host_scheme" in dark) light_val=0 ;; *) light_val=1 ;; esac
+    echo "   host scheme: $host_scheme"
+    wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$light_val" /f
+else
+    echo "   host scheme not detectable — leaving the theme key as-is (the launcher retries on every start)"
+fi
+wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
 "$WINESERVER" -w
 
 echo "== [4/5] register packaged WineASIO =="

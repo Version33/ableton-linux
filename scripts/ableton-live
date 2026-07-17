@@ -101,6 +101,31 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     fi
 fi
 
+# Mirror the host light/dark scheme into the prefix before each launch: Live's "Follow system"
+# theme reads AppsUseLightTheme, which a scripted prefix never carries (the early snapshot-based
+# installs inherited it). ABLETON_THEME_MODE=auto|dark|light|preserve overrides detection.
+if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null; then
+    theme_mode="${ABLETON_THEME_MODE:-auto}"
+    if [ "$theme_mode" = auto ]; then
+        theme_lib="$HOME/.local/share/ableton-wine/detect-theme.sh"
+        theme_mode=preserve
+        if [ -r "$theme_lib" ]; then
+            . "$theme_lib"
+            host_scheme="$(ableton_detect_theme)" || host_scheme=""
+            case "$host_scheme" in dark|light) theme_mode="$host_scheme" ;; esac
+        fi
+    fi
+    case "$theme_mode" in dark) want_light=0 ;; light) want_light=1 ;; *) want_light="" ;; esac
+    if [ -n "$want_light" ]; then
+        # Current value straight from the registry file (no wineserver spin-up when unchanged).
+        cur_light="$(awk '/^\[Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Themes\\\\Personalize\]/{f=1;next} /^\[/{f=0} f&&/"AppsUseLightTheme"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
+        if [ "${cur_light:-absent}" != "0000000$want_light" ]; then
+            echo "ableton-live: host scheme is $theme_mode — setting the prefix theme to match" >&2
+            "$WINE_ROOT/bin/wine" reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$want_light" /f >/dev/null 2>&1
+        fi
+    fi
+fi
+
 # Audio: WineASIO -> PipeWire (JACK provider). Raise PREFERRED_BUFFERSIZE to 512 if crackles.
 export WINEASIO_NUMBER_INPUTS="${WINEASIO_NUMBER_INPUTS:-2}"
 export WINEASIO_NUMBER_OUTPUTS="${WINEASIO_NUMBER_OUTPUTS:-2}"

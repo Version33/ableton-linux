@@ -113,10 +113,11 @@ if [ -e "$BIN/ableton-live" ]; then
 fi
 install -m755 "$here/ableton-live" "$BIN/ableton-live"
 
-echo "== install scale-detection lib -> ~/.local/share/ableton-wine =="
-# The launcher sources this on every start to auto-calibrate the prefix DPI.
+echo "== install detection libs -> ~/.local/share/ableton-wine =="
+# The launcher sources these on every start (DPI auto-calibration, light/dark theme sync).
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
+install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
 
 echo "== install missing desktop entries -> $APPS =="
 mkdir -p "$APPS"
