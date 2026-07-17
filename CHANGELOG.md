@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.07.17.3
+
+- Fix dropped MIDI input under PipeASIO. The driver reported ASIO time on the
+  PipeWire graph clock; Live compares MIDI timestamps against it and discarded
+  every event. It now reports timeGetTime, as WineASIO did. Update from
+  2026.07.17.2.
+
 ## 2026.07.17.2
 
 - Replace WineASIO with PipeASIO 1.2.2, a native PipeWire ASIO driver. Removed the stale WineASIO entry. Defaults live in ~/.config/pipeasio/config.ini.
