@@ -1,0 +1,86 @@
+{
+  stdenv,
+  lib,
+  wine,
+  pipewire,
+  pipeasioSrc,
+  pipeasioPatches,
+}:
+
+stdenv.mkDerivation {
+  pname = "pipeasio";
+  version = "1.2.2";
+
+  src = pipeasioSrc;
+
+  patches = builtins.map (f: pipeasioPatches + "/${f}") (
+    builtins.attrNames (builtins.readDir pipeasioPatches)
+  );
+
+  # winegcc / winebuild from the patched Wine drive the PE + unix halves;
+  # libpipewire only backs the unix half.
+  nativeBuildInputs = [ wine ];
+  buildInputs = [ pipewire ];
+
+  # Upstream builds with CMake; this drives the same five-object build as
+  # scripts/container-build.sh [4/8], against this Wine's headers and
+  # nixpkgs' PipeWire. 64-bit only — Live 12 is 64-bit.
+  buildPhase = ''
+    runHook preBuild
+    mkdir -p build64
+    for f in asio audio config main regsvr; do
+      gcc -c -o build64/$f.o src/$f.c \
+        -Iinclude \
+        -I${lib.getDev pipewire}/include/pipewire-0.3 \
+        -I${lib.getDev pipewire}/include/spa-0.2 \
+        -I${wine}/include -I${wine}/include/wine \
+        -I${wine}/include/wine/windows \
+        -D_REENTRANT -Wall -pipe -fno-strict-aliasing -Wwrite-strings \
+        -Wpointer-arith -Werror=implicit-function-declaration \
+        -fPIC -O2 -DNDEBUG -fvisibility=hidden
+    done
+    winebuild -m64 --dll --fake-module -E pipeasio.dll.spec build64/*.o -o build64/pipeasio64.dll
+    winegcc -shared pipeasio.dll.spec build64/*.o \
+      -L${lib.getLib pipewire}/lib \
+      -lodbc32 -lole32 -luuid -lwinmm -luser32 -lpipewire-0.3 \
+      -o build64/pipeasio64.dll.so
+    runHook postBuild
+  '';
+
+  # Install both names: Wine resolves pipeasio64.dll to builtin "pipeasio.dll"
+  # (from its spec) and looks for the unix half under that name. Without both,
+  # LoadLibrary fails with STATUS_DLL_NOT_FOUND.
+  installPhase = ''
+    runHook preInstall
+    mkdir -p $out/lib/wine/x86_64-windows $out/lib/wine/x86_64-unix
+    install -m644 build64/pipeasio64.dll    $out/lib/wine/x86_64-windows/pipeasio64.dll
+    install -m644 build64/pipeasio64.dll.so $out/lib/wine/x86_64-unix/pipeasio64.dll.so
+    install -m644 build64/pipeasio64.dll    $out/lib/wine/x86_64-windows/pipeasio.dll
+    install -m644 build64/pipeasio64.dll.so $out/lib/wine/x86_64-unix/pipeasio.dll.so
+    runHook postInstall
+  '';
+
+  # Unlike the container tarball (which must resolve the HOST distro's
+  # PipeWire and therefore forbids an rpath), the nix build pins nixpkgs'
+  # libpipewire via RUNPATH — same client library the host daemon ships.
+  doInstallCheck = true;
+  installCheckPhase = ''
+    test -s $out/lib/wine/x86_64-windows/pipeasio64.dll
+    test -s $out/lib/wine/x86_64-unix/pipeasio64.dll.so
+    test -s $out/lib/wine/x86_64-windows/pipeasio.dll
+    test -s $out/lib/wine/x86_64-unix/pipeasio.dll.so
+    readelf -d $out/lib/wine/x86_64-unix/pipeasio64.dll.so \
+      | grep -F 'Shared library: [libpipewire-0.3.so.0]' \
+      || { echo "unix half does not link libpipewire-0.3.so.0"; exit 1; }
+    readelf -d $out/lib/wine/x86_64-unix/pipeasio64.dll.so \
+      | grep -E 'RUNPATH|RPATH' | grep -F '${lib.getLib pipewire}/lib' \
+      || { echo "unix half lacks the nixpkgs pipewire RUNPATH"; exit 1; }
+    echo "PipeASIO files present, libpipewire linked and rpath'd"
+  '';
+
+  meta = with lib; {
+    description = "PipeASIO 1.2.2 — native PipeWire ASIO driver, compiled against patched Wine";
+    platforms = [ "x86_64-linux" ];
+    license = licenses.gpl3Plus; # SPDX GPL-3.0-or-later in src/*.c, COPYING is GPLv3
+  };
+}

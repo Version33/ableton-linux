@@ -3,6 +3,8 @@
 .env
 *.log
 *.tmp
+# Nix build output symlink
+/result
 !tools/*.log
 notes/
 notes/*.md

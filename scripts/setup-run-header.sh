@@ -12,6 +12,7 @@
 #   ABLETON_DPI_MODE    auto|preserve|100|fractional (overrides scale auto-detection)
 #   ABLETON_THEME_MODE  auto|dark|light|preserve (overrides the light/dark sync)
 # Everything after the marker line is a tar archive; this header never changes it.
+# shellcheck shell=bash # the next line re-execs into bash before any bashism runs
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
 
@@ -66,18 +67,25 @@ if [ "$mode" = install ] && [ -x "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" ] \
     fi
 fi
 
-# --- find the Ableton payload next to this file, up front ---------------------
+# --- find the Ableton payload next to this file or in ~/Proprietary, up front --
 # Any edition (Intro/Lite/Standard/Suite/Trial) and any major version works:
 # an ableton_live*.zip straight from ableton.com, or an already-unpacked installer .exe.
+# ~/Proprietary is the fallback search dir (ABLETON_INSTALLER_DIR overrides).
 find_live_payload() {
     live_payloads=()
-    local f base
-    for f in "$stick_dir"/*; do
-        [ -f "$f" ] || continue
-        base="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
-        case "$base" in
-            ableton_live*.zip|*ableton*.exe|*live*.exe) live_payloads+=("$f") ;;
-        esac
+    local d f base
+    local extra_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
+    # Same place? Don't list every file twice.
+    if [ -d "$extra_dir" ] && [ "$extra_dir" -ef "$stick_dir" ]; then extra_dir=""; fi
+    for d in "$stick_dir" "$extra_dir"; do
+        [ -n "$d" ] && [ -d "$d" ] || continue
+        for f in "$d"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
+            case "$base" in
+                ableton_live*.zip|*ableton*.exe|*live*.exe) live_payloads+=("$f") ;;
+            esac
+        done
     done
     [ "${#live_payloads[@]}" -le 1 ] || \
         mapfile -t live_payloads < <(printf '%s\n' "${live_payloads[@]}" | sort -V)
@@ -119,9 +127,9 @@ if [ "$mode" = install ] && [ "$do_launch" -eq 1 ]; then
     choose_live_payload
     if [ -z "$live_exe$live_zip" ] && [ -t 0 ]; then
         say ""
-        say "No Ableton installer found next to this file"
-        say "(looked for an ableton_live*.zip — any edition — or an Ableton .exe in $stick_dir)."
-        say "Put it here and press Enter. Or press Enter without it — the"
+        say "No Ableton installer found next to this file or in ${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
+        say "(looked for an ableton_live*.zip — any edition — or an Ableton .exe)."
+        say "Put it in either place and press Enter. Or press Enter without it — the"
         say "manual install commands are printed at the end."
         printf '> '
         read -r _ || true
@@ -136,6 +144,7 @@ fi
 
 # --- unpack the embedded kit ------------------------------------------------
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/ableton-setup.XXXXXX")"
+# shellcheck disable=SC2329 # invoked indirectly: trap cleanup EXIT, below
 cleanup() {
     rc=$?
     if [ "$rc" -eq 0 ]; then rm -rf "$workdir"
@@ -196,7 +205,7 @@ if [ "$mode" = update ]; then
     say "-- updating the patched Wine (a dated rollback of the old runtime is kept)"
     bash "$kit/scripts/install.sh"
     say "-- refreshing the Wine prefix (registry policy + runtime DLL healing; Live untouched)"
-    bash "$kit/scripts/setup-prefix.sh" --refresh
+    ABLETON_LIVE_AUTOINSTALL=0 bash "$kit/scripts/setup-prefix.sh" --refresh
     say ""
     say "================================================================"
     say "Done — updated to $VERSION. Ableton Live itself was not touched."
@@ -231,7 +240,9 @@ if [ -z "${ABLETON_DPI_MODE:-}" ]; then
 fi
 say "-- creating the Wine prefix — Live's private 'C: drive' at ~/.wine-ableton"
 say "   (fonts and runtime pieces install now; this takes a few minutes)"
-bash "$kit/scripts/setup-prefix.sh"
+# AUTOINSTALL=0: this installer runs the Ableton payload itself (below), with
+# its own choose/prompt UX — don't let setup-prefix race it from ~/Proprietary.
+ABLETON_LIVE_AUTOINSTALL=0 bash "$kit/scripts/setup-prefix.sh"
 
 # --- install Ableton Live from the stick ---------------------------------------
 live_installed=0
@@ -287,4 +298,5 @@ say "  * Options menu -> untick 'Auto-Scale Plugin Window'"
 say "  * Preferences -> Audio -> Driver Type: ASIO -> Device: PipeASIO"
 say "================================================================"
 exit 0
+# shellcheck disable=SC2317 # payload marker: after exit 0 by design, never executed
 __PAYLOAD_BELOW__
