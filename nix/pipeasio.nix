@@ -62,7 +62,8 @@ stdenv.mkDerivation {
 
   # Unlike the container tarball (which must resolve the HOST distro's
   # PipeWire and therefore forbids an rpath), the nix build pins nixpkgs'
-  # libpipewire via RUNPATH — same client library the host daemon ships.
+  # libpipewire via RUNPATH; the client<->daemon protocol is stable, so it
+  # talks to whatever PipeWire daemon (0.3.56+) the host runs.
   doInstallCheck = true;
   installCheckPhase = ''
     test -s $out/lib/wine/x86_64-windows/pipeasio64.dll
