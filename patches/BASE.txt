@@ -18,6 +18,10 @@ disposable worktree on base 182ae79b (commits 21be973f and 283d8fa9 there):
 two stability fixes. The 0027 patch file was removed from the
 series directory on 2026-07-14; its commit remains in the tree history, so
 regenerating 0001-0030 from the tree will re-create it.
+Patch 0038 was exported 2026-07-19 the same way, from a disposable worktree
+on base 182ae79b (commit 0106d01f there). The 0037 number was taken by the
+fixes/close-button branch (MWM_FUNC_CLOSE); both branches merged together
+on 2026-07-19, closing the gap.
 
 The previous 6-patch series (state of 2026-07-03, commit b826f21e) is in
 archive-2026-07-03/ for reference only.
@@ -94,3 +98,13 @@ Provenance:
               while disabled, so the function is now advertised
               unconditionally. Exported from a disposable worktree on base
               182ae79b (commit a080cbd2 there).
+  0038      = winex11 menu-tracking FocusOut gate (2026-07-19). Local fix
+              for issue #3: mutter and muffin shuffle the X input focus
+              when an override-redirect menu popup maps or is clicked; the
+              NotifyNormal FocusOut reached focus_out() mid menu-track and
+              the WM_CANCELMODE it sends closed the dropdown (flash on
+              select under Cinnamon, repeated clicks needed under GNOME,
+              occasional glitches under KDE). While the foreground thread
+              reports GUI_INMENUMODE the cancel is only sent when
+              XGetInputFocus shows another client's window holding the
+              focus. See ABLETON-WINE-MENU-FOCUSOUT.md
