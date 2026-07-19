@@ -121,6 +121,7 @@ FINGERPRINTS='
 0033|ascii|lib/wine/x86_64-unix/ntdll.so|WINE_DISABLE_UNIX_MOUNT_REPARSE
 0035|ascii|lib/wine/x86_64-windows/wined3d.dll|Arc(tm) B580
 0036|wide|lib/wine/x86_64-windows/dxgi.dll|__wine_dcomp_null_device
+0038|ascii|lib/wine/x86_64-unix/winex11.so|Ignoring FocusOut on %p during menu tracking
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -151,6 +152,7 @@ STAMP_ONLY='
 0029|logic-only (menu bar +4px arithmetic)
 0030|literal __wine_dcomp_swapchain pre-exists in base — not distinctive
 0034|logic-only (XdndStatus reply flush; adds no string literal)
+0037|logic-only (MWM_FUNC_CLOSE advertised unconditionally; adds no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
@@ -189,7 +191,9 @@ for f in $(awk '{print $2}' "$SERIES" | sort); do
             ok "$f" "$integrity $stamp_note $fp_desc"
         fi
     else
-        reason="$(printf '%s\n' "$STAMP_ONLY" | grep "^$num|" | cut -d'|' -f2-)"
+        # || true: under pipefail an unlisted patch would kill the script here
+        # instead of reaching the UNLISTED failure line below
+        reason="$(printf '%s\n' "$STAMP_ONLY" | grep "^$num|" | cut -d'|' -f2- || true)"
         [ -n "$reason" ] || reason="UNLISTED — add to FINGERPRINTS or STAMP_ONLY in build-audit.sh"
         if [ "${sha_ok[$f]:-0}" = 1 ] && [ "$stamp_ok" = 1 ] && [ -n "${reason%%UNLISTED*}" ]; then
             ok "$f" "$integrity $stamp_note via stack stamp ($reason)"
