@@ -123,6 +123,15 @@ echo "== install detection libs -> ~/.local/share/ableton-wine =="
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
+# setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
+# without it the colors still apply on the next launch. Kit stages it next to
+# these scripts; a repo checkout carries it in tools/.
+for f in "$here/setsyscolors.exe" "$root/tools/setsyscolors.exe"; do
+    if [ -f "$f" ]; then
+        install -m644 "$f" "$HOME/.local/share/ableton-wine/setsyscolors.exe"
+        break
+    fi
+done
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).

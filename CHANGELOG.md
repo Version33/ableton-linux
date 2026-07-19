@@ -7,6 +7,7 @@
 - The build container is now fully pinned: base image by digest, Ubuntu archive by snapshot date, LLVM toolchain by exact version. Between 2026.07.17.3 and 2026.07.18.1 two shipped binaries rebuilt differently with no source change; a rebuild can no longer pick up drifted inputs silently.
 - Fixed dropdown menus flashing closed on click, or needing repeated clicks to open, under GNOME, Cinnamon and KDE (issue #3). Those window managers shuffle the X input focus when a menu popup opens; Wine treated the resulting FocusOut as a focus loss and cancelled the menu. The cancel is now only sent when another application really holds the focus (Wine patch 0038, notes/ABLETON-WINE-MENU-FOCUSOUT.md).
 - Fixed the missing close button on Live's title bar under KDE (issue #31). Wine omits the Motif close function while a window is disabled, which Live's main window is during its startup modal, and KWin takes the button away for good. The close function is now always advertised; Wine already ignores close requests while the window is disabled (Wine patch 0037).
+- New: the unified top bar. Live's menu bar and menus are colored like your Ableton theme (or your desktop titlebar) and rendered with the Ableton Sans typeface from your Live install. A small helper, setsyscolors.exe, repaints the bar mid-session when the Live theme changes; without it the colors apply on the next launch. `ABLETON_TOPBAR_MODE` and `ABLETON_UI_FONT` control or disable all of this (see the README).
 
 ## 2026.07.18.1
 

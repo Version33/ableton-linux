@@ -56,6 +56,7 @@ mkdir -p "$kit/scripts"
 cp -a scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/detect-scale.sh scripts/detect-theme.sh \
       scripts/check-live-audio.sh "$kit/scripts/"
+install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"
 cp -a desktop "$kit/desktop"
 cp -a vendor/winetricks vendor/winetricks-cache "$kit/vendor/"
 cp -a VERSION README.md "$kit/"
