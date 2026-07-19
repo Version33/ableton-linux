@@ -83,3 +83,14 @@ Provenance:
               the timer-idle reblit while no present has succeeded, backing
               the timer off exponentially and killing it after 20 null
               ticks until device recreation rebinds.
+  0037      = winex11 always advertise MWM_FUNC_CLOSE (2026-07-19).
+              Local fix for issue #31: Live's main window is WS_DISABLED
+              while its startup modal is up, set_mwm_hints omits
+              MWM_FUNC_CLOSE for disabled windows, and KWin derives the
+              close button from the Motif function list, so the button is
+              missing until the next hints flush (maximizing forces one via
+              window_request_desired_state). Windows never hides the close
+              button and handle_wm_protocols already drops WM_DELETE_WINDOW
+              while disabled, so the function is now advertised
+              unconditionally. Exported from a disposable worktree on base
+              182ae79b (commit a080cbd2 there).
