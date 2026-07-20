@@ -11,6 +11,7 @@ wine-d2d1-nspa-11.11/
 wine-d2d1-nspa-src/
 pteq_win.log
 *.exe
+!/tools/setsyscolors.exe
 *.exe.so
 *.so
 *.dll

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026.07.19.2
+
+- The real fix for dropdown menus misbehaving under GNOME, Cinnamon and KDE (issue #3). The 2026.07.19.1 focus fix (Wine patch 0038) turned out to cover only the menu bar; the Preferences dropdowns are Live's own popup windows, and Live pokes them while they are open with a window call that is a no-op on Windows but made Wine hand the open popup to the window manager as a normal dialog, mid-click. That handover was the flash on select, the eaten first click, the wobble under GNOME shell extensions, and the phantom "second popup" shadow under KDE. Wine now refuses to change a window's management mode while it is on screen (Wine patch 0039, notes/ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md). Root-caused from a traced live session on GNOME and verified the same way; patch 0038 stays, it covers a separate menu-bar path.
+
+## 2026.07.19.1
+
+- Fix choppy, slowed-down, stuttering audio under PipeASIO after updating to 2026.07.18.1 (issue #29). That release seeded `-DontCombineAPCs` into Live's Options.txt. The option cuts idle CPU, but during playback the uncoalesced APCs flood the wineserver and starve the audio callback. The prefix refresh now removes the line instead of adding it. If you added the line by hand after reading the 2026.07.18.1 changelog, remove it. This supersedes that release's "CPU eating" item: the 30-40% idle CPU thread is back until the fix lands on the Wine side (notes/ABLETON-WINE-APC-COALESCING.md).
+- New launcher override: `ABLETON_RT=off` runs Live without realtime scheduling. Some distributions grant realtime rights out of the box, so the launcher's probe can be active without ever running setup-realtime.sh. The override exists for A/B runs and low-core machines (notes/ABLETON-WINE-RT-SCHEDULING.md).
+- The build container is now fully pinned: base image by digest, Ubuntu archive by snapshot date, LLVM toolchain by exact version. Between 2026.07.17.3 and 2026.07.18.1 two shipped binaries rebuilt differently with no source change; a rebuild can no longer pick up drifted inputs silently.
+- Fixed dropdown menus flashing closed on click, or needing repeated clicks to open, under GNOME, Cinnamon and KDE (issue #3). Those window managers shuffle the X input focus when a menu popup opens; Wine treated the resulting FocusOut as a focus loss and cancelled the menu. The cancel is now only sent when another application really holds the focus (Wine patch 0038, notes/ABLETON-WINE-MENU-FOCUSOUT.md).
+- Fixed the missing close button on Live's title bar under KDE (issue #31). Wine omits the Motif close function while a window is disabled, which Live's main window is during its startup modal, and KWin takes the button away for good. The close function is now always advertised; Wine already ignores close requests while the window is disabled (Wine patch 0037).
+- New: the unified top bar. Live's menu bar and menus are colored like your Ableton theme (or your desktop titlebar) and rendered with the Ableton Sans typeface from your Live install. A small helper, setsyscolors.exe, repaints the bar mid-session when the Live theme changes; without it the colors apply on the next launch. `ABLETON_TOPBAR_MODE` and `ABLETON_UI_FONT` control or disable all of this (see the README).
+
 ## 2026.07.18.1
 
 This one's a big one. Hope I didn't break anything!!!!!
