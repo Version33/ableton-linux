@@ -104,9 +104,18 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 { inputs, ... }: {
   environment.systemPackages = [
     inputs.ableton-linux.packages.x86_64-linux.default
-    # Per-machine tuning stays runtime state, same as the tarball flow:
-    # ABLETON_DPI_MODE for the display scale, ~/.config/pipeasio/config.ini
-    # for the audio driver — see "Other environment variables" below.
+    # or pin PipeASIO audio settings declaratively — the launcher re-asserts
+    # exactly these keys in ~/.config/pipeasio/config.ini on every start and
+    # leaves the rest alone (all config.ini keys are accepted):
+    # (inputs.ableton-linux.packages.x86_64-linux.default.override {
+    #   pipeasioSettings = {
+    #     buffer_size = 256;             # frames; match your PipeWire quantum
+    #     inputs = 2; outputs = 2;       # hardware channel counts
+    #     # output_device = "Scarlett 18i20"; sample_rate = 48000; ...
+    #   };
+    # })
+    # Display scale needs no pin: the launcher auto-detects it, and
+    # ABLETON_DPI_MODE overrides per launch — see below.
   ];
   services.pipewire.enable = true;
 }
