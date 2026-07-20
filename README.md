@@ -102,13 +102,9 @@ inputs.ableton-linux.url = "github:shibco/ableton-linux";
 { inputs, ... }: {
   environment.systemPackages = [
     inputs.ableton-linux.packages.x86_64-linux.default
-    # or pin per-machine settings:
-    # (inputs.ableton-linux.packages.x86_64-linux.default.override {
-    #   dpi = 120;                 # prefix LogPixels (96=100%, 112≈117%, 120=125%, 144=150%)
-    #   pipeasioBufferSize = 256;  # match your PipeWire quantum
-    #   pipeasioInputs = 2;
-    #   pipeasioOutputs = 2;
-    # })
+    # Per-machine tuning stays runtime state, same as the tarball flow:
+    # ABLETON_DPI_MODE for the display scale, ~/.config/pipeasio/config.ini
+    # for the audio driver — see "Other environment variables" below.
   ];
   services.pipewire.enable = true;
 }
