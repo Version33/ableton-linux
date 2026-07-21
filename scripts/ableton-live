@@ -681,11 +681,22 @@ if [ -n "${ABLETON_VDESK:-}" ]; then
     require_live
     exec "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
 elif [ "$#" -gt 0 ]; then
-    # ableton:// URLs, .auz license files, .als sets from the file manager.
-    # A single existing file arrives as a unix path (%f in the desktop entry);
-    # start.exe only translates those behind its /unix switch, ShellExecute
-    # alone does not resolve host paths.
+    # ableton:// URLs, .auz license files, Live documents from the file
+    # manager or command line. A single existing file arrives as a unix path
+    # (%f in the desktop entry). Live documents go straight to the Live exe:
+    # sets, clips and packs have no association inside the prefix, and
+    # start.exe reads a bare unix path as a switch (issue #38). Other files
+    # keep the start.exe path, which resolves unix paths behind /unix.
     if [ "$#" -eq 1 ] && [ -f "$1" ]; then
+        case "$1" in
+            *.[aA][lL][sS]|*.[aA][lL][cC]|*.[aA][lL][pP])
+                require_live
+                doc="$(winepath -w "$1" 2>/dev/null || true)"
+                if [ -n "$doc" ]; then
+                    exec "${run[@]}" "$EXE" "$doc"
+                fi
+                ;;
+        esac
         case "$1" in /*) exec "${run[@]}" start /unix "$1" ;; esac
     fi
     exec "${run[@]}" start "$@"
