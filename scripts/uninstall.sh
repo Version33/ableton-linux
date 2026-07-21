@@ -13,9 +13,15 @@ done
 rm -f  "$BIN"        && echo "removed $BIN"
 rm -f  "$BIN".rollback-*
 rm -rf "$HOME/.local/share/ableton-wine" && echo "removed ~/.local/share/ableton-wine"
-rm -f  "$APPS/ableton-live.desktop" "$APPS/wine-protocol-ableton.desktop"
+rm -f  "$APPS/ableton-live.desktop" "$APPS/wine-protocol-ableton.desktop" "$APPS/wine-extension-auz.desktop"
+rm -f  "$HOME/.local/share/mime/packages/x-wine-extension-auz.xml"
+update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
 update-desktop-database "$APPS" 2>/dev/null || true
-echo "removed desktop entries"
+# Unpin the defaults install.sh set; lines pointing anywhere else stay.
+sed -i -e '\#^x-scheme-handler/ableton=wine-protocol-ableton\.desktop;\?$#d' \
+       -e '\#^application/x-wine-extension-auz=wine-extension-auz\.desktop;\?$#d' \
+       "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list" 2>/dev/null || true
+echo "removed desktop entries and MIME registrations"
 
 if [ "${1:-}" = "--prefix" ]; then
     pfx="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
