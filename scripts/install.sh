@@ -152,11 +152,37 @@ printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \
 
 echo "== install desktop entries -> $APPS =="
 mkdir -p "$APPS"
-# The visible launcher entry: user edits survive updates.
-if [ -e "$APPS/ableton-live.desktop" ]; then
-    echo "   preserving existing $APPS/ableton-live.desktop"
+# Detect the installed Live edition for the menu entry (issue #39): the
+# newest Program exe under the prefix wins, matching the launcher's
+# discovery. Without an install yet, generic values apply; rerunning the
+# installer after Live is installed refreshes the entry.
+live_name="Ableton Live"
+live_icon="live-suite"
+live_wmclass="ableton live 12 suite.exe"
+live_prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+newest=""
+for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
+    [ -e "$exe" ] || continue
+    if [ -z "$newest" ] || [ "$exe" -nt "$newest" ]; then newest="$exe"; fi
+done
+if [ -n "$newest" ]; then
+    live_name="$(basename "$newest" .exe)"
+    live_wmclass="$(basename "$newest" | tr '[:upper:]' '[:lower:]')"
+    edition="$(printf '%s' "$live_name" | awk '{print tolower($NF)}')"
+    if [ -f "$root/desktop/icons/scalable/apps/live-$edition.svg" ]; then
+        live_icon="live-$edition"
+    fi
+fi
+# The visible launcher entry: an entry whose Exec does not route through the
+# launcher is treated as hand-made and preserved; ours is refreshed so the
+# name, icon and WM class track the installed edition.
+if [ -e "$APPS/ableton-live.desktop" ] && ! grep -qF "$BIN/ableton-live" "$APPS/ableton-live.desktop"; then
+    echo "   preserving existing $APPS/ableton-live.desktop (it does not route through the launcher)"
 else
-    sed "s#@HOME@#$HOME#g" "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
+    sed -e "s#@HOME@#$HOME#g" -e "s#@NAME@#$live_name#g" \
+        -e "s#@ICON@#$live_icon#g" -e "s#@WMCLASS@#$live_wmclass#g" \
+        "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
+    echo "   installed $APPS/ableton-live.desktop ($live_name)"
 fi
 # The authorization handlers (ableton: URLs, .auz response files). They take
 # winemenubuilder's canonical names on purpose: a prefix where winemenubuilder
@@ -176,18 +202,32 @@ for d in wine-protocol-ableton wine-extension-auz; do
 done
 update-desktop-database "$APPS" 2>/dev/null || true
 
+echo "== install icons =="
+# App and MIME icons (issue #39, PR #25). User-local hicolor is the fallback
+# theme on every desktop; scalable SVGs need no cache.
+ICONS="$HOME/.local/share/icons/hicolor"
+install -d "$ICONS/scalable/apps" "$ICONS/scalable/mimetypes" "$ICONS/symbolic/apps"
+install -m644 "$root"/desktop/icons/scalable/apps/*.svg "$ICONS/scalable/apps/"
+install -m644 "$root"/desktop/icons/scalable/mimetypes/*.svg "$ICONS/scalable/mimetypes/"
+install -m644 "$root"/desktop/icons/symbolic/apps/*.svg "$ICONS/symbolic/apps/"
+gtk-update-icon-cache -q "$ICONS" 2>/dev/null || true
+
 echo "== register the authorization MIME types =="
 # .auz is the response file ableton.com serves for offline authorization. The
 # prefix side is registered by Live's installer; the host side is ours, since
 # winemenubuilder (which would export it) is disabled by setup-prefix.sh.
 mkdir -p "$HOME/.local/share/mime/packages"
 install -m644 "$root/desktop/x-wine-extension-auz.xml" "$HOME/.local/share/mime/packages/x-wine-extension-auz.xml"
+# Live document types: sets, clips, packs and the rest (issue #40, PR #25).
+install -m644 "$root/desktop/icons/application-ableton-live.xml" "$HOME/.local/share/mime/packages/application-ableton-live.xml"
 update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
 # Pin the defaults: with a second claimant present, cache order decides, and
 # Chromium consults only the mimeapps.list default.
 if command -v xdg-mime >/dev/null 2>&1; then
     xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton 2>/dev/null || true
     xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz 2>/dev/null || true
+    xdg-mime default ableton-live.desktop application/x-ableton-live-set \
+        application/x-ableton-live-clip application/x-ableton-live-pack 2>/dev/null || true
 fi
 
 case ":$PATH:" in
