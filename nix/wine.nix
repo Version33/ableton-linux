@@ -170,6 +170,12 @@ stdenv.mkDerivation rec {
         done
         echo "ntsync gate passed (wineserver + ntdll)"
 
+        # configure silently drops winealsa (ALSA MIDI) when alsa-lib is absent —
+        # fail, don't ship without it.
+        [ -s $out/lib/wine/x86_64-unix/winealsa.so ] \
+          || { echo "!! winealsa.so missing — alsa-lib not seen at configure time; no ALSA MIDI" >&2; exit 1; }
+        echo "winealsa gate passed"
+
         echo "Stripping PE builtins"
         find $out/lib/wine \( -name '*.dll' -o -name '*.exe' -o -name '*.sys' \
           -o -name '*.drv' -o -name '*.cpl' -o -name '*.ocx' \) \
