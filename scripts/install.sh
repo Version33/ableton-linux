@@ -132,22 +132,60 @@ for f in "$here/setsyscolors.exe" "$root/tools/setsyscolors.exe"; do
         break
     fi
 done
+# learnheal.exe auto-heals the Learn View / doc sidebar fossil-on-open
+# (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md); without it the pane needs a
+# manual splitter nudge once per session.
+for f in "$here/learnheal.exe" "$root/tools/learnheal.exe"; do
+    if [ -f "$f" ]; then
+        install -m644 "$f" "$HOME/.local/share/ableton-wine/learnheal.exe"
+        break
+    fi
+done
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).
 printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \
     > "$HOME/.local/share/ableton-wine/VERSION"
 
-echo "== install missing desktop entries -> $APPS =="
+echo "== install desktop entries -> $APPS =="
 mkdir -p "$APPS"
-for d in ableton-live wine-protocol-ableton; do
-    if [ -e "$APPS/$d.desktop" ]; then
+# The visible launcher entry: user edits survive updates.
+if [ -e "$APPS/ableton-live.desktop" ]; then
+    echo "   preserving existing $APPS/ableton-live.desktop"
+else
+    sed "s#@HOME@#$HOME#g" "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
+fi
+# The authorization handlers (ableton: URLs, .auz response files). They take
+# winemenubuilder's canonical names on purpose: a prefix where winemenubuilder
+# still runs (a Live beta in a scratch prefix, say) exports its own handler
+# over ours, pointing at stock wine and the wrong prefix. An entry that does
+# not route through the launcher is replaced, not preserved, and canonical
+# copies are staged for the launcher's start-time repair.
+# See notes/ABLETON-WINE-ONLINE-AUTH.md.
+for d in wine-protocol-ableton wine-extension-auz; do
+    sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$HOME/.local/share/ableton-wine/$d.desktop"
+    if [ -e "$APPS/$d.desktop" ] && grep -qF "$BIN/ableton-live" "$APPS/$d.desktop"; then
         echo "   preserving existing $APPS/$d.desktop"
     else
-        sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$APPS/$d.desktop"
+        [ ! -e "$APPS/$d.desktop" ] || echo "   replacing $APPS/$d.desktop (it does not route through the launcher)"
+        cp "$HOME/.local/share/ableton-wine/$d.desktop" "$APPS/$d.desktop"
     fi
 done
 update-desktop-database "$APPS" 2>/dev/null || true
+
+echo "== register the authorization MIME types =="
+# .auz is the response file ableton.com serves for offline authorization. The
+# prefix side is registered by Live's installer; the host side is ours, since
+# winemenubuilder (which would export it) is disabled by setup-prefix.sh.
+mkdir -p "$HOME/.local/share/mime/packages"
+install -m644 "$root/desktop/x-wine-extension-auz.xml" "$HOME/.local/share/mime/packages/x-wine-extension-auz.xml"
+update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
+# Pin the defaults: with a second claimant present, cache order decides, and
+# Chromium consults only the mimeapps.list default.
+if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton 2>/dev/null || true
+    xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz 2>/dev/null || true
+fi
 
 case ":$PATH:" in
     *":$BIN:"*) ;;
