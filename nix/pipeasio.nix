@@ -13,8 +13,10 @@ stdenv.mkDerivation {
 
   src = pipeasioSrc;
 
+  # attrNames is sorted, so the NNNN- prefixes give the series order; filter
+  # to *.patch so a stray note/manifest in the dir can never enter the series.
   patches = builtins.map (f: pipeasioPatches + "/${f}") (
-    builtins.attrNames (builtins.readDir pipeasioPatches)
+    builtins.filter (lib.hasSuffix ".patch") (builtins.attrNames (builtins.readDir pipeasioPatches))
   );
 
   # winegcc/winebuild come from the patched Wine; libpipewire backs the unix half.
