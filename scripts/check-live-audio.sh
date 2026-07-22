@@ -10,7 +10,7 @@ TIMEOUT="${ABLETON_CHECK_TIMEOUT:-180}"
 
 log_dir="$WINEPREFIX/drive_c/users/$USER/AppData/Roaming/Ableton"
 live_log="$(ls -d "$log_dir"/Live*/Preferences/Log.txt 2>/dev/null | sort | tail -1 || true)"
-[ -n "$live_log" ] || { echo "!! no Live Log.txt under $log_dir — is Live installed?" >&2; exit 1; }
+[ -n "$live_log" ] || { echo "!! no Live Log.txt under $log_dir: is Live installed?" >&2; exit 1; }
 [ -x "$LAUNCH" ]   || { echo "!! launcher not found at $LAUNCH" >&2; exit 1; }
 [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || { echo "!! needs a desktop session (DISPLAY unset)" >&2; exit 1; }
 

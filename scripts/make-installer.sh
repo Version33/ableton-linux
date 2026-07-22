@@ -16,7 +16,7 @@ VERSION="$(cat VERSION)"
 tarball="dist/${NAME}-${VERSION}.tar.zst"
 [ -f "$tarball" ] || tarball="$(ls dist/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
 
-[ -n "$tarball" ] && [ -f "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst in dist/ — run ./build.sh first" >&2; exit 1; }
+[ -n "$tarball" ] && [ -f "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst in dist/: run ./build.sh first" >&2; exit 1; }
 [ -f "$tarball.sha256" ] || { echo "!! $tarball.sha256 missing" >&2; exit 1; }
 echo "   runtime: $(basename "$tarball")"
 

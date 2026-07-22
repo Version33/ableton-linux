@@ -33,7 +33,7 @@ Patch 0043 routes it through that plumbing:
   the caller's UI thread does not sit behind the file manager launch.
 - comdlg32 exports `__wine_portal_show_item(path)`: policy check, DOS to
   Unix path conversion, unix call.
-- shell32's SHELL_execute recognizes explorer `/select,` command lines
+- shell32's SHELL_execute recognises explorer `/select,` command lines
   whose target exists and calls that export; comdlg32 imports shell32, so
   the export is resolved with LoadLibrary/GetProcAddress to avoid an
   import cycle.

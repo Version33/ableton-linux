@@ -197,7 +197,7 @@ Mostly unnecessary. But in case you need them:
 - `ABLETON_LIVE_EXE` full path to a Live exe inside the prefix; picks one exact install when several editions coexist (the launcher refuses to guess)
 - `ABLETON_DPI_MODE` `auto` | `preserve` | `100` | `fractional` | `dpi<N>` (force `LogPixels` N with no per-monitor flag, e.g. `dpi144` for 150% on a non-GNOME desktop)
 - `ABLETON_THEME_MODE` `auto` | `dark` | `light` | `preserve`: the launcher syncs Live's light/dark theme key to the desktop scheme on every start; this overrides it
-- `ABLETON_TOPBAR_MODE` `live` | `system` | `preserve` | `'#RRGGBB #RRGGBB'`: the launcher colors Live's menu bar and menus like your Ableton theme (`live`, the default) or like your desktop titlebar (`system`: KDE color scheme, or the stock GNOME header colors). `preserve` keeps the plain scheme colors, a hex pair forces bar and text colors
+- `ABLETON_TOPBAR_MODE` `live` | `system` | `preserve` | `'#RRGGBB #RRGGBB'`: the launcher colours Live's menu bar and menus like your Ableton theme (`live`, the default) or like your desktop titlebar (`system`: KDE colour scheme, or the stock GNOME header colours). `preserve` keeps the plain scheme colours, a hex pair forces bar and text colours
 - `ABLETON_UI_FONT` `auto` | `preserve` | `off` | a font family name: the launcher renders Live's menu bar and dialogs with the Ableton Sans typeface shipped inside your Live install. `off` restores Tahoma, a family name uses that instead
 - `ABLETON_DCOMP` `on` (default) | `off`: disables DirectComposition for that launch; an A/B check if the Learn View misrenders
 - `ABLETON_RT` `on` (default) | `off`: runs Live without realtime scheduling even when the system permits it (see [Lower latency](#lower-latency-optional))

@@ -35,7 +35,7 @@ echo "removed desktop entries, icons and MIME registrations"
 
 if [ "${1:-}" = "--prefix" ]; then
     pfx="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
-    read -rp "Also delete $pfx? This removes your Live installation AND its authorization. [y/N] " a
+    read -rp "Also delete $pfx? This removes your Live installation AND its authorisation. [y/N] " a
     case "$a" in
         [yY]|[yY][eE][sS]) rm -rf "$pfx" && echo "removed $pfx" ;;
         *) echo "kept $pfx" ;;

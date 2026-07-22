@@ -10,7 +10,7 @@ _ads_gnome() {
         --dest org.gnome.Mutter.DisplayConfig \
         --object-path /org/gnome/Mutter/DisplayConfig \
         --method org.gnome.Mutter.DisplayConfig.GetCurrentState 2>/dev/null)" || return 1
-    # logical monitors serialize as "(x, y, scale, uint32 transform, primary, ..."
+    # logical monitors serialise as "(x, y, scale, uint32 transform, primary, ..."
     rows="$(printf '%s\n' "$state" \
         | grep -oE '\(-?[0-9]+, -?[0-9]+, [0-9]+(\.[0-9]+)?, uint32 [0-9]+, (true|false)')"
     [ -n "$rows" ] || return 1
@@ -18,7 +18,7 @@ _ads_gnome() {
     prim="$(printf '%s\n' "$rows" | awk -F', ' '$5=="true"{print $3; exit}')"
     [ -n "$prim" ] || prim="$(printf '%s\n' "$rows" | awk -F', ' 'NR==1{print $3}')"
     if [ "$(printf '%s\n' "$all" | wc -l)" -gt 1 ]; then
-        echo "note: monitors run mixed scales ($(printf '%s' "$all" | tr '\n' ' ' )) — using the primary monitor's $prim" >&2
+        echo "note: monitors run mixed scales ($(printf '%s' "$all" | tr '\n' ' ' )): using the primary monitor's $prim" >&2
     fi
     printf '%s\n' "$prim"
 }
@@ -84,7 +84,7 @@ ableton_detect_scale() {
     return 1
 }
 
-# Like ableton_detect_scale, but prints "<scale> <family>" — the family names the probe
+# Like ableton_detect_scale, but prints "<scale> <family>": the family names the probe
 # that answered (gnome|kde|sway|hyprland|xft) and picks the DPI policy below.
 ableton_detect_scale_ex() {
     local scale family
@@ -100,7 +100,7 @@ ableton_detect_scale_ex() {
 # A detected scale maps to a DPI block by compositor family. GNOME/mutter hands XWayland
 # an integer-upscaled framebuffer, so it needs the matched set (LogPixels = 96 x ceil(scale)
 # plus IFEO dpiAwareness=2); every other probed compositor hands X11 clients an unscaled
-# framebuffer and expects application-side scaling — plain LogPixels = round(96 x scale),
+# framebuffer and expects application-side scaling: plain LogPixels = round(96 x scale),
 # no IFEO. Block tokens: 100 (LogPixels 96, no IFEO), fractional (192, IFEO=2),
 # dpi<N> (N, no IFEO), fractional<N> (N, IFEO=2). Scales outside 100-250% are refused.
 ableton_dpi_block_for_scale() {  # scale family -> block token

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-user step 1: install the Wine runtime, launcher, and desktop entries (reverse with uninstall.sh).
-# Does not touch the Wine prefix — that is setup-prefix.sh.
+# Does not touch the Wine prefix: that is setup-prefix.sh.
 set -euo pipefail
 # readelf and sha256sum output is parsed below; localised output breaks the
 # checks (issue #36).
@@ -45,18 +45,18 @@ trap cleanup EXIT
 # tarball: prefer dist/ (freshly built), else a release tarball dropped in root
 tarball="$(ls "$root"/dist/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
 [ -z "$tarball" ] && tarball="$(ls "$root"/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
-[ -n "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst found — run ./build.sh first, or drop a release tarball in $root/dist/"; exit 1; }
+[ -n "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst found: run ./build.sh first, or drop a release tarball in $root/dist/"; exit 1; }
 
 echo "== verify checksum =="
 if [ -f "$tarball.sha256" ]; then
     ( cd "$(dirname "$tarball")" && sha256sum -c "$(basename "$tarball").sha256" )
 else
-    echo "   (no .sha256 next to tarball — skipping)"
+    echo "   (no .sha256 next to tarball: skipping)"
 fi
 
 if pgrep -af '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' >/dev/null 2>&1 || \
    pgrep -af "$OPT/$NAME" >/dev/null 2>&1; then
-    echo "!! the installed Ableton Wine is still running — close Live, wait a few seconds, and rerun" >&2
+    echo "!! the installed Ableton Wine is still running: close Live, wait a few seconds, and rerun" >&2
     exit 1
 fi
 
@@ -100,7 +100,7 @@ if command -v readelf >/dev/null && command -v strings >/dev/null; then
         }
 else
     # binutils absent (e.g. stock SteamOS); the checksum above already covers content integrity.
-    echo "   (binutils not found — skipping deep binary checks)"
+    echo "   (binutils not found: skipping deep binary checks)"
 fi
 
 echo "== promote runtime with dated rollback =="
@@ -184,7 +184,7 @@ else
         "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
     echo "   installed $APPS/ableton-live.desktop ($live_name)"
 fi
-# The authorization handlers (ableton: URLs, .auz response files). They take
+# The authorisation handlers (ableton: URLs, .auz response files). They take
 # winemenubuilder's canonical names on purpose: a prefix where winemenubuilder
 # still runs (a Live beta in a scratch prefix, say) exports its own handler
 # over ours, pointing at stock wine and the wrong prefix. An entry that does
@@ -212,8 +212,8 @@ install -m644 "$root"/desktop/icons/scalable/mimetypes/*.svg "$ICONS/scalable/mi
 install -m644 "$root"/desktop/icons/symbolic/apps/*.svg "$ICONS/symbolic/apps/"
 gtk-update-icon-cache -q "$ICONS" 2>/dev/null || true
 
-echo "== register the authorization MIME types =="
-# .auz is the response file ableton.com serves for offline authorization. The
+echo "== register the authorisation MIME types =="
+# .auz is the response file ableton.com serves for offline authorisation. The
 # prefix side is registered by Live's installer; the host side is ours, since
 # winemenubuilder (which would export it) is disabled by setup-prefix.sh.
 mkdir -p "$HOME/.local/share/mime/packages"
@@ -230,11 +230,10 @@ if command -v xdg-mime >/dev/null 2>&1; then
         application/x-ableton-live-clip application/x-ableton-live-pack 2>/dev/null || true
 fi
 
-# Standalone Max 9 in the same prefix (installed with msiexec, see the
-# README). Only when present; rerun the installer after adding Max. The
-# winemenubuilder exports a stray run leaves behind point at stock wine
-# against the patched-runtime prefix and their MIME claims shadow ours;
-# they are removed.
+# Standalone Max 9 in the same prefix, only when present; rerun the
+# installer after adding Max. Removes the winemenubuilder exports a
+# stray default-prefix run leaves behind: they run stock wine against
+# the patched-runtime prefix and their MIME claims shadow ours.
 max_unix="$live_prefix/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
 if [ -f "$max_unix" ]; then
     echo "== install the Max 9 launcher =="
@@ -272,7 +271,7 @@ fi
 
 case ":$PATH:" in
     *":$BIN:"*) ;;
-    *) echo "!! note: $BIN is not on your PATH — add it or call ~/.local/bin/ableton-live directly" ;;
+    *) echo "!! note: $BIN is not on your PATH: add it or call ~/.local/bin/ableton-live directly" ;;
 esac
 
 promoted=0
