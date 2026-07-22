@@ -210,15 +210,14 @@ stdenv.mkDerivation rec {
   passthru.libPath = lib.makeLibraryPath buildInputs;
 
   # Smoke gate: the installed tree must boot a prefix and run a builtin.
+  # No copy-and-relocate: bin/wine hardcodes this store path anyway, so a
+  # copied tree would exec the original binary and prove nothing extra.
   doInstallCheck = true;
   installCheckPhase = ''
     echo "Smoke gate: verify wine runs from its installed path"
-    reloc=$(mktemp -d)
-    cp -a $out $reloc/wine
-    WINEPREFIX=$reloc/prefix WINEDEBUG=-all \
-      $reloc/wine/bin/wine cmd /c "echo smoke-ok" 2>/dev/null | grep -q smoke-ok
+    WINEPREFIX=$(mktemp -d)/prefix WINEDEBUG=-all \
+      $out/bin/wine cmd /c "echo smoke-ok" 2>/dev/null | grep -q smoke-ok
     echo "  smoke gate passed"
-    rm -rf $reloc
   '';
 
   meta = with lib; {
