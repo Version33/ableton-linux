@@ -55,7 +55,7 @@ case "$verdict" in
         exit 1 ;;
     *)
         echo "!! FAIL: Live never finished opening the driver within ${TIMEOUT}s" >&2
-        echo "!! (a hung 'Open: started' means the PipeWire graph never came up —" >&2
+        echo "!! (a hung 'Open: started' means the PipeWire graph never came up;" >&2
         echo "!!  check 'pw-metadata -n settings' for a forced clock rate)" >&2
         exit 1 ;;
 esac
