@@ -77,6 +77,19 @@ for required in \
     lib/wine/x86_64-unix/pipeasio.dll.so; do
     [ -s "$candidate/$required" ] || { echo "!! package is missing $required" >&2; exit 1; }
 done
+# ableton-linkd (native Ableton Link session anchor) is not part of the runtime
+# tree: the kit carries it in bin/, a repo checkout carries the pack-time build
+# in dist/. Its user unit ships next to the install scripts.
+linkd=""
+for f in "$here/../bin/ableton-linkd" "$root/dist/ableton-linkd"; do
+    if [ -f "$f" ]; then linkd="$f"; break; fi
+done
+[ -n "$linkd" ] || { echo "!! package is missing bin/ableton-linkd" >&2; exit 1; }
+linkd_unit=""
+for f in "$here/ableton-linkd.service" "$root/scripts/ableton-linkd.service"; do
+    if [ -f "$f" ]; then linkd_unit="$f"; break; fi
+done
+[ -n "$linkd_unit" ] || { echo "!! package is missing scripts/ableton-linkd.service" >&2; exit 1; }
 if [ -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || \
    [ -e "$candidate/lib/wine/i386-unix/libusb-1.0.so" ]; then
     echo "!! package unexpectedly contains a 32-bit Push 2 bridge" >&2
@@ -98,6 +111,22 @@ if command -v readelf >/dev/null && command -v strings >/dev/null; then
             echo "!! PipeASIO is not linked to host libpipewire-0.3.so.0" >&2
             exit 1
         }
+    # ableton-linkd must resolve against host C-runtime sonames only:
+    # -static-libstdc++ -static-libgcc keep libstdc++/libgcc_s out of
+    # DT_NEEDED (same loader-cleanliness rule as PipeASIO). Anything else,
+    # above all a shared libstdc++, means the pack-time flags were lost.
+    linkd_needed="$(readelf -d "$linkd" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
+    for so in $linkd_needed; do
+        case "$so" in
+            linux-vdso.so*|libm.so*|libc.so*|libpthread.so*|libatomic.so*|ld-linux*.so*) ;;
+            *) echo "!! ableton-linkd links an unexpected library: $so" >&2
+               exit 1 ;;
+        esac
+    done
+    if printf '%s\n' "$linkd_needed" | grep -q libstdc++; then
+        echo "!! ableton-linkd links a shared libstdc++ (needs -static-libstdc++)" >&2
+        exit 1
+    fi
 else
     # binutils absent (e.g. stock SteamOS); the checksum above already covers content integrity.
     echo "   (binutils not found: skipping deep binary checks)"
@@ -144,6 +173,16 @@ for f in "$here/learnheal.exe" "$root/tools/learnheal.exe"; do
         break
     fi
 done
+# ableton-linkd anchors the Ableton Link session natively so tempo and
+# timeline survive a Live restart (notes/ABLETON-WINE-LINK-FIRSTCLASS.md).
+# The launcher auto-starts it; setup-link.sh enables the user unit staged
+# next to it (never auto-enabled here: Link networking is opt-in).
+install -m755 "$linkd" "$HOME/.local/share/ableton-wine/ableton-linkd"
+install -m644 "$linkd_unit" "$HOME/.local/share/ableton-wine/ableton-linkd.service"
+# setup-link.sh is opt-in (sudo: multicast route, firewall, user unit) and runs
+# post-install from the share dir per README; it sits next to install.sh both
+# in the kit (scripts/) and in a repo checkout (scripts/).
+install -m755 "$here/setup-link.sh" "$HOME/.local/share/ableton-wine/setup-link.sh"
 
 # Record the kit version so a later installer can tell what it is updating
 # (the kit and the repo both carry VERSION at the root).

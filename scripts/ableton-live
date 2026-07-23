@@ -4,7 +4,8 @@
 # Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
-#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling).
+#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
+#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override).
 set -u
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -648,13 +649,14 @@ if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
     run=(chrt -r 10 wine)
 fi
 
-# Ableton Link bridge (optional): if jack_link is installed but not running
-# (e.g. the jack-link.service user unit is disabled), start it under PipeWire's
-# JACK layer so the Link session is anchored before Live launches; daemon mode
-# logs to ~/.log/jack_link/. See notes/ABLETON-WINE-LINK.md.
-if command -v jack_link >/dev/null 2>&1 && command -v pw-jack >/dev/null 2>&1 \
-    && ! pgrep -x jack_link >/dev/null 2>&1; then
-    pw-jack jack_link --daemon || echo "ableton-live: jack_link failed to start" >&2
+# Ableton Link session anchor (optional): if ableton-linkd is installed but
+# not running (e.g. the ableton-linkd.service user unit is disabled), start it
+# so the Link session is anchored before Live launches; daemon mode logs to
+# ~/.log/ableton-linkd/. ABLETON_LINKD overrides the binary path. See
+# notes/ABLETON-WINE-LINK.md.
+LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
+if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
+    "$LINKD" --daemon || echo "ableton-live: ableton-linkd failed to start" >&2
 fi
 
 # Follow Live-theme changes while it runs (see theme_watch_loop above). Spawned

@@ -12,6 +12,12 @@ for d in "$OPT"-rollback-* "$OPT".failed-*; do
 done
 rm -f  "$BIN"        && echo "removed $BIN"
 rm -f  "$BIN".rollback-*
+# Stop and drop the Ableton Link session anchor's user unit (setup-link.sh
+# installs it under ~/.config); the daemon binary goes with share/ableton-wine.
+systemctl --user disable --now ableton-linkd.service 2>/dev/null || true
+rm -f  "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ableton-linkd.service" \
+    && echo "removed ~/.config/systemd/user/ableton-linkd.service"
+systemctl --user daemon-reload 2>/dev/null || true
 rm -rf "$HOME/.local/share/ableton-wine" && echo "removed ~/.local/share/ableton-wine"
 rm -f  "$APPS/ableton-live.desktop" "$APPS/wine-protocol-ableton.desktop" "$APPS/wine-extension-auz.desktop"
 rm -f  "$APPS/max9.desktop" "$APPS/wine-protocol-c74max.desktop" "$HOME/.local/bin/max9"

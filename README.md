@@ -123,20 +123,33 @@ Like all other MIDI and Audio devices, Push will survive in-session disconnects.
 
 ## Ableton Link
 
-Link syncs tempo, beat and phase between apps and devices on your local network (UDP port 20808). Support is new and experimental. Two complementary setups, both applied by `./scripts/setup-link.sh` from a checkout of this repository (optional, safe to re-run, uses sudo for the network and firewall changes):
+Ableton Link syncs tempo, beat and phase between apps and devices on your local network (UDP port 20808). Support is built in: the installer ships a small native helper, `ableton-linkd`, which joins the Link session on your machine and anchors it. The shared tempo survives Live restarts, and native Linux apps such as Bitwig, Ardour and SuperCollider can sync with Live. The anchor is passive: it never sets Live's tempo. Live joins the session as its own peer.
 
-- Option A: Live joins directly. The script finds your network interface (refusing VPNs; Link does not work over one), adds the network route Link's traffic needs, and opens UDP port 20808 in your firewall. Then enable the Link toggle in Live (Preferences → Link, Tempo & MIDI → "Show Link Toggle").
-- Option B: native bridge (recommended). [jack_link](https://github.com/rncbc/jack_link) is a small helper that joins the Link session natively on your machine, so the session survives Live restarts and native Linux apps can sync too. Build jack_link and create the `jack-link.service` user unit per [notes/ABLETON-WINE-LINK.md](notes/ABLETON-WINE-LINK.md), then re-run the script to enable it. The launcher also starts the bridge when it is installed but not already running.
+One-time setup (optional, safe to re-run, uses sudo for the network and firewall changes):
 
-Your router must forward multicast, and Link never crosses VPNs. Option A is unverified under Wine: if Live's peer count stays at zero, the bridge still joins and syncs the session.
+```
+sudo ~/.local/share/ableton-wine/setup-link.sh
+```
+
+(from a checkout of this repository: `sudo ./scripts/setup-link.sh`). The script finds your network interface, and refuses VPNs because Link does not work over them. It adds the network route Link's traffic needs, with a hook so the route survives reboots. It opens UDP port 20808 in your firewall, and enables the `ableton-linkd.service` user unit so the anchor runs from login. The launcher also starts the anchor on every Live start.
+
+Then enable Link in Live: Preferences → Link, Tempo & MIDI → "Show Link Toggle", and click the control-bar indicator so it shows Enabled. Your router must forward multicast, and Link never crosses VPNs.
+
+To verify, with Link Enabled somewhere (Live, or any Link app on the network):
+
+```
+~/.local/share/ableton-wine/ableton-linkd --probe 10
+```
+
+It prints `peers: N` and `tempo: T.T`, and exits 0 when at least one peer is in the session. Details and triage: [notes/ABLETON-WINE-LINK.md](notes/ABLETON-WINE-LINK.md).
 
 Not working? Check these, in order:
 
 - [ ] `ip route show 224.0.0.0/4` lists a route via the physical LAN interface, not a VPN device
 - [ ] Firewall: `sudo ufw status | grep 20808` or `firewall-cmd --list-ports` shows `20808/udp`
-- [ ] `sudo tcpdump -i <iface> -n udp port 20808` shows datagrams to `224.76.78.75.20808` once any peer is active
-- [ ] `pgrep -a jack_link` shows the bridge running, and `~/.log/jack_link/` records session activity
-- [ ] Live's Control-Bar Link indicator is enabled and reports a peer count ≥ 1
+- [ ] `pgrep -a ableton-linkd` shows the anchor running, and `~/.log/ableton-linkd/` records session activity
+- [ ] `~/.local/share/ableton-wine/ableton-linkd --probe 10` prints `peers: 1` or more and exits 0
+- [ ] Live's Control-Bar Link indicator shows Enabled and reports a peer count ≥ 1
 - [ ] A tempo change on any peer propagates to all others
 
 ## Lower latency (optional)

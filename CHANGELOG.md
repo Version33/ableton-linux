@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.07.23.1
+
+- Ableton Link support is now built in (notes/ABLETON-WINE-LINK.md). The installer ships ableton-linkd, a small native daemon built from the vendored Ableton Link SDK (Link 4.0, GPLv2 or later; the tarball ships in the kit as the corresponding source). It joins the Link session on your machine, holds the shared tempo and timeline across Live restarts, relays Start Stop Sync, and lets native Linux apps join the same session. The daemon is strictly passive: it never sets Live's tempo, and Live joins the session as its own peer. It is also the probe this stack never had: `ableton-linkd --probe 10` prints the peer count and the session tempo, and exits 0 only when it sees a peer.
+- New tool: linkprobe.exe gives a Wine-side verdict on Link networking. It binds UDP port 20808, joins the 224.76.78.75 multicast group, and reports TX OK, RX OK and PEERS: n. That settles whether Wine's multicast path works, before Live is involved and independently of it.
+- setup-link.sh now ships in the installer and does the whole host setup in one run. It persists the multicast route with a NetworkManager dispatcher hook it installs itself, installs and enables the ableton-linkd.service user unit, and no longer fails when you only wanted the networking half. Nobody has to build the jack_link bridge by hand any more; upstream jack_link remains usable for JACK apps. The launchers start the anchor on every Live start (ABLETON_LINKD overrides the binary).
+- Display-scale detection now covers COSMIC, System76's desktop. cosmic-randr reports the scale of the monitor Live renders on, and COSMIC uses the same DPI policy as KDE, sway and Hyprland. Contributed by ClickSentinel (pull request 54).
+
 ## 2026.07.22.1
 
 - Show in Explorer opens your file manager with the file selected, through the same XDG portal the open/save dialogs use, instead of Wine's explorer (issue 41, Wine patch 0043, notes/ABLETON-WINE-SHOW-IN-EXPLORER.md). Wine's explorer stays the fallback when the portal is missing or the portal policy is never. New tool: showexp.c.
