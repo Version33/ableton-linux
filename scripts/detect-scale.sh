@@ -69,13 +69,9 @@ _ads_cosmic() {
     local out prim
     out="$(timeout 5 cosmic-randr list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
     [ -n "$out" ] || return 1
-    # One "<output> (enabled|disabled)" block per monitor. A disabled output (e.g. a
-    # closed laptop lid with an external monitor attached) still reports a Scale on
-    # newer cosmic-randr, so disabled blocks are excluded entirely rather than just
-    # deprioritized -- their scale must never be picked, including as the fallback.
-    # The enabled block with "Xwayland primary: true" is the one Ableton actually
-    # renders on; older COSMIC doesn't emit the "Xwayland primary" line at all, so the
-    # fallback is the first *enabled* block with a scale.
+    # One "<output> (enabled|disabled)" block per monitor. Disabled outputs (e.g. a
+    # closed laptop lid) can still report a Scale, so they're excluded entirely -
+    # never picked as primary, never as the fallback (older COSMIC has no primary line).
     prim="$(printf '%s\n' "$out" | awk '
         /^[A-Za-z0-9_-]+ \(/ { blk++; en[blk] = ($0 ~ /\(enabled\)/) }
         blk && en[blk] {
