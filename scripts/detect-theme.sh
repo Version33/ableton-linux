@@ -11,7 +11,7 @@
 _adt_portal() {
     local out val=""
     if command -v gdbus >/dev/null 2>&1; then
-        # serializes as "(<<uint32 1>>,)"
+        # serialises as "(<<uint32 1>>,)"
         out="$(timeout 5 gdbus call --session \
             --dest org.freedesktop.portal.Desktop \
             --object-path /org/freedesktop/portal/desktop \
@@ -137,8 +137,8 @@ ableton_ask_color() {   # <ask-file> <key> -> "R G B"
 # prints the .ask Live renders with. Preferences.cfg is an opaque binary whose
 # values are not anchored to their tags, but a picked theme is stored as its plain
 # name ("Catppuccin Auto"), so the newest cfg's UTF-16 strings (via `strings`,
-# binutils) are matched against the themes actually installed — the factory Themes
-# dir and the User Library — and the last match wins. No match (the stock Default
+# binutils) are matched against the themes actually installed: the factory Themes
+# dir and the User Library: and the last match wins. No match (the stock Default
 # theme, or no binutils) falls back to the follow-system default pair; the Tone and
 # Contrast variant enums are not recoverable from the binary, so default-theme
 # users get Neutral Medium. ABLETON_TOPBAR_MODE=system or a hex pair overrides.

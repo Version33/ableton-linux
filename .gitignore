@@ -12,6 +12,7 @@ wine-d2d1-nspa-src/
 pteq_win.log
 *.exe
 !/tools/setsyscolors.exe
+!/tools/linkprobe.exe
 *.exe.so
 *.so
 *.dll
@@ -19,6 +20,7 @@ pteq_win.log
 uclick
 fakectl
 jacklinkd
+/tools/ableton-linkd
 xact
 xmon
 xrec

@@ -2,7 +2,8 @@
 # Max 9 launcher for the patched Wine stack: same runtime and prefix as
 # ableton-live, so standalone Max, Max for Live editing and PipeASIO all
 # share one wineserver. Args: Max documents as unix paths, or c74max: URLs.
-# Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off.
+# Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off,
+#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor).
 set -u
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
@@ -37,4 +38,13 @@ for a in "$@"; do
     fi
     args+=("$a")
 done
+
+# Ableton Link session anchor (optional): same auto-start as the ableton-live
+# launcher. Start ableton-linkd if installed but not running, so the Link
+# session is anchored before Max launches. ABLETON_LINKD overrides the path.
+LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
+if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
+    "$LINKD" --daemon || echo "max9: ableton-linkd failed to start" >&2
+fi
+
 exec "${run[@]}" "$MAX_EXE" ${args[@]+"${args[@]}"}
