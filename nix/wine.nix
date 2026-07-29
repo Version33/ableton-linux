@@ -46,7 +46,7 @@
 
 stdenv.mkDerivation rec {
   pname = "wine-d2d1-nspa";
-  version = "11.11";
+  version = "11.13";
 
   src = wineSrc;
 
@@ -221,7 +221,7 @@ stdenv.mkDerivation rec {
   '';
 
   meta = with lib; {
-    description = "Wine 11.11 with D2D1-DCOMP + NSPA fixes for Ableton Live 12";
+    description = "Wine 11.13 with D2D1-DCOMP + NSPA fixes for Ableton Live 12";
     platforms = [ "x86_64-linux" ];
     license = licenses.lgpl21Plus;
   };

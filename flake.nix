@@ -8,9 +8,9 @@
     pkgs = nixpkgs.legacyPackages.${system};
   in {
     packages.${system} = rec {
-      # The patched Wine 11.11 tree (D2D1-DCOMP + NSPA fixes, ntsync)
+      # The patched Wine 11.13 tree (D2D1-DCOMP + NSPA fixes, ntsync)
       wine-d2d1-nspa = pkgs.callPackage ./nix/wine.nix {
-        wineSrc = ./vendor/wine-base-7ea0c8b7.tar.zst;
+        wineSrc = ./vendor/wine-base-5c23dd1c.tar.zst;
         patchesDir = ./patches;
         ntsyncUapi = ./vendor/ntsync-uapi;
       };
@@ -22,10 +22,17 @@
         pipeasioPatches = ./patches/pipeasio;
       };
 
-      # Combined runtime: Wine + PipeASIO + launcher scripts
+      # The Ableton Link session anchor the launcher and setup-link.sh drive
+      ableton-linkd = pkgs.callPackage ./nix/ableton-linkd.nix {
+        daemonSrc = ./tools/ableton-linkd.cpp;
+        linkSrc = ./vendor/link-4.0.tar.zst;
+        linkSha256 = ./vendor/link.sha256;
+      };
+
+      # Combined runtime: Wine + PipeASIO + Link anchor + launcher scripts
       ableton-wine = pkgs.callPackage ./nix/ableton-wine.nix {
         wine = wine-d2d1-nspa;
-        inherit pipeasio;
+        inherit pipeasio ableton-linkd;
       };
 
       default = ableton-wine;
@@ -50,7 +57,7 @@
       setup-link = {
         type = "app";
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-link.sh";
-        meta.description = "Set up Ableton Link networking (multicast route + firewall) and enable the jack_link bridge";
+        meta.description = "Set up Ableton Link networking (firewall port 20808) and enable the ableton-linkd user service";
       };
     };
   };

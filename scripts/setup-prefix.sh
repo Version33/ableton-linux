@@ -57,7 +57,7 @@ case "${ABLETON_LIVE_VERSION:-12}" in
 esac
 
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.11}"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG=-all
@@ -234,7 +234,7 @@ check_mutter_knob() {  # warn when mutter's xwayland-native-scaling disagrees wi
 # advertised it. The idle CPU cost is back until the Wine-side fix lands; see
 # notes/ABLETON-WINE-APC-COALESCING.md.
 strip_options_txt() {
-    local line="-DontCombineAPCs" prefs f tmp
+    local line="$1" prefs f tmp
     shopt -s nullglob
     for prefs in "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences; do
         f="$prefs/Options.txt"
@@ -388,6 +388,9 @@ else
     kit_root_or_die
     export W_CACHE_OVERRIDE=""            # unused
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
+    # Never set WINETRICKS_SUPER_QUIET: it silences w_die, so a fatal
+    # winetricks error exits with no message at all (issue #28).
+    # Use the bundled payload cache if present (mfc42 downloads if not vendored).
     # Per-verb symlinks, not one dir link: the vendored cache may be read-only
     # (nix store), and verbs missing from it must still be able to download.
     tmpc=""
@@ -632,7 +635,14 @@ update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" 2>/d
 settle
 
 echo "== [5b/6] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
-strip_options_txt
+strip_options_txt "-DontCombineAPCs"
+
+# -_ForceGdiBackend disables Live's GPU renderer. Early prefixes carried it
+# (inherited from pre-repo setups); with the d2d1 base fork Live's GPU
+# renderer works, removes the WebView2 pane flicker, and drops idle CPU.
+# See notes/ABLETON-WINE-GPU-RENDERER.md.
+echo "== [5c/6] remove -_ForceGdiBackend so Live uses its GPU renderer =="
+strip_options_txt "-_ForceGdiBackend"
 
 echo "== [6/6] Ableton Live =="
 # Runs the USER'S OWN Ableton download — this repo ships no Live payload and
@@ -760,9 +770,8 @@ $step1
 
   2. Launch:            ableton-live
   3. Authorize Live with your own account (binds to this prefix's MachineGuid).
-  4. In Live: Options > uncheck "Auto-Scale Plugin Window"
-     (prevents a plugin-window resize loop with DPI-unaware plugin UIs).
-  5. Audio: Preferences > Audio > Driver Type: ASIO > Device: PipeASIO.
+  4. Audio: Settings/Preferences > Audio > Driver Type: ASIO >
+     Audio Device: PipeASIO.
      PipeASIO is a native PipeWire client: no JACK layer involved.
 ────────────────────────────────────────────────────────────────────────
 EOF

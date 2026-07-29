@@ -4,6 +4,7 @@
   removeReferencesTo,
   wine,
   pipeasio,
+  ableton-linkd,
   cabextract,
   unzip,
   # Pin PipeASIO settings, e.g.
@@ -171,15 +172,36 @@ stdenv.mkDerivation {
         install -m644 ${../tools/learnheal.exe}          $out/share/ableton-wine/learnheal.exe
         install -m755 ${../scripts/setup-realtime.sh}    $out/share/ableton-wine/scripts/setup-realtime.sh
         install -m755 ${../scripts/setup-link.sh}        $out/share/ableton-wine/scripts/setup-link.sh
-        # setup-link.sh points at this note; ship it so the pointer resolves.
-        mkdir -p $out/share/ableton-wine/notes
-        install -m644 ${../notes/ABLETON-WINE-LINK.md}   $out/share/ableton-wine/notes/ABLETON-WINE-LINK.md
         # install.sh / uninstall.sh are tarball tools — not shipped.
+
+        # -- Ableton Link session anchor --
+        # install.sh stages the daemon and its user unit in
+        # ~/.local/share/ableton-wine; both launchers and setup-link.sh look
+        # there and have no $WINE_ROOT fallback for them (unlike learnheal.exe),
+        # so repoint every default at the store. ABLETON_LINKD still overrides.
+        # The unit must sit next to the daemon: setup-link.sh reads it from
+        # dirname "$linkd" before falling back to its own directory.
+        install -m755 ${ableton-linkd}/bin/ableton-linkd \
+          $out/share/ableton-wine/ableton-linkd
+        install -m644 ${../scripts/ableton-linkd.service} \
+          $out/share/ableton-wine/ableton-linkd.service
+        for f in libexec/ableton-live libexec/max9 \
+                 share/ableton-wine/scripts/setup-link.sh; do
+          substituteInPlace $out/$f \
+            --replace-fail '$HOME/.local/share/ableton-wine/ableton-linkd' \
+                           "$out/share/ableton-wine/ableton-linkd"
+        done
+        # %h/... in the shipped unit resolves to the user's home, where nothing
+        # is installed; setup-link.sh copies this file verbatim into
+        # ~/.config/systemd/user, so the ExecStart has to name the store path.
+        substituteInPlace $out/share/ableton-wine/ableton-linkd.service \
+          --replace-fail '%h/.local/share/ableton-wine/ableton-linkd' \
+                         "$out/share/ableton-wine/ableton-linkd"
 
         # Point default WINE_ROOT (and the launcher path) at the store.
         for script in setup-prefix.sh check-live-audio.sh check-ntsync.sh; do
           substituteInPlace $out/share/ableton-wine/scripts/$script \
-            --replace-fail '$HOME/.local/opt/wine-d2d1-nspa-11.11' "$out"
+            --replace-fail '$HOME/.local/opt/wine-d2d1-nspa-11.13' "$out"
         done
         substituteInPlace $out/share/ableton-wine/scripts/check-live-audio.sh \
           --replace-fail '$HOME/.local/bin/ableton-live' "$out/bin/ableton-live"
@@ -249,6 +271,16 @@ stdenv.mkDerivation {
     if grep -qF '@out@' $out/bin/ableton-live; then echo "launch shim has unsubstituted @out@ tokens"; exit 1; fi
     grep -qF "exec \"$out/libexec/ableton-live\"" $out/bin/ableton-live \
       || { echo "launch shim does not exec the launcher"; exit 1; }
+    # Both launchers, setup-link.sh and the unit must all name the staged
+    # daemon: a missed substitution leaves Link silently unanchored here.
+    [ -x $out/share/ableton-wine/ableton-linkd ] \
+      || { echo "ableton-linkd is not staged"; exit 1; }
+    for f in libexec/ableton-live libexec/max9 \
+             share/ableton-wine/scripts/setup-link.sh \
+             share/ableton-wine/ableton-linkd.service; do
+      grep -qF "$out/share/ableton-wine/ableton-linkd" $out/$f \
+        || { echo "$f does not point at the staged ableton-linkd"; exit 1; }
+    done
     echo "PipeASIO registration gate"
     gate=$(mktemp -d)
     export WINEPREFIX=$gate/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
@@ -265,9 +297,10 @@ stdenv.mkDerivation {
   '';
 
   meta = {
-    description = "Ableton Live runtime — patched Wine 11.11 + PipeASIO + launcher";
+    description = "Ableton Live runtime — patched Wine 11.13 + PipeASIO + Link anchor + launcher";
     mainProgram = "ableton-live"; # lets `nix run` work on .override variants too
     platforms = [ "x86_64-linux" ];
-    license = with lib.licenses; [ lgpl21Plus gpl3Plus ]; # wine LGPL-2.1+, pipeasio GPL-3.0+
+    # wine LGPL-2.1+, pipeasio GPL-3.0+, ableton-linkd GPL-2.0+ (Link SDK)
+    license = with lib.licenses; [ lgpl21Plus gpl3Plus gpl2Plus ];
   };
 }

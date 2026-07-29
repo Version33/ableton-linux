@@ -4,7 +4,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-NAME="wine-d2d1-nspa-11.11"
+NAME="wine-d2d1-nspa-11.13"
 SERIES="$root/patches/SERIES.sha256"
 
 say()  { printf '%s\n' "$*"; }
@@ -70,6 +70,8 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 # titles and notes/); a gap is fine if documented here, a dropped patch is not.
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
+    [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
+    [0054]="reserved 2026-07-29 for PR 77's language-fallback font patch"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -125,6 +127,8 @@ FINGERPRINTS='
 0039|ascii|lib/wine/x86_64-unix/winex11.so|is mapped, refusing to make it managed
 0043|ascii|lib/wine/x86_64-unix/comdlg32.so|org.freedesktop.portal.OpenURI
 0043|ascii|lib/wine/x86_64-windows/shell32.dll|__wine_portal_show_item
+0045|ascii|lib/wine/x86_64-windows/ole32.dll|revoke for another process windows is disabled
+0055|wide|lib/wine/x86_64-windows/dxgi.dll|WINE_DISABLE_GL_PRESENT
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -159,6 +163,15 @@ STAMP_ONLY='
 0037|logic-only (MWM_FUNC_CLOSE advertised unconditionally; adds no string literal)
 0040|logic-only (DPI-scaled menu-bar band; amends 0029 arithmetic)
 0042|logic-only (sub-scale WM config-rounding alias; literals are TRACE-only)
+0046|logic-only (frame-latency-as-semaphore fix; no new string literal)
+0047|logic-only (round_dpi() wrap; no new string literal)
+0048|configure/build-gate fix only; effect verified structurally (libusb-1.0.dll presence) and by 0032 fingerprint, not by a literal of its own
+0049|logic-only (grayed-menu-item bevel dropped entirely; no new string literal)
+0050|logic-only (per-process sys-color cache reset on WM_SYSCOLORCHANGE; no new string literal)
+0051|logic-only (RDW_FRAME added to the SetSysColors redraw flags; no new string literal)
+0052|logic-only (DT_HIDEPREFIX on the menu bar DrawTextW call; no new string literal)
+0056|ascii|lib/wine/x86_64-windows/dxgi.dll|Re-blit skipped (hidden ancestry)
+0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
