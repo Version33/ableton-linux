@@ -115,6 +115,17 @@ Live 11 works as it does with the `.run` installer:
 ABLETON_LIVE_VERSION=11 nix run github:shibco/ableton-linux#setup-prefix
 ```
 
+Live 11 bundles Max for Live 8, which crashes on its *second* start if it finds
+a stale preferences file. After Live 11's first launch, run the fixup once:
+
+```bash
+nix run github:shibco/ableton-linux#setup-prefix -- --post-first-run
+```
+
+It moves that preferences file aside so Max regenerates it, never deletes it, and
+is safe to re-run. It needs no Wine and skips every other setup step. Live 12
+does not need it.
+
 #### NixOS configuration
 
 ```nix
