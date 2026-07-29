@@ -11,6 +11,9 @@ export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
+# Same GL-present default as scripts/ableton-live: patch 0055's GL path presents
+# top-level swapchain windows at the wrong vertical origin on niri/XWayland.
+export WINE_DISABLE_GL_PRESENT="${WINE_DISABLE_GL_PRESENT:-1}"
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}mscoree,mshtml="

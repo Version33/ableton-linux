@@ -96,6 +96,35 @@ These measurements come from one machine (AMD Navi 31, COSMIC/Wayland
 via XWayland). Confirmation on Intel or NVIDIA hardware and on a
 non-Wayland session is still open.
 
+### The direct path misplaces the frame on niri (2026-07-29)
+
+On niri (scrollable-tiling Wayland compositor, XWayland, AMD/radv) the
+direct path presents Live's frame at the wrong vertical origin. The
+image sits about 476 px low: a black band fills the top of the client
+area, the bottom of the mixer is clipped off-screen, and the whole UI
+looks displaced. Input hit-testing stays on the real layout, so
+clicking works where a control *should* be, not where it is drawn.
+That split — correct geometry, misplaced pixels — puts the fault in the
+present blit, not in Live's layout or the DPI policy.
+
+Measured on a 3840x2160 output at scale 1.25 (`LogPixels` 120). The X11
+window was 3840x2045 and its client child 3840x2017 at +0+28, both
+correct. `WINE_DISABLE_GL_PRESENT=1` renders correctly and logs `Using
+GDI present` once; the same build without it logs nothing and misplaces
+the frame.
+
+Unconfirmed, but the likely mechanism is that a tiling compositor
+resizes the window immediately after mapping, and the direct path
+bottom-aligns the pre-resize buffer in the new drawable (GL's origin is
+bottom-left, X11's is top-left). If that holds, every tiling
+compositor is affected and every floating one is not, which matches
+COSMIC being clean above. Untested on sway, Hyprland and i3.
+
+Until this is fixed, `scripts/ableton-live` and `scripts/max9` default
+`WINE_DISABLE_GL_PRESENT` to `1`, so the stack keeps the copy path and
+its bandwidth cost. Set `WINE_DISABLE_GL_PRESENT=0` to opt back into
+the direct path on a compositor where it renders correctly.
+
 ## Related
 
 - [Diagnosis narrative](ABLETON-WINE-GPU-RENDERER-WEBVIEW2-DIAGNOSIS.md)

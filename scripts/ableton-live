@@ -16,6 +16,14 @@ export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG="${WINEDEBUG:--all}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
+# Patch 0055 prefers wined3d's GL present path for top-level swapchain windows.
+# On niri (scrollable-tiling Wayland compositor, XWayland) that presents Live's
+# frame at the wrong vertical origin: the image sits ~476px low, a black band
+# fills the top of the client area and the bottom is clipped, while input
+# hit-testing stays on the real layout. Default to the GDI present path until
+# that is fixed; WINE_DISABLE_GL_PRESENT=0 opts back into the GL path (0055
+# reads the value, so 0 is not "disabled"). See notes/ABLETON-WINE-GPU-RENDERER.md.
+export WINE_DISABLE_GL_PRESENT="${WINE_DISABLE_GL_PRESENT:-1}"
 # Report host mount points as plain dirs (patch 0033); Live's browser treats
 # junctions without reparse data as unresolvable and skips them.
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
