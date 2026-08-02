@@ -72,6 +72,7 @@ for required in \
     lib/wine/x86_64-unix/libusb-1.0.so \
     lib/wine/x86_64-unix/comdlg32.so \
     lib/wine/x86_64-unix/winealsa.so \
+    lib/wine/x86_64-unix/winegstreamer.so \
     lib/wine/x86_64-windows/pipeasio64.dll \
     lib/wine/x86_64-windows/pipeasio.dll \
     lib/wine/x86_64-unix/pipeasio64.dll.so \
@@ -110,6 +111,11 @@ if command -v readelf >/dev/null && command -v strings >/dev/null; then
     readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | \
         grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null || {
             echo "!! PipeASIO is not linked to host libpipewire-0.3.so.0" >&2
+            exit 1
+        }
+    readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | \
+        grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null || {
+            echo "!! winegstreamer is not linked to host libgstreamer-1.0.so.0" >&2
             exit 1
         }
     # ableton-linkd must resolve against host C-runtime sonames only.
@@ -312,6 +318,13 @@ case ":$PATH:" in
     *":$BIN:"*) ;;
     *) echo "!! note: $BIN is not on your PATH: add it or call ~/.local/bin/ableton-live directly" ;;
 esac
+
+# winegstreamer resolves against the host GStreamer at runtime (issue #44).
+# Live runs without it (wav/aiff), so this is a note, not a failure.
+# no grep -q: under pipefail it SIGPIPEs ldconfig and falsely fires this note
+if ! ldconfig -p 2>/dev/null | grep 'libgstreamer-1\.0\.so\.0' >/dev/null; then
+    echo "!! note: no host libgstreamer-1.0.so.0 found: mp3 and video import will not work until GStreamer (with its base and good plugin sets) is installed"
+fi
 
 promoted=0
 trap - EXIT
