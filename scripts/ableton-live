@@ -16,7 +16,9 @@ WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
-export WINEDEBUG="${WINEDEBUG:--all}"
+# Keep the winediag channel on: it carries only rare one-line notices that a
+# person should read, such as the present-fallback warning from patch 0071.
+export WINEDEBUG="${WINEDEBUG:--all,+winediag}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 # M4L child visibility otherwise makes winex11 detach and reattach Live's whole

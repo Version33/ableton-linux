@@ -96,7 +96,7 @@ and keeps the direct path.
 To confirm which path a build uses, start Live with
 `WINEDEBUG=fixme+all,err+all` and count the message `Using GDI present`
 in the log. One occurrence means the copy path. Zero means the direct
-path. The launcher sets `WINEDEBUG=-all` by default, so pass
+path. The launcher sets `WINEDEBUG=-all,+winediag` by default, so pass
 `WINEDEBUG` explicitly. Turn tracing off when measuring bandwidth,
 because the log's own writes count toward `/proc/<pid>/io`.
 
@@ -178,6 +178,60 @@ measurement. With 0059 there is nothing to trade: the bar is gone and
 the direct path survives. 0058 stays in as the safety net, silent, and
 as the assertion that the two contexts now agree.
 
+### The fallback now reports itself; patch 0071 counts it (2026-08-05)
+
+The section above calls the 0058 gate silent. Patch 0071 supersedes
+that. The gate now counts its own decisions and reports a sustained
+fallback.
+
+The reason is the row in the table above. A machine on the copy path
+loses about one processor core. The screen stays correct. The user
+feels a slow computer and sees no cause. Before patch 0071, the only
+signs were one FIXME line and some TRACE lines. The launcher hides
+both. A swapchain could stay on the copy path for a full session, and
+no record existed.
+
+Patch 0071 adds counters to each swapchain. A swapchain is the set of
+frame buffers that Wine keeps for one window. The counters record: the
+number of gate decisions, the number of fallback frames, the longest
+unbroken run of fallback frames, and the longest run that repeats one
+identical pair of rectangles.
+
+The repeated pair is the test that separates a window resize from a
+real fault. During a resize, the window size changes on every frame,
+so the two compared rectangles also change on every frame. A
+persistent fault compares the same two rectangles on every frame. When
+the same pair repeats for 120 frames, about two seconds, the gate
+reports a fault. A second rule covers faults that alternate between
+rectangle pairs: when more than half of the frames in a five-second
+window fall back, and this happens in two windows in a row, the gate
+also reports a fault.
+
+The report prints once for each swapchain and has two parts. Two
+`ableton-wine:` lines always print, on every WINEDEBUG setting. They
+name the symptom and ask the user to open an issue. One
+`err:winediag:` line carries the evidence: both rectangles, the
+backbuffer size, both DPI awareness contexts, the window DPI, the
+window styles, the swapchain flags, the GPU name, and the session type
+and desktop from the host environment. The line stays on one line so a
+user can copy it whole into an issue. The launchers now set
+`WINEDEBUG=-all,+winediag`, which keeps all debug output off and lets
+only these rare notices through. When Wine destroys a swapchain that
+ever fell back, it prints one summary line with the totals, so a long
+session leaves a record even when nobody watched it.
+
+Status on 2026-08-05: the patch compiles clean and the built
+`wined3d.dll` contains both audit fingerprints. Runtime verification
+is pending. The planned checks are:
+
+1. Build with the 0059 `texture.c` hunk reverted. Set the prefix to
+   125%. Start Live and move the mouse over the window. The warning
+   must appear within about ten seconds.
+2. On a normal build at 125%, drag a window edge for ten seconds. The
+   warning must not appear.
+3. On a normal build, run a full session. The log must show no new
+   lines, and the destroy summary must not appear.
+
 ## Device identification (added 2026-07-30, updated 2026-08-01, issue 84)
 
 Live checks the graphics card before it enables the GPU renderer. It
@@ -216,6 +270,7 @@ text.
 - [Patch 0053](../patches/0053-winex11-export-the-app-minimum-tracking-size-as-PMin.patch)
 - [Patch 0055](../patches/0055-dxgi-prefer-GL-present-for-top-level-swapchain-devic.patch)
 - [Patch 0057](../patches/0057-wined3d-add-Intel-graphics-devices-from-Ice-Lake-to-.patch)
+- [Patch 0071](../patches/0071-wined3d-count-and-report-sustained-present-size-fall.patch)
 - Resize trace from the diagnosis session:
   `~/Projects/Code/ableton/live-resize-trace-gpu-20260727.log`
   (machine-local)
