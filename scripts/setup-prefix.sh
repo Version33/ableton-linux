@@ -276,6 +276,20 @@ echo "== [1/5] initialise prefix at $WINEPREFIX =="
 # never returns. Live needs neither - ableton-live and max9 already disable both on every
 # launch - so disable them here and wineboot stops asking.
 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot -u
+# A prefix that installed Live before 2026.08.04.1 carries the Ableton USB Audio driver's
+# tray app (Thesycon's tusbaudiocplapp.exe). wineboot's Run-key pass relaunches it, it never
+# exits, and the wineserver -w below then waits on it until the user closes it by hand (the
+# --update half of issue #111). Stop the process and delete its autostart value, wherever the
+# driver registered it, so this update and every later prefix boot come up clean.
+wine taskkill /f /im tusbaudiocplapp.exe >/dev/null 2>&1 || true
+for run_key in 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' \
+               'HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run'; do
+    (wine reg query "$run_key" 2>/dev/null || true) | \
+        sed -n 's/^    \(.*\)    REG_[A-Z_]*    .*tusbaudiocplapp.*/\1/Ip' | \
+        while IFS= read -r run_value; do
+            wine reg delete "$run_key" /v "$run_value" /f >/dev/null 2>&1 || true
+        done
+done
 "$WINESERVER" -w
 
 if [ "$refresh" -eq 1 ]; then
