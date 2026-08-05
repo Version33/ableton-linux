@@ -638,6 +638,52 @@ wine reg query "$push2_key" /v libusb-1.0
 # still runs and still writes the backtrace to stderr.
 wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f
 
+# That suppression still leaves Live 11's installer trying the driver: its WiX Burn bundle has
+# no Inno-style /MERGETASKS, and its InstallAudioDriver variable is not command-line
+# overridable, so the flags that skip the driver on Live 12 cannot reach it. The bundle does
+# guard the package with 'InstalledPush3AudioDriverVersion <= v5.68.0', fed by an MSI product
+# search on the driver's UpgradeCode. Register a placeholder driver at version 99.0.0 and the
+# bundle plans the package out itself: tlsetupfx.exe never runs, no failure is logged, and the
+# wizard hides its driver checkbox (shown only at v0.0.0.0). A Windows USB kernel driver
+# cannot load under Wine and audio is PipeASIO, so nothing real is lost. Live 12's Inno
+# installer never consults MSI product state; these keys are inert there. Both UpgradeCodes
+# paths are written: CurrentVersion\Installer is where Wine's MsiEnumRelatedProducts looks,
+# Classes\Installer is where Windows' would.
+# GUIDs are MSI packed form: 86C5CFEA... is the driver UpgradeCode
+# {AEFC5C68-0264-4E30-9685-28712A91CF4E}; 16A75B0B... is the placeholder ProductCode
+# {B0B57A61-11E0-4A2E-9A11-AB1E70201126}, invented for this registration.
+seed_reg="$(mktemp)"
+cat > "$seed_reg" <<'EOF'
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4]
+"16A75B0B0E11E2A4A911BAE107021162"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4]
+"16A75B0B0E11E2A4A911BAE107021162"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162]
+"ProductName"="Ableton Push USB Audio Driver (ableton-linux placeholder)"
+"PackageCode"="16A75B0B0E11E2A4A911BAE107021162"
+"Version"=dword:63000000
+"Language"=dword:00000409
+"Assignment"=dword:00000001
+"AdvertiseFlags"=dword:00000184
+"InstanceType"=dword:00000000
+"AuthorizedLUAApp"=dword:00000000
+"DeploymentFlags"=dword:00000003
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162\InstallProperties]
+"DisplayName"="Ableton Push USB Audio Driver (ableton-linux placeholder)"
+"DisplayVersion"="99.0.0"
+"VersionMajor"=dword:00000063
+"VersionMinor"=dword:00000000
+"WindowsInstaller"=dword:00000001
+"Language"=dword:00000409
+EOF
+wine regedit /S "$seed_reg"
+rm -f "$seed_reg"
+
 # winemenubuilder's entries assume `wine` on PATH (never true here) and are dead buttons: disable
 # it and delete entries it already wrote for this prefix (matched by WINEPREFIX=; install.sh's entries can't match).
 wine reg add 'HKCU\Software\Wine\DllOverrides' /v winemenubuilder.exe /t REG_SZ /d '' /f
