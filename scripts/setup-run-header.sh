@@ -336,16 +336,23 @@ if [ "$manual_install" -eq 0 ]; then
         fi
     fi
     if [ -n "$live_exe" ]; then
-        # Live 12 ships Inno Setup, Live 11 a WiX Burn bundle. Burn ignores /MERGETASKS and
-        # /SUPPRESSMSGBOXES, and reads /SILENT as /quiet - no window at all - so the Inno set
-        # on Live 11 installs the USB audio driver anyway and loses the wizard. /MERGETASKS
-        # drops that task: a Windows USB kernel driver Wine cannot load (audio is PipeASIO).
-        # Burn first - `.wixburn` is a PE section ~630 bytes in, so 4k settles it however big
-        # the installer is; the Inno marker is ~680 KB in. Process substitution, not a pipe:
-        # grep -q exits early, head takes SIGPIPE, and pipefail would report 141.
+        # Live 12 ships Inno Setup, Live 11 a WiX Burn bundle; each family gets its own flag
+        # set. Burn first - `.wixburn` is a PE section ~630 bytes in, so 4k settles it however
+        # big the installer is; the Inno marker is ~680 KB in. Process substitution, not a
+        # pipe: grep -q exits early, head takes SIGPIPE, and pipefail would report 141.
         live_flags=()
-        if ! grep -qaF '.wixburn' <(head -c 4k -- "$live_exe") \
-             && grep -qa 'Inno Setup' <(head -c 4M -- "$live_exe"); then
+        if grep -qaF '.wixburn' <(head -c 4k -- "$live_exe"); then
+            # Burn has no /MERGETASKS and no /SUPPRESSMSGBOXES, and reads /SILENT as /quiet -
+            # no window at all. /passive keeps the progress bar without the wizard. The USB
+            # audio driver package is not skipped by flag (its InstallAudioDriver variable is
+            # not command-line overridable): the placeholder driver registration seeded by
+            # setup-prefix.sh makes the bundle's own version guard plan the package out.
+            live_flags=(/passive /norestart)
+            say "-- installing Ableton Live; a progress window opens, no clicks needed"
+            say "   (Live is large, so this can take several minutes)"
+        elif grep -qa 'Inno Setup' <(head -c 4M -- "$live_exe"); then
+            # /MERGETASKS drops the USB audio driver task: a Windows USB kernel driver Wine
+            # cannot load (audio is PipeASIO).
             live_flags=(/SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver')
             say "-- installing Ableton Live; a progress window opens, no clicks needed"
             say "   (Live is large, so this can take several minutes)"
@@ -362,8 +369,22 @@ if [ "$manual_install" -eq 0 ]; then
             say "!! the Ableton installer exited with an error; instructions below"
             manual_install=1
         fi
+        # The USB audio driver's tray app never exits by itself; a prefix that got the driver
+        # from an older install would park this wait until the user closes the window by hand
+        # (issue #111). End it directly, then wait bounded: if something is still running
+        # after 30 seconds, say what unblocks the wait instead of hanging silently.
         WINEPREFIX="$HOME/.wine-ableton" \
-            "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -w 2>/dev/null || true
+            "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" \
+            taskkill /f /im tusbaudiocplapp.exe >/dev/null 2>&1 || true
+        wait_rc=0
+        WINEPREFIX="$HOME/.wine-ableton" \
+            timeout 30 "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -w 2>/dev/null || wait_rc=$?
+        if [ "$wait_rc" -eq 124 ]; then
+            say "-- waiting for leftover installer processes in the prefix to finish"
+            say "   (close any window the installer left open to let setup continue)"
+            WINEPREFIX="$HOME/.wine-ableton" \
+                "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -w 2>/dev/null || true
+        fi
         rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/ableton-wine-setup" 2>/dev/null || true
     fi
 fi
