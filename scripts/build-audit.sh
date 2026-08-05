@@ -75,6 +75,7 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0070]="reserved 2026-08-05 for the Max for Live font-list cache on performance-moonshot-m4l"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
