@@ -151,26 +151,42 @@ Not affected, and any fix must keep them working:
 - Alt+F4 closes, Alt alone arms the menu bar, F10 alone would if Live did
   not bind it. Alt alone arming the bar is correct Windows behavior.
 
-### Fix direction (proposal, nothing shipped)
+### Fix: patch 0070 (this branch, repro-verified 2026-08-06)
 
-Keep the arming logic where it is, move the disarming to where Windows
-does it: the input retrieval path. `process_keyboard_message` runs for
-every removed key message regardless of what the window procedure does,
-and already carries side effects (F1, VK_APPS, appcommand keys). Clearing
-the DefWindowProc arm state there whenever a non-Alt key is removed while
-Alt is down (and on removed button-downs in `process_mouse_message`)
-restores the win32k queue-flag semantics. Mechanically: either export a
-small `disarm_menu_key()` from defwnd.c or move the two statics into the
-thread info so the state is per queue rather than per process, which is
-also closer to Windows.
+`patches/0070-win32u-break-alt-f10-menu-arming-on-consumed-keys.patch`.
+Keeps the arming logic where it is and moves the disarming to where
+Windows does it: the input retrieval path. defwnd.c exports
+`cancel_menu_key_state()`; `process_keyboard_message` calls it for every
+removed keydown other than Alt itself, and `process_mouse_message` for
+every removed button-down. Both run whether or not the window procedure
+later consumes the message, and both already carry side effects of this
+kind (F1, VK_APPS, appcommand keys), restoring the win32k queue-flag
+semantics. Behavior for pass-through applications is unchanged.
+
+Verified against a patched build of the 11.13 tree (incremental win32u
+rebuild, same repro, null driver, 2026-08-06):
+
+- swallow mode, both release orders: no `SC_KEYMENU`, no
+  `WM_ENTERMENULOOP`, the follow-up F opens nothing. Bug gone.
+- Alt+F mnemonic: `SC_KEYMENU ch=66`, `WM_ENTERMENULOOP`,
+  `WM_INITMENUPOPUP`. The File menu still opens.
+- bare Alt press and release: `SC_KEYMENU ch=00`, menu bar arms, Esc
+  leaves. Preserved.
+- pass mode: identical to the unpatched run, including the transient
+  beep path for an unhandled Alt+4.
+
+Full-series apply check passed: pristine `wine-base-5c23dd1c` extraction,
+all 65 patches applied with the container-build.sh logic, 0070 lands
+clean on top. build-audit.sh carries the 0070 STAMP_ONLY entry and
+SERIES.sha256 is refrozen. Not yet run against real Live; the matrix in
+section 5 stays open until then.
 
 F10 stays symmetric: Live swallows its F10 keydown (Back to Arrangement),
 so `f10_key` never arms and there is no F10 variant of the bug today.
 
 Upstream master has the same defect, so the patch is an upstreaming
-candidate. Patch number to be assigned at merge time; 0066 through 0068
-are reserved by PR 124 and several branches renumber to 0070 and up.
-A new patch needs its build-audit.sh entry or the build dies at step 8/8.
+candidate. 0066 through 0068 are reserved by PR 124 and other branches
+also claim 0070 and up; renumber at merge time as usual.
 
 ## 3. Full shortcut audit
 

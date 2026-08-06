@@ -11,9 +11,11 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 64 files, numbered 0001 through 0069.
+The current Wine series contains 65 files, numbered 0001 through 0070.
 Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
 are reserved by PR 124 and will enter this branch when it rebases after merge.
+Other unmerged branches also stake claims in the 0070+ range; renumber at
+merge time as usual.
 
 ## Applying the series
 
@@ -251,3 +253,10 @@ Apply them in sequence with the rest of the series.
   borderless fullscreen, unselected windows, and plugin windows retain Wine's
   existing behavior. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
   for comparison. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0070`: break the DefWindowProc Alt/F10 menu-bar arming on the win32u
+  input retrieval path, so an Alt chord Live consumes (Alt+0 through Alt+8
+  and the other Alt shortcuts) no longer activates the menu bar on Alt
+  release. Windows keeps this state in win32k queue flags that message
+  consumption cannot starve. Alt+letter menu mnemonics and bare Alt are
+  unchanged. Repro: `tools/altnum-menu-repro.c`. See
+  `notes/ABLETON-WINE-SHORTCUT-PARITY.md`.

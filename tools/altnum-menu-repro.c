@@ -130,6 +130,28 @@ static DWORD WINAPI inject( void *arg )
     Sleep( 600 );
     key( VK_ESCAPE, 0 );
     key( VK_ESCAPE, KEYEVENTF_KEYUP );
+
+    Sleep( 400 );
+    say( "--- inject: Alt+F (mnemonic, File menu must open)" );
+    key( VK_MENU, 0 );
+    key( 'F', 0 );
+    key( 'F', KEYEVENTF_KEYUP );
+    key( VK_MENU, KEYEVENTF_KEYUP );
+
+    Sleep( 600 );
+    key( VK_ESCAPE, 0 );
+    key( VK_ESCAPE, KEYEVENTF_KEYUP );
+    key( VK_ESCAPE, 0 );
+    key( VK_ESCAPE, KEYEVENTF_KEYUP );
+
+    Sleep( 400 );
+    say( "--- inject: bare Alt press+release (menu bar must arm)" );
+    key( VK_MENU, 0 );
+    key( VK_MENU, KEYEVENTF_KEYUP );
+
+    Sleep( 600 );
+    key( VK_ESCAPE, 0 );
+    key( VK_ESCAPE, KEYEVENTF_KEYUP );
     Sleep( 200 );
     PostMessageA( hwnd, WM_CLOSE, 0, 0 );
     return 0;
