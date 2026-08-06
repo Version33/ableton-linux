@@ -177,6 +177,29 @@ If fullscreen is still wrong after the update, launch once with
 [open an issue](https://github.com/shibco/ableton-linux/issues) and include
 your desktop environment and whether that launch behaved differently.
 
+## GNOME handles a Live shortcut instead of Live
+
+GNOME uses Ctrl+Alt+Up and Ctrl+Alt+Down for workspace switching. These keys
+conflict with Live's **Adjust Note Selection Chance** shortcuts. GNOME also
+uses Ctrl+Alt+Delete for logout, which conflicts with **Delete Fades** in
+Live 11.
+
+Start Live with this command:
+
+```bash
+ABLETON_SHORTCUTS=take ableton-live
+```
+
+The launcher turns off only the shortcuts in conflict. It restores them after
+all Live sessions exit. It can also restore them after a crash. If you change
+a shortcut while Live runs, it keeps your change.
+
+The change applies to the complete GNOME session. The keys cannot switch a
+workspace or open the logout dialog in another application while Live runs.
+
+The default `ABLETON_SHORTCUTS=preserve` leaves every desktop shortcut
+unchanged. For another desktop, change its shortcut settings when necessary.
+
 ## Report a problem
 
 Use the [GitHub issue form](https://github.com/shibco/ableton-linux/issues/new/choose).

@@ -247,10 +247,12 @@ fi
 install -m755 "$here/ableton-live" "$BIN/ableton-live"
 
 echo "== install detection libs -> ~/.local/share/ableton-wine =="
-# The launcher sources these on every start (DPI auto-calibration, light/dark theme sync).
+# The launcher sources these on every start (DPI auto-calibration, light/dark
+# theme sync, and crash-safe GNOME shortcut holding).
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
+install -m644 "$here/shortcut-hold.sh" "$HOME/.local/share/ableton-wine/shortcut-hold.sh"
 # setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
 # without it the colors still apply on the next launch. Kit stages it next to
 # these scripts; a repo checkout carries it in tools/.

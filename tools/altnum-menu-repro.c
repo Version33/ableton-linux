@@ -17,7 +17,9 @@
  */
 
 #include <windows.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 static int swallow_mode;
 static DWORD t0;
@@ -26,7 +28,7 @@ static void say( const char *fmt, ... )
 {
     va_list ap;
     va_start( ap, fmt );
-    printf( "[%5lu] ", GetTickCount() - t0 );
+    printf( "[%5lu] ", (unsigned long)(GetTickCount() - t0) );
     vprintf( fmt, ap );
     printf( "\n" );
     fflush( stdout );
@@ -55,6 +57,21 @@ static LRESULT CALLBACK wndproc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
         say( "WM_SYSCHAR    wp=%02x ('%c')", (UINT)wp, (char)wp );
         if (swallow_mode && wp == '4') { say( "  -> swallowed" ); return 0; }
         break;
+    case WM_LBUTTONDOWN:
+        say( "WM_LBUTTONDOWN captured=%d", GetCapture() == hwnd );
+        if (swallow_mode) { say( "  -> swallowed (app handled Alt+click)" ); return 0; }
+        break;
+    case WM_LBUTTONUP:
+        say( "WM_LBUTTONUP   captured=%d", GetCapture() == hwnd );
+        if (swallow_mode) { say( "  -> swallowed" ); return 0; }
+        break;
+    case WM_APP:
+        SetCapture( hwnd );
+        say( "SetCapture=%d (want 1)", GetCapture() == hwnd );
+        return 0;
+    case WM_APP + 1:
+        ReleaseCapture();
+        return 0;
     case WM_SYSCOMMAND:
         if ((wp & 0xfff0) == SC_KEYMENU)
             say( "WM_SYSCOMMAND SC_KEYMENU ch=%02lx  <=== menu-bar activation", (ULONG_PTR)lp );
@@ -81,13 +98,24 @@ static void key( WORD vk, DWORD flags )
     in.ki.wVk = vk;
     in.ki.wScan = MapVirtualKeyA( vk, MAPVK_VK_TO_VSC );
     in.ki.dwFlags = flags;
-    SendInput( 1, &in, sizeof(in) );
+    if (SendInput( 1, &in, sizeof(in) ) != 1)
+        say( "SendInput key failed: %lu", (unsigned long)GetLastError() );
+    Sleep( 30 );
+}
+
+static void button( DWORD flags )
+{
+    INPUT in = { .type = INPUT_MOUSE };
+    in.mi.dwFlags = flags;
+    if (SendInput( 1, &in, sizeof(in) ) != 1)
+        say( "SendInput mouse failed: %lu", (unsigned long)GetLastError() );
     Sleep( 30 );
 }
 
 static DWORD WINAPI inject( void *arg )
 {
     HWND hwnd = arg;
+    RECT rect;
     int i;
 
     Sleep( 400 );
@@ -130,6 +158,31 @@ static DWORD WINAPI inject( void *arg )
     Sleep( 600 );
     key( VK_ESCAPE, 0 );
     key( VK_ESCAPE, KEYEVENTF_KEYUP );
+    key( VK_ESCAPE, 0 );
+    key( VK_ESCAPE, KEYEVENTF_KEYUP );
+
+    Sleep( 400 );
+    say( "--- inject: Alt down, captured left click swallowed, Alt up" );
+    GetWindowRect( hwnd, &rect );
+    SetCursorPos( (rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2 );
+    PostMessageA( hwnd, WM_APP, 0, 0 );
+    Sleep( 100 );
+    key( VK_MENU, 0 );
+    button( MOUSEEVENTF_LEFTDOWN );
+    Sleep( 100 );
+    button( MOUSEEVENTF_LEFTUP );
+    Sleep( 100 );
+    PostMessageA( hwnd, WM_APP + 1, 0, 0 );
+    key( VK_MENU, KEYEVENTF_KEYUP );
+
+    Sleep( 600 );
+    say( "--- inject: press F after Alt+click (does a menu open?)" );
+    key( 'F', 0 );
+    key( 'F', KEYEVENTF_KEYUP );
+
+    Sleep( 600 );
+    key( VK_ESCAPE, 0 );
+    key( VK_ESCAPE, KEYEVENTF_KEYUP );
 
     Sleep( 400 );
     say( "--- inject: Alt+F (mnemonic, File menu must open)" );
@@ -162,13 +215,19 @@ int main( int argc, char **argv )
     WNDCLASSA wc = { .lpfnWndProc = wndproc, .lpszClassName = "altnum_test" };
     HMENU bar = CreateMenu(), file = CreatePopupMenu(), edit = CreatePopupMenu();
     HWND hwnd;
+    HANDLE thread;
     MSG msg;
+    BOOL ret;
 
     swallow_mode = argc > 1 && !strcmp( argv[1], "swallow" );
     t0 = GetTickCount();
     say( "mode: %s", swallow_mode ? "swallow (Live-like)" : "pass (DefWindowProc sees everything)" );
 
-    RegisterClassA( &wc );
+    if (!RegisterClassA( &wc ))
+    {
+        fprintf( stderr, "RegisterClass failed: %lu\n", (unsigned long)GetLastError() );
+        return 2;
+    }
     AppendMenuA( file, MF_STRING, 100, "&Open" );
     AppendMenuA( edit, MF_STRING, 101, "&Copy" );
     AppendMenuA( bar, MF_POPUP, (UINT_PTR)file, "&File" );
@@ -176,13 +235,28 @@ int main( int argc, char **argv )
 
     hwnd = CreateWindowA( "altnum_test", "altnum", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                           100, 100, 400, 300, 0, bar, 0, 0 );
+    if (!hwnd)
+    {
+        fprintf( stderr, "CreateWindow failed: %lu\n", (unsigned long)GetLastError() );
+        return 2;
+    }
     SetForegroundWindow( hwnd );
-    CreateThread( NULL, 0, inject, hwnd, 0, NULL );
+    if (!(thread = CreateThread( NULL, 0, inject, hwnd, 0, NULL )))
+    {
+        fprintf( stderr, "CreateThread failed: %lu\n", (unsigned long)GetLastError() );
+        return 2;
+    }
+    CloseHandle( thread );
 
-    while (GetMessageA( &msg, 0, 0, 0 ))
+    while ((ret = GetMessageA( &msg, 0, 0, 0 )) > 0)
     {
         TranslateMessage( &msg );
         DispatchMessageA( &msg );
+    }
+    if (ret == -1)
+    {
+        fprintf( stderr, "GetMessage failed: %lu\n", (unsigned long)GetLastError() );
+        return 2;
     }
     say( "exit" );
     return 0;

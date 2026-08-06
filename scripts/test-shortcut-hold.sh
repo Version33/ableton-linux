@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/shortcut-hold-test.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+export ABLETON_SHORTCUTS_STATE_DIR="$work/state"
+. "$here/shortcut-hold.sh"
+
+declare -A values writable fail_set
+gsettings()
+{
+    local op="$1" schema="$2" key="$3" id="$schema|$key" value
+    case "$op" in
+        get) printf '%s\n' "${values[$id]:-@as []}" ;;
+        writable) printf '%s\n' "${writable[$id]:-true}" ;;
+        set)
+            value="$4"
+            [ "${fail_set[$id]:-0}" -eq 0 ] || return 1
+            values[$id]="$value"
+            ;;
+        *) return 2 ;;
+    esac
+}
+ableton_shortcuts_live_running() { return 1; }
+
+pass=0
+check()
+{
+    local label="$1" got="$2" want="$3"
+    if [ "$got" != "$want" ]; then
+        printf 'not ok - %s\n  got:  %s\n  want: %s\n' "$label" "$got" "$want" >&2
+        exit 1
+    fi
+    pass=$((pass + 1))
+    printf 'ok - %s\n' "$label"
+}
+
+check "strip canonical Ctrl+Alt and preserve Super" \
+    "$(ableton_shortcuts_strip_ctrl_alt "['<Control><Alt>Up', '<Super>Up']")" "['<Super>Up']"
+check "strip liberal Ctl/Mod1 spelling" \
+    "$(ableton_shortcuts_strip_ctrl_alt "['<ctl><mod1>Down', '<Shift><Alt>Down']")" "['<Shift><Alt>Down']"
+check "normalize empty string array" "$(ableton_shortcuts_strip_ctrl_alt '@as []')" "[]"
+check "Live 12 only holds actual arrow conflicts" \
+    "$(ableton_shortcuts_keys 'Ableton Live 12 Suite.exe')" \
+    $'org.gnome.desktop.wm.keybindings switch-to-workspace-up\norg.gnome.desktop.wm.keybindings switch-to-workspace-down'
+check "Live 11 also holds logout" \
+    "$(ableton_shortcuts_keys 'Ableton Live 11 Suite.exe' | tail -1)" \
+    "org.gnome.settings-daemon.plugins.media-keys logout"
+
+up='org.gnome.desktop.wm.keybindings|switch-to-workspace-up'
+down='org.gnome.desktop.wm.keybindings|switch-to-workspace-down'
+logout='org.gnome.settings-daemon.plugins.media-keys|logout'
+values[$up]="['<Control><Alt>Up', '<Super>Up']"
+values[$down]="['<Primary><Alt>Down']"
+values[$logout]="['<Control><Alt>Delete']"
+export ABLETON_SHORTCUTS=take XDG_CURRENT_DESKTOP='ubuntu:GNOME'
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+check "hold strips only conflicting Up entry" "${values[$up]}" "['<Super>Up']"
+check "hold disables conflicting Down entry" "${values[$down]}" "[]"
+check "Live 12 leaves logout alone" "${values[$logout]}" "['<Control><Alt>Delete']"
+check "state format is versioned" "$(head -1 "$ableton_shortcuts_state")" "ABLETON_SHORTCUT_HOLD_V2"
+check "state contains each key once" "$(tail -n +2 "$ableton_shortcuts_state" | wc -l)" "2"
+check "state is private" "$(stat -c %a "$ableton_shortcuts_state")" "600"
+check "launcher lease is private" "$(stat -c %a "$ableton_shortcuts_state_dir/lease.$$")" "600"
+
+ableton_shortcuts_hold_locked 'Ableton Live 12 Suite.exe'
+check "repeat hold is idempotent" "$(tail -n +2 "$ableton_shortcuts_state" | wc -l)" "2"
+
+# A concurrent Live 11 launch extends the same global transaction with logout.
+ableton_shortcuts_hold_locked 'Ableton Live 11 Suite.exe'
+check "Live 11 extends active hold with logout" "${values[$logout]}" "[]"
+check "cross-version hold has no duplicate records" "$(tail -n +2 "$ableton_shortcuts_state" | wc -l)" "3"
+if ableton_shortcuts_restore_if_idle; then
+    echo "not ok - idle restore ignored a live launcher lease" >&2
+    exit 1
+fi
+check "watcher-side restore respects live lease" "${values[$up]}" "['<Super>Up']"
+ableton_shortcuts_restore
+check "restore returns exact Up value" "${values[$up]}" "['<Control><Alt>Up', '<Super>Up']"
+check "restore returns exact Down value" "${values[$down]}" "['<Primary><Alt>Down']"
+check "restore returns exact logout value" "${values[$logout]}" "['<Control><Alt>Delete']"
+check "successful restore removes state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+
+# A user edit while Live runs wins over the stale snapshot.
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+values[$up]="['<Super>Page_Up']"
+ableton_shortcuts_restore
+check "restore preserves concurrent user edit" "${values[$up]}" "['<Super>Page_Up']"
+
+# Failed restoration is durable and succeeds on retry.
+values[$up]="['<Control><Alt>Up', '<Super>Up']"
+values[$down]="['<Primary><Alt>Down']"
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+fail_set[$down]=1
+if ableton_shortcuts_restore; then
+    echo "not ok - failed restore unexpectedly succeeded" >&2
+    exit 1
+fi
+check "failed restore retains state" "$([ -f "$ableton_shortcuts_state" ]; echo $?)" "0"
+check "failed key remains held" "${values[$down]}" "[]"
+fail_set[$down]=0
+ableton_shortcuts_restore
+check "retry restores failed key" "${values[$down]}" "['<Primary><Alt>Down']"
+
+# The detached watcher restores once neither a Live process nor launcher lease
+# remains.  This is the crash/relaunch path used by the real launcher.
+values[$up]="['<Control><Alt>Up']"
+values[$down]="['<Primary><Alt>Down']"
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+rm -f -- "$ableton_shortcuts_state_dir"/lease.*
+export ABLETON_SHORTCUTS_POLL_SECONDS=0.01
+ableton_shortcuts_watch_loop
+check "watcher restores after last lease exits" "${values[$up]}" "['<Control><Alt>Up']"
+check "watcher removes completed recovery state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+
+# Recovery still runs when discovery did not find a Live executable. It must
+# not start a new hold in this path, even when the opt-in variable is present.
+values[$up]="['<Control><Alt>Up']"
+values[$down]="['<Primary><Alt>Down']"
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+rm -f -- "$ableton_shortcuts_state_dir"/lease.*
+ableton_shortcuts_prepare '' '' 0
+check "missing Live still restores stale state" "${values[$down]}" "['<Primary><Alt>Down']"
+check "missing Live does not take a new hold" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+
+# Migrate the feature branch's per-prefix V1 snapshot before taking V2 state.
+legacy="$work/legacy-v1"
+printf '%s|%s|%s\n' \
+    'org.gnome.desktop.wm.keybindings' 'switch-to-workspace-up' "['<Control><Alt>Up']" \
+    > "$legacy"
+values[$up]='[]'
+values[$down]='@as []'
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe' "$legacy"
+check "legacy state is removed after migration" "$([ ! -e "$legacy" ]; echo $?)" "0"
+check "legacy value is restored before V2 hold" "$(sed -n '2p' "$ableton_shortcuts_state" | cut -d'|' -f3)" "['<Control><Alt>Up']"
+ableton_shortcuts_restore
+check "migrated state restores normally" "${values[$up]}" "['<Control><Alt>Up']"
+
+# A locked key is skipped rather than creating misleading recovery state.
+writable[$up]=false
+values[$up]="['<Control><Alt>Up']"
+values[$down]="@as []"
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+check "locked key stays untouched" "${values[$up]}" "['<Control><Alt>Up']"
+check "no-op hold creates no state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+
+# Unknown state is never appended to or deleted.
+printf '%s\n' 'FUTURE_SHORTCUT_STATE' > "$ableton_shortcuts_state"
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+check "unknown state is preserved" "$(cat "$ableton_shortcuts_state")" "FUTURE_SHORTCUT_STATE"
+
+printf 'PASS: %d shortcut hold checks\n' "$pass"
