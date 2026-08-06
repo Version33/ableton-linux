@@ -190,9 +190,10 @@ Start Live with this command:
 ABLETON_SHORTCUTS=take ableton-live
 ```
 
-The launcher turns off only the shortcuts in conflict. It restores them after
-all Live sessions exit. It can also restore them after a crash. If you change
-a shortcut while Live runs, it keeps your change.
+The launcher turns off only the exact Ctrl+Alt entries in conflict. It keeps
+other keys and modifiers in the same settings. It restores the saved entries
+after all Live sessions exit. It can also restore them after a crash. If you
+change a shortcut while Live runs, it keeps your change.
 
 The change applies to the complete GNOME session. The keys cannot switch a
 workspace or open the logout dialog in another application while Live runs.

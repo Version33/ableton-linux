@@ -25,7 +25,7 @@ Behavior for applications that pass their keys through is unchanged: bare
 Alt press and release still arms the menu bar, Alt+letter mnemonics still
 open their menu through the WM_SYSCHAR path, and F10 keeps its existing
 handling. Verified with tools/altnum-menu-repro.c; audit and traces in
-notes/ABLETON-WINE-SHORTCUT-PARITY.md.
+notes/ABLETON-WINE-SHORTCUT-AUDIT.md.
 ---
  dlls/win32u/defwnd.c         | 12 ++++++++++++
  dlls/win32u/message.c        | 15 +++++++++++++++

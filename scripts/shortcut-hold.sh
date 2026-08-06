@@ -15,7 +15,8 @@ ableton_shortcuts_normalize_value()
 
 ableton_shortcuts_strip_ctrl_alt()
 {
-    local value="$1" inner entry lower out=""
+    local value="$1" terminal="${2,,}" inner entry accelerator modifier
+    local have_ctrl have_alt valid out=""
     value="$(ableton_shortcuts_normalize_value "$value")"
     if [ "$value" = "[]" ]; then
         printf '[]'
@@ -30,14 +31,32 @@ ableton_shortcuts_strip_ctrl_alt()
     local IFS=,
     for entry in $inner; do
         entry="${entry#${entry%%[![:space:]]*}}"
-        lower="${entry,,}"
-        case "$lower" in
-            *\<alt\>*|*\<mod1\>*)
-                case "$lower" in
-                    *\<control\>*|*\<ctrl\>*|*\<ctl\>*|*\<primary\>*) continue ;;
-                esac
-                ;;
-        esac
+        accelerator="${entry#\'}"
+        accelerator="${accelerator%\'}"
+        accelerator="${accelerator,,}"
+        have_ctrl=0
+        have_alt=0
+        valid=1
+        while [[ "$accelerator" == \<*\>* ]]; do
+            modifier="${accelerator#<}"
+            modifier="${modifier%%>*}"
+            accelerator="${accelerator#*>}"
+            case "$modifier" in
+                control|ctrl|ctl|primary)
+                    [ "$have_ctrl" -eq 0 ] || valid=0
+                    have_ctrl=1
+                    ;;
+                alt|mod1)
+                    [ "$have_alt" -eq 0 ] || valid=0
+                    have_alt=1
+                    ;;
+                *) valid=0 ;;
+            esac
+        done
+        if [ "$valid" -eq 1 ] && [ "$have_ctrl" -eq 1 ] && [ "$have_alt" -eq 1 ] \
+            && [ "$accelerator" = "$terminal" ]; then
+            continue
+        fi
         out="${out:+$out, }$entry"
     done
     printf '[%s]' "$out"
@@ -48,11 +67,11 @@ ableton_shortcuts_keys()
     # Live only assigns Ctrl+Alt+Up/Down (note chance), not Left/Right.  Do not
     # disable unrelated workspace navigation in the name of future-proofing.
     printf '%s\n' \
-        "org.gnome.desktop.wm.keybindings switch-to-workspace-up" \
-        "org.gnome.desktop.wm.keybindings switch-to-workspace-down"
+        "org.gnome.desktop.wm.keybindings switch-to-workspace-up Up" \
+        "org.gnome.desktop.wm.keybindings switch-to-workspace-down Down"
     case "$1" in
         *"Live 11 "*)
-            printf '%s\n' "org.gnome.settings-daemon.plugins.media-keys logout"
+            printf '%s\n' "org.gnome.settings-daemon.plugins.media-keys logout Delete"
             ;;
     esac
 }
@@ -215,13 +234,13 @@ ableton_shortcuts_restore_if_idle()
 
 ableton_shortcuts_hold_locked()
 {
-    local exe_base="$1" schema key current wanted verify held_count=0
-    while read -r schema key; do
+    local exe_base="$1" schema key terminal current wanted verify held_count=0
+    while read -r schema key terminal; do
         [ -n "$schema" ] || continue
         ableton_shortcuts_state_has_key "$schema" "$key" && continue
         [ "$(gsettings writable "$schema" "$key" 2>/dev/null)" = true ] || continue
         current="$(gsettings get "$schema" "$key" 2>/dev/null)" || continue
-        wanted="$(ableton_shortcuts_strip_ctrl_alt "$current")"
+        wanted="$(ableton_shortcuts_strip_ctrl_alt "$current" "$terminal")"
         [ "$wanted" = "$(ableton_shortcuts_normalize_value "$current")" ] && continue
 
         # Persist recovery before changing the desktop.  A kill between these
@@ -238,11 +257,33 @@ ableton_shortcuts_hold_locked()
     [ "$held_count" -eq 0 ] || echo "ableton-live: holding the GNOME Ctrl+Alt shortcuts Live uses; they restore when all Live sessions exit" >&2
 }
 
+ableton_shortcuts_stat_start_time()
+{
+    local stat="$1" fields
+    case "$stat" in
+        *') '*) fields="${stat##*) }" ;;
+        *) return 1 ;;
+    esac
+    set -- $fields
+    [ "$#" -ge 20 ] || return 1
+    shift 19
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$1"
+}
+
+ableton_shortcuts_proc_start_time()
+{
+    local pid="$1" stat
+    [ -r "/proc/$pid/stat" ] || return 1
+    stat="$(<"/proc/$pid/stat")" || return 1
+    ableton_shortcuts_stat_start_time "$stat"
+}
+
 ableton_shortcuts_mark_lease()
 {
     local pid="$1" start="" lease tmp
     [ "$pid" -gt 1 ] 2>/dev/null || return 1
-    [ -r "/proc/$pid/stat" ] && start="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)"
+    start="$(ableton_shortcuts_proc_start_time "$pid" 2>/dev/null)" || start=""
     [ -n "$start" ] || return 1
     lease="$ableton_shortcuts_state_dir/lease.$pid"
     tmp="$(mktemp "$ableton_shortcuts_state_dir/.lease.$pid.XXXXXX")" || return 1
@@ -261,7 +302,7 @@ ableton_shortcuts_lease_alive()
         [ -f "$lease" ] || continue
         read -r pid start < "$lease" || { rm -f -- "$lease"; continue; }
         case "$pid:$start" in *[!0-9:]*) rm -f -- "$lease"; continue ;; esac
-        current="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" || current=""
+        current="$(ableton_shortcuts_proc_start_time "$pid" 2>/dev/null)" || current=""
         if [ -n "$current" ] && [ "$current" = "$start" ]; then
             any=0
         else

@@ -50,6 +50,7 @@ winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
 
 The GNOME test uses temporary data and does not change the desktop settings.
 The Wine test sends keys to its own window. It needs a working Wine display.
+Each mode returns a non-zero status when a required result fails.
 
 Configure Ableton Link networking with:
 
@@ -85,9 +86,10 @@ make verify
   `~/.wine-ableton`.
 - `ABLETON_LIVE_VERSION=11|12` selects a Live major version.
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
-- `ABLETON_SHORTCUTS=take` temporarily turns off the GNOME shortcuts that use
-  Ctrl+Alt+Up and Ctrl+Alt+Down. Live 11 also turns off Ctrl+Alt+Delete. The
-  default value, `preserve`, does not change desktop shortcuts.
+- `ABLETON_SHORTCUTS=take` temporarily turns off exact Ctrl+Alt+Up and
+  Ctrl+Alt+Down entries in the related GNOME settings. Live 11 also turns off
+  the exact Ctrl+Alt+Delete entry. The default value, `preserve`, does not
+  change desktop shortcuts.
 - `ABLETON_DPI_MODE=auto|preserve|100|fractional|dpi<N>|fractional<N>`
   overrides display-scale detection.
 - `ABLETON_THEME_MODE=auto|dark|light|preserve` controls desktop theme sync.

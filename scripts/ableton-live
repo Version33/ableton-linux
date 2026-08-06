@@ -775,7 +775,7 @@ fi
 # removes only those entries.  The helper uses session-global, crash-recoverable
 # state because GSettings itself is session-global; it also preserves any user
 # edit made while Live runs.  Opt-in: the held keys are unavailable to every
-# other window until the last opted-in Live exits.  See the parity note section 7.
+# other window until the last opted-in Live exits.  See the shortcut support note.
 shortcut_lib=""
 for f in "$HOME/.local/share/ableton-wine/shortcut-hold.sh" \
          "${BASH_SOURCE[0]%/*}/shortcut-hold.sh"; do

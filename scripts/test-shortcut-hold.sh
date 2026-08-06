@@ -36,17 +36,26 @@ check()
     printf 'ok - %s\n' "$label"
 }
 
-check "strip canonical Ctrl+Alt and preserve Super" \
-    "$(ableton_shortcuts_strip_ctrl_alt "['<Control><Alt>Up', '<Super>Up']")" "['<Super>Up']"
-check "strip liberal Ctl/Mod1 spelling" \
-    "$(ableton_shortcuts_strip_ctrl_alt "['<ctl><mod1>Down', '<Shift><Alt>Down']")" "['<Shift><Alt>Down']"
-check "normalize empty string array" "$(ableton_shortcuts_strip_ctrl_alt '@as []')" "[]"
+check "strip exact Ctrl+Alt+Up and preserve Super" \
+    "$(ableton_shortcuts_strip_ctrl_alt "['<Control><Alt>Up', '<Super>Up']" Up)" "['<Super>Up']"
+check "strip exact key with accepted modifier names and order" \
+    "$(ableton_shortcuts_strip_ctrl_alt "['<mod1><ctl>Down', '<Shift><Alt>Down']" Down)" "['<Shift><Alt>Down']"
+check "preserve a Ctrl+Alt binding for another key" \
+    "$(ableton_shortcuts_strip_ctrl_alt "['<Control><Alt>Page_Up', '<Control><Alt>Up']" Up)" \
+    "['<Control><Alt>Page_Up']"
+check "preserve Ctrl+Alt+Shift for the same key" \
+    "$(ableton_shortcuts_strip_ctrl_alt "['<Control><Alt><Shift>Up', '<Alt><Control>Up']" Up)" \
+    "['<Control><Alt><Shift>Up']"
+check "normalize empty string array" "$(ableton_shortcuts_strip_ctrl_alt '@as []' Up)" "[]"
 check "Live 12 only holds actual arrow conflicts" \
     "$(ableton_shortcuts_keys 'Ableton Live 12 Suite.exe')" \
-    $'org.gnome.desktop.wm.keybindings switch-to-workspace-up\norg.gnome.desktop.wm.keybindings switch-to-workspace-down'
+    $'org.gnome.desktop.wm.keybindings switch-to-workspace-up Up\norg.gnome.desktop.wm.keybindings switch-to-workspace-down Down'
 check "Live 11 also holds logout" \
     "$(ableton_shortcuts_keys 'Ableton Live 11 Suite.exe' | tail -1)" \
-    "org.gnome.settings-daemon.plugins.media-keys logout"
+    "org.gnome.settings-daemon.plugins.media-keys logout Delete"
+check "parse start time after a complex process name" \
+    "$(ableton_shortcuts_stat_start_time '314 (Wine worker ) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 4242')" \
+    "4242"
 
 up='org.gnome.desktop.wm.keybindings|switch-to-workspace-up'
 down='org.gnome.desktop.wm.keybindings|switch-to-workspace-down'

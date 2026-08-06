@@ -24,8 +24,8 @@ letter could open a menu instead of going to Live.
 
 ### Wine mitigation
 
-This patch now clears a pending menu action when it receives another key press or a
-mouse click. It does this before Live handles that input, so the result does not
+Wine now clears a pending menu action when it receives another key press or a
+mouse click. It does this before Live handles that input. The result does not
 depend on whether Live passes the input to the normal Windows menu code.
 
 An Alt shortcut that Live handles now performs only its Live action. It does
@@ -65,9 +65,10 @@ The launcher temporarily holds only these GNOME shortcuts:
 - Ctrl+Alt+Down
 - Ctrl+Alt+Delete for Live 11 only
 
-The launcher removes only the conflicting entries from each GNOME setting.
-Other entries stay in place. For example, a shortcut that uses the Super key
-still works.
+The launcher removes only an exact Ctrl+Alt+Up, Ctrl+Alt+Down, or
+Ctrl+Alt+Delete entry from the related GNOME setting. It keeps entries with
+another key or another modifier. For example, Ctrl+Alt+Shift+Up,
+Ctrl+Alt+Page Up, and shortcuts that use the Super key stay in place.
 
 This mitigation affects the complete GNOME session. While Live runs, the held
 keys cannot change a workspace or open the logout dialog in another
@@ -95,6 +96,15 @@ and private temporary storage are available. It also confirms that Live exists
 before it starts a new hold. Recovery remains available if Live is later
 removed.
 
+## Current limits
+
+The automatic desktop change supports GNOME. It does not change KDE or another
+desktop. Change a conflicting shortcut in that desktop when necessary.
+
+This work does not change AltGr or the way that Wine reports AltGr to Live.
+The detailed [shortcut research](ABLETON-WINE-SHORTCUT-AUDIT.md) records that
+open layout check and the wider list of possible desktop conflicts.
+
 ## Test tools
 
 The repository contains the two tools used to check these mitigations.
@@ -117,14 +127,17 @@ winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
 
 The `swallow` mode represents input that Live handles. It checks both Alt-key
 release orders, an Alt-click, a menu letter, and Alt by itself. The `pass` mode
-checks input that an application sends to normal Windows menu handling.
+checks input that an application sends to normal Windows menu handling. Each
+mode returns an error if a handled Alt action opens the menu, if Alt with a
+menu letter fails, or if Alt by itself fails.
 
 The Wine test needs a working Wine display. The GNOME test does not.
 
 ## Verification
 
 The Wine change applies to the Wine 11.13 source and builds successfully. Both
-modes of the saved Wine test pass with the patched build. The GNOME test checks
-normal use, recovery, a failed restore, and changes made by the user.
+modes of the saved Wine test pass with the patched build. The test checks its
+own result. The GNOME test checks exact shortcut matching, normal use,
+recovery, a failed restore, and changes made by the user.
 
 The code has not yet been tested inside Ableton Live.
