@@ -88,7 +88,8 @@ installation instructions.
 - `ABLETON_LIVE_AUTOINSTALL=1` lets `setup-prefix.sh` run the Ableton installer
   it finds. Without it the script only prints the manual install steps.
 - `ABLETON_INSTALLER_UI=1` shows the Ableton installer window instead of
-  running it silently.
+  running it silently. Only Live 12 has a silent mode here — Live 11 ships a
+  WiX Burn bundle and always opens its window.
 - `ABLETON_LINKD` selects the `ableton-linkd` binary the launcher and
   `setup-link.sh` use.
 - `ABLETON_DPI_MODE=auto|preserve|100|fractional|dpi<N>|fractional<N>`
