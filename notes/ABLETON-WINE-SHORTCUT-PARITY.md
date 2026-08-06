@@ -274,46 +274,48 @@ schema facts below were read from gsettings on a GNOME Wayland session
 (CachyOS, 2026-08-06); bindings apply immediately on change, verified by
 a live strip-and-restore round trip.
 
-### 7a. Launcher-managed gsettings override (recommended)
+### 7a. Launcher-managed gsettings override (implemented 2026-08-06)
 
 GNOME has no per-application shortcut exceptions, but bindings are plain
-gsettings keys that take effect immediately. The launcher can hold them
-for the session the same way it already holds the performance power
-profile: save, strip, restore on exit.
+gsettings keys that take effect immediately. The launcher holds them for
+the session: save, strip, restore when Live exits.
 
-Keys and the session values:
+Implemented in `scripts/ableton-live` as `ABLETON_SHORTCUTS=take`
+(default `preserve` touches nothing). Keys and their session values:
 
     org.gnome.desktop.wm.keybindings switch-to-workspace-up      -> []
     org.gnome.desktop.wm.keybindings switch-to-workspace-down    -> []
-    org.gnome.desktop.wm.keybindings switch-to-workspace-left    -> keep only non-CtrlAlt entries
-    org.gnome.desktop.wm.keybindings switch-to-workspace-right   -> keep only non-CtrlAlt entries
-    org.gnome.settings-daemon.plugins.media-keys logout          -> [] (Live 11 sessions)
+    org.gnome.desktop.wm.keybindings switch-to-workspace-left    -> Ctrl+Alt entries removed, Super variants stay
+    org.gnome.desktop.wm.keybindings switch-to-workspace-right   -> Ctrl+Alt entries removed, Super variants stay
+    org.gnome.settings-daemon.plugins.media-keys logout          -> [] (Live 11 sessions only)
 
-On this machine up/down carry only the CtrlAlt binding (strip to empty),
-left/right also carry Super variants, which stay. Super combinations
-never collide: chapter 41's Windows column does not use the Win key.
+The strip removes list entries combining Alt with Control, Ctrl, or
+Primary; everything else stays. Super combinations never collide:
+chapter 41's Windows column does not use the Win key.
 
-Shape:
+Mechanics, following the theme_watch_loop session pattern since the
+launcher execs wine and has no exit path of its own:
 
-- Save the exact current value of each key to a state file before
-  changing anything; write the stripped value; restore from the state
-  file on exit through the launcher's exit path.
-- Crash guard: if the state file already exists at launch, restore it
-  first, then proceed. The state file holds the pre-Live values, so a
-  crashed session heals on the next start.
-- Second-instance guard: skip the save step when the state file exists
-  (the restore-first rule already covers it); restore only when the last
-  instance exits, or accept last-exit-wins for simplicity.
-- Scope: only when the session is GNOME (XDG_CURRENT_DESKTOP) and the
-  schema keys exist. KDE has its own mechanism (kwriteconfig kglobalshortcutsrc);
-  out of scope here.
-- Opt-in flag, not default: silently editing a user's desktop bindings
-  is surprising, and the stripped keys stay dead for every other window
-  while Live runs. Naming and default are Theo's call.
+- `shortcut_hold` saves each clashing key's exact value to
+  `$WINEPREFIX/.ableton-shortcut-hold` before writing the stripped
+  value. Runs only at bring-up (no Live process yet), only on GNOME
+  (XDG_CURRENT_DESKTOP), only with the flag set.
+- `shortcut_watch_loop`, spawned detached whenever a hold is on record,
+  waits for Live to come up, then restores and removes the state file
+  once every Live process is gone. Per-prefix flock (fd 7) keeps it to
+  one watcher; a relaunch adopts a hold whose watcher died. A launch
+  that never brings Live up restores after the initial wait runs out.
+- Crash guard: a state file found at launch with no Live running is
+  restored before anything else, flag or no flag.
+- Opt-in because the stripped keys are dead for every other window
+  while Live runs. KDE (kglobalshortcutsrc) out of scope for now.
 
-Tested on this machine: setting switch-to-workspace-up to [] and back
-restores the original literal exactly, effective immediately, no session
-restart.
+Verified on this machine, GNOME Wayland, 2026-08-06, using the shipped
+functions: full hold writes exactly the stripped sets for all five keys,
+the state file records the originals, restore returns every key to its
+exact original literal and removes the state file; the Live 12 key set
+excludes logout; the watcher restores through its no-Live path. Not yet
+exercised around a real Live launch.
 
 ### 7b. Mutter Xwayland grab whitelist (fullscreen mode, needs a fork patch)
 

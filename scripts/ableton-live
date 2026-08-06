@@ -5,6 +5,9 @@
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
 #            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
+#            ABLETON_SHORTCUTS=take (GNOME: hold the desktop shortcuts that shadow Live
+#              bindings, Ctrl+Alt+arrows and for Live 11 Ctrl+Alt+Delete, while Live
+#              runs; they restore when Live exits; default preserve touches nothing),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
@@ -767,6 +770,106 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     sync_ui_font
 fi
 
+# GNOME shortcut hold (ABLETON_SHORTCUTS=take): GNOME consumes Ctrl+Alt+arrows
+# (workspace switch) and Ctrl+Alt+Delete (logout dialog) before Wine sees the
+# keys, shadowing Live's note-chance shortcuts and Live 11's delete-fades.
+# There is no per-application exception mechanism, so hold the bindings for
+# the session instead: save each clashing key to a per-prefix state file,
+# strip only its Ctrl+Alt entries (Super variants stay), and restore when Live
+# exits (shortcut_watch_loop below). A state file found at launch is restored
+# first, so a crashed session heals on the next start. Opt-in: stripped keys
+# are dead for every other window while Live runs. See
+# notes/ABLETON-WINE-SHORTCUT-PARITY.md section 7.
+shortcut_hold_state="$WINEPREFIX/.ableton-shortcut-hold"
+
+shortcut_strip_ctrl_alt() {   # GVariant string list -> same list without Ctrl+Alt entries
+    local v="$1" inner e out=""
+    v="${v#@as }"
+    if [ "$v" = "[]" ]; then printf '[]'; return; fi
+    inner="${v#[}"; inner="${inner%]}"
+    local IFS=,
+    for e in $inner; do
+        e="${e# }"
+        case "$e" in
+            *\<Alt\>*) case "$e" in *\<Control\>*|*\<Ctrl\>*|*\<Primary\>*) continue ;; esac ;;
+        esac
+        out="${out:+$out, }$e"
+    done
+    printf '[%s]' "$out"
+}
+
+shortcut_hold_keys() {   # "schema key" lines to hold for this session
+    printf '%s\n' \
+        "org.gnome.desktop.wm.keybindings switch-to-workspace-up" \
+        "org.gnome.desktop.wm.keybindings switch-to-workspace-down" \
+        "org.gnome.desktop.wm.keybindings switch-to-workspace-left" \
+        "org.gnome.desktop.wm.keybindings switch-to-workspace-right"
+    # Ctrl+Alt+Delete is a Live 11 binding (delete fades); leave GNOME's
+    # logout key alone for every other major.
+    case "$exe_base" in *"Live 11 "*)
+        printf '%s\n' "org.gnome.settings-daemon.plugins.media-keys logout" ;;
+    esac
+}
+
+shortcut_restore() {   # put every held binding back and drop the state file
+    [ -f "$shortcut_hold_state" ] || return 0
+    local schema key val
+    while IFS='|' read -r schema key val; do
+        [ -n "$schema" ] && [ -n "$val" ] || continue
+        gsettings set "$schema" "$key" "$val" 2>/dev/null || true
+    done < "$shortcut_hold_state"
+    rm -f "$shortcut_hold_state"
+}
+
+shortcut_hold() {   # save + strip each clashing key; original value saved before each write
+    local schema key cur want held=0
+    while read -r schema key; do
+        [ -n "$schema" ] || continue
+        cur="$(gsettings get "$schema" "$key" 2>/dev/null)" || continue
+        want="$(shortcut_strip_ctrl_alt "$cur")"
+        [ "$want" = "${cur#@as }" ] && continue
+        printf '%s|%s|%s\n' "$schema" "$key" "$cur" >> "$shortcut_hold_state"
+        gsettings set "$schema" "$key" "$want" 2>/dev/null || true
+        held=1
+    done <<< "$(shortcut_hold_keys)"
+    [ "$held" -eq 1 ] && echo "ableton-live: holding the GNOME Ctrl+Alt shortcuts Live uses; they restore when Live exits" >&2
+}
+
+# Same session pattern as theme_watch_loop: one watcher per prefix (own lock,
+# fd 7), waits for Live to come up, restores the held bindings once every Live
+# process is gone. A launch that never brings Live up restores after the
+# initial wait runs out.
+shortcut_watch_loop() {
+    local lock="$WINEPREFIX/.ableton-shortcut-hold.lock"
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 7>"$lock" || return 0
+    flock -n 7 || return 0
+    for _ in {1..30}; do
+        pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData && break
+        sleep 2
+    done
+    while pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData; do
+        sleep 2
+    done
+    shortcut_restore
+}
+
+if command -v gsettings >/dev/null 2>&1; then
+    # Heal a crashed session's leftover hold regardless of the flag, but only
+    # while Live is down: with Live running the hold is live, not stale, and
+    # its watcher owns the restore.
+    if [ -f "$shortcut_hold_state" ] \
+        && ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData; then
+        echo "ableton-live: restoring desktop shortcuts a previous session left held" >&2
+        shortcut_restore
+    fi
+    if [ "${ABLETON_SHORTCUTS:-preserve}" = take ] \
+        && [[ "${XDG_CURRENT_DESKTOP:-}" == *GNOME* ]] \
+        && ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q ProgramData; then
+        shortcut_hold
+    fi
+fi
+
 # Audio: PipeASIO -> PipeWire (native client, no JACK layer). Defaults live in
 # ~/.config/pipeasio/config.ini (seeded by setup-prefix.sh); PIPEASIO_* variables
 # override per launch: raise PIPEASIO_PREFERRED_BUFFERSIZE to 512 if crackles.
@@ -807,6 +910,14 @@ fi
 # is not installed or another watcher already holds the prefix's watch lock.
 if [ "${ABLETON_TOPBAR_MODE:-live}" = live ] && [ -n "$EXE" ] && [ -n "${want_light:-}" ]; then
     ( theme_watch_loop ) </dev/null >/dev/null 2>&1 &
+    disown
+fi
+
+# Restore held desktop shortcuts when Live exits (see shortcut_watch_loop
+# above). Spawned whenever a hold is on record, so a relaunch also adopts a
+# hold whose previous watcher died; the lock keeps it to one watcher.
+if [ -f "$shortcut_hold_state" ] && command -v gsettings >/dev/null 2>&1; then
+    ( shortcut_watch_loop ) </dev/null >/dev/null 2>&1 &
     disown
 fi
 
