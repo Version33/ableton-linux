@@ -1,72 +1,111 @@
 # Ableton Live shortcut support
 
-This change fixes two types of shortcut conflict.
+This note explains the shortcut conflicts that can affect Live and the
+mitigation for each one.
 
-## Alt shortcuts in Wine
+Two systems can interfere with a shortcut:
 
-Live uses Alt with number keys and other keys. Live handles these shortcuts
-itself. Wine must not open the menu after Live handles a shortcut.
+- Wine can receive an Alt shortcut but mistake it for an Alt press by itself.
+- GNOME can take a Ctrl+Alt shortcut before Wine receives it.
 
-Wine now clears a pending menu action when the application handles another key
-or a mouse click. It clears the action before other input processing can stop
-the key or click.
+These problems can look similar in Live, but they have different causes. The
+Wine mitigation is automatic. The GNOME mitigation is optional because it
+temporarily changes shortcuts for the complete desktop session.
 
-Normal menu controls do not change:
+## Wine Alt handling
+
+Live handles many Alt shortcuts inside the application. Alt+4 moves focus to
+the device chain, for example, and Live also uses Alt with mouse actions.
+
+Earlier Wine menu handling did not always record the key or click that Live
+handled between the Alt press and the Alt release. Wine could then treat the
+complete shortcut as Alt by itself. This selected the menu bar, and the next
+letter could open a menu instead of going to Live.
+
+### Wine mitigation
+
+This patch now clears a pending menu action when it receives another key press or a
+mouse click. It does this before Live handles that input, so the result does not
+depend on whether Live passes the input to the normal Windows menu code.
+
+An Alt shortcut that Live handles now performs only its Live action. It does
+not prepare the menu for the next letter.
+
+Normal menu controls keep their usual behavior:
 
 - Alt by itself selects the menu bar.
 - Alt with a menu letter opens that menu.
-- An application can pass an Alt shortcut to the normal Windows menu code.
-- F10 keeps its normal Windows behavior when the application does not use it.
+- F10 controls the menu when the application does not use F10 itself.
+- An application can pass an unhandled Alt shortcut to Windows menu handling.
 
-## GNOME shortcuts
+The patched Wine runtime applies this mitigation for every launch. It does not
+need a launcher option.
 
-GNOME handles some key combinations before Wine can receive them. Live uses
-Ctrl+Alt+Up and Ctrl+Alt+Down. Live 11 also uses Ctrl+Alt+Delete.
+## GNOME shortcut ownership
 
-The launcher does not change GNOME shortcuts by default. Use this command to
-let Live use the conflicting shortcuts:
+GNOME uses Ctrl+Alt+Up and Ctrl+Alt+Down to change workspaces. Live uses the
+same keys to adjust note selection chance. GNOME also uses Ctrl+Alt+Delete for
+logout, while Live 11 uses that shortcut to delete fades.
+
+GNOME handles these keys before Wine. Wine cannot send a key to Live after the
+desktop has already used it, so this conflict needs a desktop-level mitigation.
+
+### GNOME mitigation
+
+Start Live with this command when you want Live to receive the conflicting
+keys:
 
 ```bash
 ABLETON_SHORTCUTS=take ableton-live
 ```
 
-The launcher changes only these entries:
+The launcher temporarily holds only these GNOME shortcuts:
 
 - Ctrl+Alt+Up
 - Ctrl+Alt+Down
 - Ctrl+Alt+Delete for Live 11 only
 
-Other entries in the same GNOME setting stay in place. For example, a Super
-key shortcut stays in place.
+The launcher removes only the conflicting entries from each GNOME setting.
+Other entries stay in place. For example, a shortcut that uses the Super key
+still works.
 
-The change applies to the complete GNOME session. Thus, other applications
-cannot use a held shortcut while Live runs. The launcher restores the settings
-after all Live sessions exit.
+This mitigation affects the complete GNOME session. While Live runs, the held
+keys cannot change a workspace or open the logout dialog in another
+application. For this reason, the default `ABLETON_SHORTCUTS=preserve` keeps
+all desktop shortcuts unchanged.
 
-The helper saves recovery data before it changes a setting. It uses one state
-for the GNOME session because all Wine installations share these settings.
+### GNOME restoration and recovery
 
-The helper restores a setting only if it still has the held value. If the user
-changes the setting while Live runs, the helper keeps the user change. If a
-restore operation fails, the helper keeps the recovery data and tries again on
-the next launch.
+The launcher saves the exact GNOME values before it changes them. It restores
+those values after all Live sessions exit.
 
-The helper checks for the required system tools and private temporary storage.
-If a requirement is not available, the helper does not change the desktop.
-The launcher confirms that Live exists before it holds a shortcut. Recovery
-can still run after Live is removed.
+If Live stops unexpectedly, the recovery process restores the saved values
+after all Live sessions stop. If that recovery process also stops, the next
+launch finds the saved values and restores them.
 
-## Saved verification tools
+A failed restore keeps its data. Recovery continues to try, and a later launch
+can also complete the restore.
 
-The repository contains the two tools used for this change.
+Changes made by the user take priority. If you edit a held shortcut while Live
+runs, the launcher keeps your new value instead of replacing it with an older
+saved value.
 
-Run the GNOME hold and recovery tests:
+The launcher changes shortcuts only when GNOME, the required desktop tools,
+and private temporary storage are available. It also confirms that Live exists
+before it starts a new hold. Recovery remains available if Live is later
+removed.
+
+## Test tools
+
+The repository contains the two tools used to check these mitigations.
+
+Run the GNOME hold and recovery test:
 
 ```bash
 scripts/test-shortcut-hold.sh
 ```
 
-The test uses temporary data. It does not change the current GNOME settings.
+This test uses temporary data. It does not change the current GNOME settings.
 
 Build and run the Wine menu test:
 
@@ -76,16 +115,16 @@ winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
 ./altnum-menu-repro.exe pass
 ```
 
-The `swallow` test represents Live. It checks two Alt-key release orders and an
-Alt-click. It also checks Alt with a menu letter and Alt by itself. The `pass`
-test checks normal Windows menu control.
+The `swallow` mode represents input that Live handles. It checks both Alt-key
+release orders, an Alt-click, a menu letter, and Alt by itself. The `pass` mode
+checks input that an application sends to normal Windows menu handling.
 
-The Wine test needs a working Wine display session. The shell test does not.
+The Wine test needs a working Wine display. The GNOME test does not.
 
-## Test status
+## Verification
 
-The Wine patch applies to the Wine 11.13 source and builds without an error.
-Both modes of the saved Wine test pass with the patched build. The shell test
-checks normal use, safe restore, failed restore, and changes made by the user.
+The Wine change applies to the Wine 11.13 source and builds successfully. Both
+modes of the saved Wine test pass with the patched build. The GNOME test checks
+normal use, recovery, a failed restore, and changes made by the user.
 
-The change has not yet had a test in Ableton Live itself.
+The code has not yet been tested inside Ableton Live.
