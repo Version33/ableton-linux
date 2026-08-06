@@ -236,7 +236,8 @@ the same key (Alt+Tab).
 Remedy text for users belongs in TROUBLESHOOTING once the class A fix
 ships, so one entry can cover both: what Wine now fixes, what the DE still
 owns, and the rebind/settings pointer per DE. Not written yet; release
-names, not patch numbers, when it is.
+names, not patch numbers, when it is. Takeover mechanisms for GNOME are
+reviewed in section 7.
 
 ## 5. Verification matrix (open)
 
@@ -262,3 +263,94 @@ standard. Nothing below has been run against real Live yet.
 - `tools/altnum-menu-repro.c`, this branch.
 - Raw logs: scratch only (`swallow.log`, `pass.log`, session scratchpad),
   transcribed in section 2.
+
+## 7. GNOME shortcut takeover review (2026-08-06)
+
+Goal: the class D rows in section 4. GNOME consumes CtrlAlt+arrows
+(workspace switch) and CtrlAlt+Delete (logout dialog, collides with Live
+11 delete fades) before Wine sees them, so patch 0070 cannot help; the
+compositor owns these keys. Four routes, in order of usefulness. All
+schema facts below were read from gsettings on a GNOME Wayland session
+(CachyOS, 2026-08-06); bindings apply immediately on change, verified by
+a live strip-and-restore round trip.
+
+### 7a. Launcher-managed gsettings override (recommended)
+
+GNOME has no per-application shortcut exceptions, but bindings are plain
+gsettings keys that take effect immediately. The launcher can hold them
+for the session the same way it already holds the performance power
+profile: save, strip, restore on exit.
+
+Keys and the session values:
+
+    org.gnome.desktop.wm.keybindings switch-to-workspace-up      -> []
+    org.gnome.desktop.wm.keybindings switch-to-workspace-down    -> []
+    org.gnome.desktop.wm.keybindings switch-to-workspace-left    -> keep only non-CtrlAlt entries
+    org.gnome.desktop.wm.keybindings switch-to-workspace-right   -> keep only non-CtrlAlt entries
+    org.gnome.settings-daemon.plugins.media-keys logout          -> [] (Live 11 sessions)
+
+On this machine up/down carry only the CtrlAlt binding (strip to empty),
+left/right also carry Super variants, which stay. Super combinations
+never collide: chapter 41's Windows column does not use the Win key.
+
+Shape:
+
+- Save the exact current value of each key to a state file before
+  changing anything; write the stripped value; restore from the state
+  file on exit through the launcher's exit path.
+- Crash guard: if the state file already exists at launch, restore it
+  first, then proceed. The state file holds the pre-Live values, so a
+  crashed session heals on the next start.
+- Second-instance guard: skip the save step when the state file exists
+  (the restore-first rule already covers it); restore only when the last
+  instance exits, or accept last-exit-wins for simplicity.
+- Scope: only when the session is GNOME (XDG_CURRENT_DESKTOP) and the
+  schema keys exist. KDE has its own mechanism (kwriteconfig kglobalshortcutsrc);
+  out of scope here.
+- Opt-in flag, not default: silently editing a user's desktop bindings
+  is surprising, and the stripped keys stay dead for every other window
+  while Live runs. Naming and default are Theo's call.
+
+Tested on this machine: setting switch-to-workspace-up to [] and back
+restores the original literal exactly, effective immediately, no session
+restart.
+
+### 7b. Mutter Xwayland grab whitelist (fullscreen mode, needs a fork patch)
+
+Mutter supports full shortcut takeover for X11 clients: when a client
+holds an active X keyboard grab and its WM_CLASS matches
+`org.gnome.mutter.wayland xwayland-grab-access-rules` (wildcards
+supported, "!" denies), all keys route to the client. The user breaks a
+grab with `org.gnome.mutter.wayland.keybindings restore-shortcuts`,
+default Super+Escape. The default allow list ships with virt-viewer,
+gnome-boxes and friends; this is the mechanism VM viewers use.
+
+Wine never issues XGrabKeyboard: the winex11 GrabFullscreen option clips
+the pointer only, and the only XGrabKeyboard in the tree is a comment
+(keyboard.c:1414). Using this route means a fork patch that grabs the
+keyboard while a launcher-selected fullscreen window holds focus, paired
+with 0065's fullscreen normalization, plus a setup step that adds Live's
+WM_CLASS to the access rules. Takeover would then cover everything,
+including Alt+Tab and Super, which is more than Windows parity and wrong
+for windowed use. Candidate for a fullscreen performance mode later, not
+for the default session.
+
+### 7c. Wayland shortcuts inhibitor (future, driver change)
+
+The `zwp_keyboard_shortcuts_inhibit` protocol is the native Wayland form
+of 7b and needs the winewayland driver, which our stack does not use
+(winex11 under XWayland). Becomes relevant only if the fork ever moves
+drivers.
+
+### 7d. Documentation only (fallback, always available)
+
+One-time user commands, global rather than session-scoped: remove the
+CtrlAlt variants from the workspace bindings (left/right keep their
+Super bindings; up/down lose their only binding) and clear or rebind
+logout for Live 11 users. This is the TROUBLESHOOTING content once this
+work is documented; per the docs spec it names releases, not patches,
+and stays in the reader's chair.
+
+Recommendation: implement 7a in the launcher behind an opt-in flag, ship
+7d as the documented remedy for everyone else, keep 7b as a fullscreen
+mode idea, ignore 7c until the driver changes.
