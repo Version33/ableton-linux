@@ -136,23 +136,35 @@ diff --git a/include/interactioncontext.h b/include/interactioncontext.h
 index 7d0c583..b8913a0 100644
 --- a/include/interactioncontext.h
 +++ b/include/interactioncontext.h
-@@ -181,2 +181,4 @@ typedef void (CALLBACK *INTERACTION_CONTEXT_OUTPUT_CALLBACK)(void *data,
+@@ -178,6 +178,8 @@ typedef struct INTERACTION_CONTEXT_OUTPUT
+ typedef void (CALLBACK *INTERACTION_CONTEXT_OUTPUT_CALLBACK)(void *data,
+         const INTERACTION_CONTEXT_OUTPUT *output);
+ 
 +HRESULT WINAPI AddPointerInteractionContext(HINTERACTIONCONTEXT context, UINT32 pointer_id);
 +
  HRESULT WINAPI BufferPointerPacketsInteractionContext(HINTERACTIONCONTEXT context,
          UINT32 entries_count, const POINTER_INFO *pointer_info);
-@@ -187,2 +189,4 @@ HRESULT WINAPI DestroyInteractionContext(HINTERACTIONCONTEXT context);
+ 
+@@ -186,10 +188,15 @@ HRESULT WINAPI DestroyInteractionContext(HINTERACTIONCONTEXT context);
+ 
  HRESULT WINAPI ProcessBufferedPacketsInteractionContext(HINTERACTIONCONTEXT context);
  HRESULT WINAPI ProcessInertiaInteractionContext(HINTERACTIONCONTEXT context);
 +HRESULT WINAPI ProcessPointerFramesInteractionContext(HINTERACTIONCONTEXT context,
 +        UINT32 entries_count, UINT32 pointer_count, const POINTER_INFO *pointer_info);
-@@ -193,2 +197,5 @@ HRESULT WINAPI RegisterOutputCallbackInteractionContext(HINTERACTIONCONTEXT conte
+ 
+ HRESULT WINAPI RegisterOutputCallbackInteractionContext(HINTERACTIONCONTEXT context,
+         INTERACTION_CONTEXT_OUTPUT_CALLBACK callback, void *data);
+ 
 +HRESULT WINAPI RemovePointerInteractionContext(HINTERACTIONCONTEXT context, UINT32 pointer_id);
 +HRESULT WINAPI ResetInteractionContext(HINTERACTIONCONTEXT context);
 +
  HRESULT WINAPI GetInteractionConfigurationInteractionContext(HINTERACTIONCONTEXT context,
          UINT32 count, INTERACTION_CONTEXT_CONFIGURATION *configuration);
-@@ -206,3 +213,5 @@ HRESULT WINAPI GetStateInteractionContext(HINTERACTIONCONTEXT context,
+ HRESULT WINAPI SetInteractionConfigurationInteractionContext(HINTERACTIONCONTEXT context,
+@@ -203,6 +210,8 @@ HRESULT WINAPI SetPropertyInteractionContext(HINTERACTIONCONTEXT context,
+ HRESULT WINAPI GetStateInteractionContext(HINTERACTIONCONTEXT context,
+         const POINTER_INFO *pointer_info, INTERACTION_STATE *state);
+ 
 +HRESULT WINAPI StopInteractionContext(HINTERACTIONCONTEXT context);
 +
  #ifdef __cplusplus
