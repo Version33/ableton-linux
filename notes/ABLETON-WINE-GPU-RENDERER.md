@@ -207,8 +207,18 @@ rectangle pairs: when more than half of the frames in a five-second
 window fall back, and this happens in two qualifying windows, the gate
 also reports a fault. A pause of at least one second discards an
 unfinished window. One completed strike survives pauses shorter than
-30 seconds, so a fault that presents in bursts still warns; a pause of
-30 seconds or longer clears it before unrelated activity can accumulate.
+30 seconds, so a fault that presents in bursts longer than five seconds
+still warns; a pause of 30 seconds or longer clears it before unrelated
+activity can accumulate. The five seconds are the mechanism, not a
+margin: a burst shorter than the ratio window never completes one, so it
+never scores a strike at all. Carrying the strike across the pause is
+what lowers the requirement, from about twelve seconds of unbroken
+mismatch to about five and a half.
+
+The 30-second reset is a chosen trade rather than a derived bound. It
+admits one narrow false positive: two 6-second bursts of more than half
+fallback warn when they are 20 seconds apart, and do not when they are
+60 apart. Measured healthy sessions sit well below that shape.
 
 The report prints once for each swapchain and has two parts. Two
 `ableton-wine:` lines always print, on every WINEDEBUG setting. They
@@ -225,6 +235,16 @@ The launchers, the Max 9 launcher, and the beta tester kit now set
 only these rare notices through. When Wine destroys a swapchain that
 warned, it prints one summary line with the totals, so a long session
 leaves a record even when nobody watched it.
+
+A desktop launch inherits stderr from the desktop environment, which may
+be /dev/null, so the notice needs somewhere to land. `scripts/ableton-live`
+tees stderr to `~/.log/ableton-wine/live.log` and `bin/ableton-live-beta`
+to `live-beta.log` beside it; the tester kit's `run-session` already
+captures both streams into its session file. Each launcher starts a fresh
+log only when it is the one bringing Live up: every Live desktop entry
+(`.als`, `.auz`, `ableton://`) runs the same launcher again to hand its
+argument to the running instance, and truncating on that path would wipe
+the warning the running session had already recorded.
 
 Status on 2026-08-07: the patch compiles clean and the built
 `wined3d.dll` contains both audit fingerprints. At 125%, the persistent
@@ -246,6 +266,15 @@ full-session checks below remain runtime acceptance checks:
    warning must not appear.
 3. On a normal build, run a full session. No `Sustained present-size
    mismatch` line and no destroy summary must appear.
+
+Status on 2026-08-08: the burst figures above come from review, from a
+sweep of the counter logic rather than a Live session. Sweeping burst
+length at 100% mismatch with 6-second pauses, bursts of 5.5 seconds and
+longer warned after 16.5 to 19 seconds, and bursts of 5 seconds and
+shorter stayed silent through 3000 mismatched frames. The same sweep
+put the false-positive edge at a 20-second gap. A Live session has not
+been run against these thresholds; acceptance checks 1 to 3 above still
+stand.
 
 ## Device identification (added 2026-07-30, updated 2026-08-01, issue 84)
 

@@ -21,7 +21,11 @@ drag changes the pair every frame, a persistent coordinate topology
 repeats it. A five-second ratio window with a two-strike rule catches
 a fault that oscillates between pairs. An idle second drops a partial
 window, but the completed strike survives pauses under thirty seconds
-so bursty faults still warn without joining unrelated events.
+so a fault bursting for longer than one window still warns without
+joining unrelated events. A shorter burst never completes a window and
+so never scores a strike; carrying the strike across the pause lowers
+what one burst must sustain from about twelve seconds to about five
+and a half.
 
 When one pair persists for 120 frames, about two seconds at 60Hz, or
 the fallback ratio stays above half for two windows, warn once per

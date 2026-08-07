@@ -14,8 +14,17 @@ set -u
 # Keep diagnostics from the current launch at one stable path. Tee preserves
 # terminal output while also covering desktop launchers whose stderr is
 # otherwise inherited from the desktop environment (and may be /dev/null).
+# ">>" creates the file and proves it writable without discarding anything.
 diagnostic_dir="$HOME/.log/ableton-wine"
-if mkdir -p -- "$diagnostic_dir" && : > "$diagnostic_dir/live.log"; then
+if mkdir -p -- "$diagnostic_dir" && : >> "$diagnostic_dir/live.log"; then
+    # Start a fresh log only when this launcher is the one bringing Live up. Every
+    # Live desktop entry - .als, .auz, ableton:// - runs this same script to hand
+    # its argument to the running instance, so truncating unconditionally would
+    # wipe the running session's diagnostics, including the patch 0071 present
+    # fallback warning that lands about two seconds into a faulted session. Same
+    # already-running test as the single-instance guard below.
+    pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData" \
+        || : > "$diagnostic_dir/live.log"
     exec 2> >(tee -a "$diagnostic_dir/live.log" >&2)
 else
     echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2

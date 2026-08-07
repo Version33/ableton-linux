@@ -63,10 +63,9 @@ include your graphics card model.
 
 ## CPU spikes when moving your mouse
 
-Every Live launch keeps its current diagnostics in
-`~/.log/ableton-wine/live.log`, whether you start it from the desktop
-menu or a terminal. If Live's CPU use jumps while you move the mouse,
-run:
+Live keeps its current diagnostics in `~/.log/ableton-wine/live.log`,
+whether you start it from the desktop menu or a terminal. If Live's CPU
+use jumps while you move the mouse, run:
 
 ```bash
 grep -i "sustained present-size mismatch:" ~/.log/ableton-wine/live.log
