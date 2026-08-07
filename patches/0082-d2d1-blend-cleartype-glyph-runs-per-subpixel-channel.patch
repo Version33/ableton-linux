@@ -7,7 +7,7 @@ filled the run rectangle with that brush as an opacity mask. Three
 samples spanning one pixel are filtered back into one coverage value, so
 the result was the greyscale the mask was meant to improve on, and text
 drawn through Direct2D looked the same either way. That is the path
-Ableton Live and every Direct2D application take.
+every Direct2D application takes.
 
 Draw the run once per channel instead. Each pass is masked by that
 channel's coverage alone and writes only its own colour channel, which

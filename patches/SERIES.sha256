@@ -63,12 +63,12 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 7931be1771a070325eb0b87f970e51f7089c216f1bad128fb5ecf504e100e005  0065-win32u-normalize-selected-fullscreen-window.patch
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 57dd3b7845788c6e0327f1116e526b11d9e802f9c643c8a948f4fd1e8c7bf926  0081-dwrite-rasterise-cleartype-runs-at-subpixel-resoluti.patch
-f2b2502c0e69cd331a28381b6c8f6998dd5d846158f0c75235df0d21bf7f153f  0082-d2d1-blend-cleartype-glyph-runs-per-subpixel-channel.patch
+0cf5bdc8bc8aebbe3b8daa566d6d7232a1098dee4f0b5076a3f373a94881f354  0082-d2d1-blend-cleartype-glyph-runs-per-subpixel-channel.patch
 168217bf0b56b67a8f3a2377ee343b4485d6f4cc25a302d3a1de9322841325e6  0083-dwrite-take-the-cleartype-level-and-pixel-geometry-f.patch
 73d311551c1ae9eac2f24b8f9943fca2c72569c6d9c426351c7069eebafcd72c  0084-win32u-let-a-prefix-s-own-font-smoothing-outrank-the.patch
 9df990613259dc1fff4b101b71734e8ce9f10c62dc6c06fc7a9235697fd55676  0085-dwrite-preserve-ClearType-filter-tails-in-glyph-boun.patch
 56e890417210af2d12f6e4a0db044d0f20224a0da3ac26eb5c549dfe02555be6  0086-d2d1-honor-ClearType-geometry-and-safe-target-policy.patch
-da886cdc7a31820a4d2e17966980d424316080889f27361c815f4d05e160863a  0087-win32u-resolve-font-smoothing-by-source-precedence.patch
+f90e6287a366b7cda839358c3284689ff76de6426b0508a5ed041136882d7066  0087-win32u-resolve-font-smoothing-by-source-precedence.patch
 efec6729f1663efe78c7efa941b826b2a28d219bf6faa974294a3bfa854b84f5  0088-win32u-allow-a-semantic-desktop-UI-stock-font.patch
 10d34c085b2a1b554457524978e8a380d3c15aaafd290657e5ef8ca9874221c2  0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch

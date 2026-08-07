@@ -110,7 +110,7 @@ index aadd830..5f4aea4 100644
              }
              *aa_flags = font_funcs->get_aa_flags( font, *aa_flags, antialias_fakes );
          }
-@@ -4795,13 +4800,15 @@ static UINT init_font_options(void)
+@@ -4795,13 +4800,22 @@ static UINT init_font_options(void)
                  break;
              }
          }
@@ -118,14 +118,21 @@ index aadd830..5f4aea4 100644
 +        if (get_key_value( key, "FontSmoothing", &val ))
          {
 -            if (get_key_value( key, "FontSmoothingType", &val ))
-+            font_smoothing_from_prefix = TRUE;
 +            if (!val)
++            {
 +                font_smoothing = GGO_BITMAP;
++                font_smoothing_from_prefix = TRUE;
++            }
 +            else if (get_key_value( key, "FontSmoothingType", &val ))
              {
                  font_smoothing = val == 2 /* FE_FONTSMOOTHINGCLEARTYPE */
                          ? subpixel_orientation : GGO_GRAY4_BITMAP;
 -                font_smoothing_from_prefix = TRUE;
++                /* sysparams_init seeds FontSmoothing="2" with
++                 * FE_FONTSMOOTHINGSTANDARD into every new prefix, so that pair
++                 * records nothing the user chose. ClearType is written by
++                 * nobody but the user, so it does. */
++                if (val == 2) font_smoothing_from_prefix = TRUE;
              }
              else
                  font_smoothing = GGO_GRAY4_BITMAP;
