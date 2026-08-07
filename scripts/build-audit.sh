@@ -75,6 +75,17 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
+    [0070]="reserved for PRs 139, 140 and 153, which each add a 0070"
+    [0071]="reserved for PR 141"
+    [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
+    [0073]="reserved for PR 152"
+    [0074]="reserved for PR 152"
+    [0075]="reserved for the Win32 application compatibility series"
+    [0076]="reserved for the Win32 application compatibility series"
+    [0077]="reserved for the Win32 application compatibility series"
+    [0078]="reserved for the Win32 application compatibility series"
+    [0079]="reserved for the Win32 application compatibility series"
+    [0080]="reserved for the Win32 application compatibility series"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -145,11 +156,20 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
+0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 STAMP_ONLY='
+0081|logic-only (subpixel rasterisation for ClearType glyph textures; adds no string literal)
+0082|logic-only (per-channel blend passes for ClearType runs; adds no string literal)
+0083|logic-only (ClearType level and pixel geometry from system settings; adds no string literal)
+0085|logic-only (filter tails retained in glyph bounds; adds no string literal)
+0086|logic-only (pixel geometry and target policy for ClearType; adds no string literal)
+0087|logic-only (smoothing resolved by source precedence; adds no string literal)
+0088|logic-only (semantic desktop UI stock font; adds no string literal)
+0089|logic-only (signed ClearType coverage interpolation; adds no string literal)
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
 0005|logic-only (NC frame allowance)
