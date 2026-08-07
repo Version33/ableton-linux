@@ -18,10 +18,10 @@ total gate decisions, fallback frames, the longest consecutive run,
 and the longest run repeating one identical (dst, client) rect pair.
 The pair repeat separates an interactive resize from a real fault: a
 drag changes the pair every frame, a persistent coordinate topology
-repeats it. A rolling five-second window with a two-strike rule
-catches a fault that oscillates between pairs; the window restarts
-every period, so a healthy session cannot accumulate its way over the
-threshold.
+repeats it. A five-second ratio window with a two-strike rule catches
+a fault that oscillates between pairs. An idle second drops a partial
+window, but the completed strike survives pauses under thirty seconds
+so bursty faults still warn without joining unrelated events.
 
 When one pair persists for 120 frames, about two seconds at 60Hz, or
 the fallback ratio stays above half for two windows, warn once per
@@ -43,9 +43,9 @@ limits GPU device resets with a count-and-rate rule, and Chromium
 forgives one GPU crash per five minutes so transient trouble cannot
 trip a permanent response.
 ---
- dlls/wined3d/swapchain.c       | 178 +++++++++++++++++++++++++++++++++---
+ dlls/wined3d/swapchain.c       | 180 +++++++++++++++++++++++++++++++++---
  dlls/wined3d/wined3d_private.h |  21 +++++
- 2 files changed, 188 insertions(+), 11 deletions(-)
+ 2 files changed, 190 insertions(+), 11 deletions(-)
 
 diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
 index 91c8c90..858dce3 100644
@@ -76,18 +76,19 @@ index 91c8c90..858dce3 100644
      if (swapchain->comp_dc)
      {
          SelectObject(swapchain->comp_dc, swapchain->comp_old_bitmap);
-@@ -1289,11 +1299,79 @@ static bool swapchain_present_is_partial_copy(struct wined3d_swapchain *swapchai
+@@ -1289,11 +1299,80 @@ static bool swapchain_present_is_partial_copy(struct wined3d_swapchain *swapchai
   * origin then lands the frame low, black band on top, bottom rows clipped
   * (issue 100; the niri report on PR 98).  The GDI present path anchors
   * top-left and shows the same frame correctly under the mismatch. */
 -static bool swapchain_gl_present_size_agrees(const struct wined3d_swapchain *swapchain, const RECT *dst_rect)
-+/* Warning thresholds for the gate below.  120 identical-pair frames is about
-+ * two seconds at 60Hz: a resize drag changes the rect pair every frame and
-+ * cannot reach it.  The ratio window needs two consecutive strikes, ten
-+ * seconds above 50%, before it fires; a drag the user releases resets it. */
++/* Warning thresholds: 120 identical-pair frames is about two seconds at
++ * 60Hz; a resize drag changes the pair every frame and cannot reach it.
++ * The ratio rule needs two >50% five-second windows; idle drops a partial
++ * window after one second and a prior strike only after 30 seconds. */
 +#define PRESENT_MISMATCH_STABLE_LIMIT 120
 +#define PRESENT_MISMATCH_WINDOW_MS 5000
 +#define PRESENT_MISMATCH_IDLE_MS 1000
++#define PRESENT_MISMATCH_STRIKE_RESET_MS 30000
 +#define PRESENT_MISMATCH_WINDOW_MIN_PRESENTS 60
 +#define PRESENT_MISMATCH_WINDOW_STRIKES 2
 +
@@ -144,7 +145,7 @@ index 91c8c90..858dce3 100644
 +            swapchain->state.desc.flags, swapchain->device->adapter->driver_info.description,
 +            session, desktop,
 +            swapchain->present_mismatch.total, swapchain->present_mismatch.mismatches,
-+            swapchain->present_mismatch.consecutive, swapchain->present_mismatch.stable_run);
++            swapchain->present_mismatch.consecutive_max, swapchain->present_mismatch.stable_run_max);
 +}
 +
 +static bool swapchain_gl_present_size_agrees(struct wined3d_swapchain *swapchain, const RECT *dst_rect)
@@ -157,7 +158,7 @@ index 91c8c90..858dce3 100644
  
      /* Ask the way translate_drawable_coords now asks (0059) and the way
       * dst_rect was captured (0023): in the window's own DPI context.  An
-@@ -1305,17 +1378,94 @@ static bool swapchain_gl_present_size_agrees(const struct wined3d_swapchain *swa
+@@ -1305,17 +1378,95 @@ static bool swapchain_gl_present_size_agrees(const struct wined3d_swapchain *swa
      GetClientRect(swapchain->win_handle, &client_rect);
      SetThreadDpiAwarenessContext(prev);
  
@@ -182,10 +183,11 @@ index 91c8c90..858dce3 100644
 +    if (swapchain->present_mismatch.window_start
 +            && now - swapchain->present_mismatch.window_last_present >= PRESENT_MISMATCH_IDLE_MS)
 +    {
++        if (now - swapchain->present_mismatch.window_last_present >= PRESENT_MISMATCH_STRIKE_RESET_MS)
++            swapchain->present_mismatch.window_strikes = 0;
 +        swapchain->present_mismatch.window_start = now;
 +        swapchain->present_mismatch.window_total = 0;
 +        swapchain->present_mismatch.window_mismatches = 0;
-+        swapchain->present_mismatch.window_strikes = 0;
 +    }
 +    else if (!swapchain->present_mismatch.window_start)
 +    {
@@ -236,9 +238,9 @@ index 91c8c90..858dce3 100644
 +    }
 +
 +    /* The rolling-ratio window catches a fault that oscillates between rect
-+     * pairs and so never grows a stable run.  An idle gap reset above drops
-+     * both the partial window and its prior strike instead of counting two
-+     * disconnected bursts as sustained fallback. */
++     * pairs and so never grows a stable run.  The idle reset drops a partial
++     * window but keeps its strike across short gaps; a long idle drops the
++     * strike so disconnected bursts cannot accumulate. */
 +    if (now - swapchain->present_mismatch.window_start >= PRESENT_MISMATCH_WINDOW_MS)
 +    {
 +        if (swapchain->present_mismatch.window_total >= PRESENT_MISMATCH_WINDOW_MIN_PRESENTS
@@ -276,8 +278,8 @@ index 21c4adc..bc2c7aa 100644
 +     * frames that repeat one identical (dst, client) rect pair: an
 +     * interactive resize changes the pair every frame, a persistent
 +     * coordinate-topology fault repeats it.  The window_* fields are a
-+     * rolling-ratio window that restarts every few seconds, so a healthy
-+     * session can never accumulate its way over the warning threshold. */
++     * ratio window; idle drops its partial counts, while a completed strike
++     * survives short pauses but resets after 30 seconds. */
 +    struct
 +    {
 +        unsigned int total;                 /* gate decisions */

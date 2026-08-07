@@ -10,6 +10,17 @@
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
 #            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
 set -u
+
+# Keep diagnostics from the current launch at one stable path. Tee preserves
+# terminal output while also covering desktop launchers whose stderr is
+# otherwise inherited from the desktop environment (and may be /dev/null).
+diagnostic_dir="$HOME/.log/ableton-wine"
+if mkdir -p -- "$diagnostic_dir" && : > "$diagnostic_dir/live.log"; then
+    exec 2> >(tee -a "$diagnostic_dir/live.log" >&2)
+else
+    echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2
+fi
+
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"

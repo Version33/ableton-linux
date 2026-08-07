@@ -204,8 +204,11 @@ persistent fault compares the same two rectangles on every frame. When
 the same pair repeats for 120 frames, about two seconds, the gate
 reports a fault. A second rule covers faults that alternate between
 rectangle pairs: when more than half of the frames in a five-second
-window fall back, and this happens in two windows in a row, the gate
-also reports a fault.
+window fall back, and this happens in two qualifying windows, the gate
+also reports a fault. A pause of at least one second discards an
+unfinished window. One completed strike survives pauses shorter than
+30 seconds, so a fault that presents in bursts still warns; a pause of
+30 seconds or longer clears it before unrelated activity can accumulate.
 
 The report prints once for each swapchain and has two parts. Two
 `ableton-wine:` lines always print, on every WINEDEBUG setting. They
@@ -223,12 +226,14 @@ only these rare notices through. When Wine destroys a swapchain that
 warned, it prints one summary line with the totals, so a long session
 leaves a record even when nobody watched it.
 
-Status on 2026-08-05: the patch compiles clean and the built
-`wined3d.dll` contains both audit fingerprints. Runtime verification
-is done. On the fault rig the warning fired at exactly identical-pair
-120, with dst (0,0)-(1706,896) against client (0,0)-(1365,717). On a
-healthy build, a 26 s edge drag measured 613 of 3028 presents falling
-back, longest run 7, and no warning. The checks were:
+Status on 2026-08-07: the patch compiles clean and the built
+`wined3d.dll` contains both audit fingerprints. At 125%, the persistent
+fault rig fired at exactly identical-pair 120, with dst
+(0,0)-(1706,896) against client (0,0)-(1365,717). A separate 26-second
+healthy edge drag at 100% (96 DPI) measured 613 of 3028 presents
+falling back, longest run 7, and no warning. The ratio rule's idle-gap
+and maximum-counter paths are model-checked. The normal 125% resize and
+full-session checks below remain runtime acceptance checks:
 
 1. Build with the 0059 `swapchain.c` bracket reverted. The gate then
    compares a CS-thread-context height against a window-context

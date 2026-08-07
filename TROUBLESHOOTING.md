@@ -63,20 +63,19 @@ include your graphics card model.
 
 ## CPU spikes when moving your mouse
 
-If Live's CPU use jumps while you move the mouse, run:
+Every Live launch keeps its current diagnostics in
+`~/.log/ableton-wine/live.log`, whether you start it from the desktop
+menu or a terminal. If Live's CPU use jumps while you move the mouse,
+run:
 
 ```bash
-journalctl --user --since "-15min" | grep -i "sustained present-size mismatch:"
+grep -i "sustained present-size mismatch:" ~/.log/ableton-wine/live.log
 ```
 
 If that prints anything,
 [open an issue](https://github.com/shibco/ableton-linux/issues) and paste
-the whole line, together with your desktop environment and your display
-scale.
-
-If you started Live from a terminal instead of the desktop menu, the line
-appears in that terminal rather than the system log. Look there for lines
-containing `ableton-wine:` and paste those instead.
+the whole line. It starts with `err:winediag:` and includes your desktop
+environment and window DPI.
 
 If nothing prints and Live's CPU use is still high, the cause is
 different. Open an issue and describe what you were doing when it
