@@ -357,11 +357,12 @@ if [ "$manual_install" -eq 0 ]; then
             # has DisplayInternalUI=yes, so /passive shows the Live setup wizard and the
             # user clicks through it (same on Windows). The generations are told apart by
             # content: WiX 4 engine stubs carry the 'wixtoolset.dutil' build path within the
-            # first megabyte, the WiX 3 stub has no such string. A missed detection degrades
-            # to unseeded behaviour, never to a broken one.
-            # grep -q closes the process substitution as soon as it matches;
-            # silence head's expected EPIPE rather than printing a false error.
-            if grep -qa 'wixtoolset' <(head -c 4M -- "$live_exe" 2>/dev/null); then
+            # first megabyte, the WiX 3 stub has no such string. Case matters here: WiX 3
+            # stubs do carry 'WiX Toolset Bootstrapper' in their manifest, so the match is
+            # deliberately case-sensitive and unspaced - a -i added later would match both
+            # generations and silently invert the gate. A missed detection degrades to
+            # unseeded behaviour, never to a broken one.
+            if grep -qa 'wixtoolset' <(head -c 4M -- "$live_exe"); then
                 # GUIDs are MSI packed form: 86C5CFEA... is the driver UpgradeCode
                 # {AEFC5C68-0264-4E30-9685-28712A91CF4E}; 16A75B0B... is the placeholder
                 # ProductCode {B0B57A61-11E0-4A2E-9A11-AB1E70201126}, invented for this
@@ -461,7 +462,8 @@ else
     say "           ~/.local/opt/$RUNTIME_NAME/bin/wine ./*.exe \\"
     say "           /SILENT /SUPPRESSMSGBOXES /NORESTART '/MERGETASKS=!audiodriver'"
     say "     (Live 12: the flags let it install by itself and skip a Windows-only driver;"
-    say "      Live 11: drop them and click through its installer window instead)"
+    say "      Live 11: use /passive /norestart instead. The USB audio driver may install"
+    say "      on a hand-run; the next --update removes its autostart entry.)"
 fi
 say "Launch Live:   ~/.local/bin/ableton-live"
 say "Then, inside Live:"

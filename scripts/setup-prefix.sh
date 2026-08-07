@@ -295,7 +295,7 @@ for run_key in 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' \
 done
 for startup_root in "$WINEPREFIX/drive_c/users" "$WINEPREFIX/drive_c/ProgramData"; do
     [ -d "$startup_root" ] || continue
-    find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' -iname '*tusbaudio*' -delete
+    find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' -iname '*tusbaudio*' -delete 2>/dev/null || true
 done
 "$WINESERVER" -w
 

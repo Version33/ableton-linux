@@ -47,7 +47,7 @@ Burn manifest is its first file):
 - WiX 4 generation, engine 4.0.5.0, observed in trial 11.3.35 and suite
   11.3.42. The wizard checkbox sets the numeric variable
   `InstallAudioDriver`, default 1, not overridable from the command line
-  (the only overridable variable is `BypassProcessorCheck`). An
+  (no variable in the manifest carries an `Overridable` attribute). An
   MsiProductSearch on the driver UpgradeCode
   `{AEFC5C68-0264-4E30-9685-28712A91CF4E}` sets
   `InstalledPush3AudioDriverVersion`. The driver package
