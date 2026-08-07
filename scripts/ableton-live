@@ -652,6 +652,41 @@ sync_font_fallback() {   # family -> register its SystemLink chain from what syn
         /v "$fam" /t REG_MULTI_SZ /d "${want}\0" /f >/dev/null 2>&1 9>&-
 }
 
+# Wine takes the antialiasing mode for GDI text from the host's Xft resources,
+# so a desktop set to grayscale renders Live's menus and dialogs grayscale
+# whatever the prefix asks for. An explicit FontSmoothingType in the prefix
+# outranks that (patch 0084), and this is what keeps it set: setup-prefix.sh
+# seeds it, and a prefix made by an older release has nothing.
+# ABLETON_TEXT_SMOOTHING=grayscale drops back to grayscale antialiasing,
+# preserve leaves whatever the prefix already carries.
+sync_text_smoothing() {
+    local want_type order cur_enabled cur_type
+    case "${ABLETON_TEXT_SMOOTHING:-subpixel}" in
+        preserve) return 0 ;;
+        grayscale) want_type=1 ;;
+        subpixel)  want_type=2 ;;
+        *)
+            echo "ableton-live: ABLETON_TEXT_SMOOTHING must be subpixel, grayscale, or preserve: using subpixel" >&2
+            want_type=2 ;;
+    esac
+    cur_enabled="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"FontSmoothing"=/{gsub(/.*="?/,""); gsub(/"\r?$/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
+    cur_type="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"FontSmoothingType"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
+    [ "$cur_enabled" = 2 ] && [ "$((16#${cur_type:-0}))" = "$want_type" ] && return 0
+
+    # A BGR panel rendered as RGB fringes the wrong way, so follow the host
+    # where it states an order.
+    order=1
+    if command -v gsettings >/dev/null 2>&1; then
+        case "$(gsettings get org.gnome.desktop.interface font-rgba-order 2>/dev/null | tr -d "'")" in
+            bgr) order=0 ;;
+        esac
+    fi
+    echo "ableton-live: setting text antialiasing to ${ABLETON_TEXT_SMOOTHING:-subpixel}" >&2
+    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f >/dev/null 2>&1 9>&-
+    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d "$want_type" /f >/dev/null 2>&1 9>&-
+    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$order" /f >/dev/null 2>&1 9>&-
+}
+
 sync_ui_font() {
     local mode="${ABLETON_UI_FONT:-auto}" winfonts="$WINEPREFIX/drive_c/windows/Fonts"
     local fonts_dir="" family="" f linked=0
@@ -765,6 +800,7 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
         fi
     fi
     sync_ui_font
+    sync_text_smoothing
 fi
 
 # Audio: PipeASIO -> PipeWire (native client, no JACK layer). Defaults live in

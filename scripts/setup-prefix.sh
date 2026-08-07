@@ -578,6 +578,27 @@ fi
 wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
 "$WINESERVER" -w
 
+echo "== [3c/5] text: subpixel antialiasing =="
+# Wine takes the antialiasing mode from the host's Xft resources, so a desktop
+# set to grayscale renders every Win32 menu, dialog and control grayscale
+# whatever the prefix asks for. Patch 0084 lets an explicit FontSmoothingType
+# in the prefix outrank that, and this is what sets it. Without these values
+# the patch has nothing to act on and text stays grayscale.
+#
+# The subpixel order follows the host where it states one: a BGR panel
+# rendered as RGB fringes the wrong way.
+smoothing_order=1   # FE_FONTSMOOTHINGORIENTATIONRGB
+if command -v gsettings >/dev/null 2>&1; then
+    case "$(gsettings get org.gnome.desktop.interface font-rgba-order 2>/dev/null | tr -d "'")" in
+        bgr) smoothing_order=0 ;;
+    esac
+fi
+case "$smoothing_order" in 0) echo "   subpixel order: BGR" ;; *) echo "   subpixel order: RGB" ;; esac
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2 /f
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$smoothing_order" /f
+"$WINESERVER" -w
+
 echo "== [4/5] register packaged PipeASIO =="
 ldconfig -p 2>/dev/null | grep -F 'libpipewire-0.3.so.0' >/dev/null || \
   echo "!! host libpipewire-0.3.so.0 not found; install pipewire (0.3.56 or newer, 1.6+ recommended)"
