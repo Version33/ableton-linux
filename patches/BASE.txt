@@ -11,9 +11,10 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 64 files, numbered 0001 through 0069.
-Patches 0027 and 0044 are intentionally absent. Patches 0066 through 0068
-are reserved by PR 124 and will enter this branch when it rebases after merge.
+The current Wine series contains 70 files, numbered 0001 through 0080.
+Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0074
+are reserved by open pull requests and will enter this branch as those
+merge.
 
 ## Applying the series
 
@@ -251,3 +252,42 @@ Apply them in sequence with the rest of the series.
   borderless fullscreen, unselected windows, and plugin windows retain Wine's
   existing behavior. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
   for comparison. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
+  Applications link it as a static import, so the generated stub
+  raised EXCEPTION_WINE_STUB during exit teardown. Fakes success to
+  match the register half of the API.
+- `0076`: implement userenv DeriveAppContainerSidFromAppContainerName:
+  SHA-256 over the lowercased container name, SID S-1-15-2 plus the
+  first seven digest words. libcef.dll links it as a regular import;
+  the generated stub fired when Chromium's sandbox derived the
+  AppContainer SID for a sandboxed child process.
+- `0077`: advertise the minimize and maximize Motif functions for
+  disabled windows, extending 0037's close-function reasoning. Hints
+  computed during a WS_DISABLED phase (a startup modal holding the
+  main window) made mutter refuse the application's own programmatic
+  SW_SHOWMAXIMIZED restore.
+- `0078`: pass the initial monitor DPI to the create_window request.
+  Backport of Wine MR 11573, the proposed fix for upstream bug 60023,
+  the 11.12 to 11.13 regression that sizes windows of per-monitor-aware
+  processes at a quarter of their request. Includes the regenerated
+  protocol files; the SERVER_PROTOCOL_VERSION bump rides the
+  performance series patch that follows in this stack, so a build
+  that drops the performance series must bump it here instead.
+- `0079`: skip the standalone-surface window search in dxgi's ReleaseDC
+  when the surface's owner presents it itself. Nothing binds a
+  standalone DXGI surface to a window, so ReleaseDC enumerates the
+  desktop and blits into any same-sized popup. An ID2D1DCRenderTarget
+  already blits to the application's device context in its present, and
+  runs GetDC/ReleaseDC twice per frame. An application drawing its
+  interface this way triggered 138 enumerations in fifteen seconds of
+  startup on the measured setup. The owner marks the surface through a private-data GUID
+  in a shared header; unmarked surfaces, including the composition
+  surfaces the search was written for, are unaffected.
+- `0080`: implement the ninput pointer interaction context entry points.
+  An application driving pointer input through an interaction context
+  calls `ProcessPointerFramesInteractionContext` once per frame while
+  the mouse is over its interface; the spec-file stub raised
+  EXCEPTION_WINE_STUB and ended the process. Implements it and the Add,
+  Remove, Reset and Stop siblings, which belong to the same lifecycle,
+  so fixing one does not just move the crash. No gestures are produced;
+  applications keep the ordinary window messages they already receive.
