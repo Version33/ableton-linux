@@ -29,9 +29,12 @@ swapchain: two MESSAGE lines that survive WINEDEBUG=-all and ask for
 an issue report, and one machine-parsable ERR_(winediag) line with
 both rects, both DPI awareness contexts, the window DPI and styles,
 the swapchain flags, the GPU description, and the session type and
-desktop from the host environment. Swapchain destruction prints a
-one-line summary whenever any frame fell back, so a fallback that
-lasted an hour leaves evidence even if nobody watched the session.
+desktop from the host environment. Wine renames host XDG_* variables
+with a WINE_HOST_ prefix in the Win32 environment block, so the
+prefixed names are read first and the unprefixed ones kept as a
+fallback. Swapchain destruction prints a one-line summary when the
+sustained warning fired for that swapchain, so a fallback that lasted
+an hour leaves evidence even if nobody watched the session.
 
 The fallback behaviour is unchanged, and 0058's fire-once FIXME stays
 as its build-audit fingerprint. Threshold shapes follow the prior art:
@@ -40,9 +43,9 @@ limits GPU device resets with a count-and-rate rule, and Chromium
 forgives one GPU crash per five minutes so transient trouble cannot
 trip a permanent response.
 ---
- dlls/wined3d/swapchain.c       | 148 ++++++++++++++++++++++++++++++---
+ dlls/wined3d/swapchain.c       | 178 +++++++++++++++++++++++++++++++++---
  dlls/wined3d/wined3d_private.h |  21 +++++
- 2 files changed, 158 insertions(+), 11 deletions(-)
+ 2 files changed, 188 insertions(+), 11 deletions(-)
 
 diff --git a/dlls/wined3d/swapchain.c b/dlls/wined3d/swapchain.c
 index 91c8c90..858dce3 100644
@@ -56,14 +59,15 @@ index 91c8c90..858dce3 100644
  
  static BOOL set_window_present_rect(HWND hwnd, UINT x, UINT y, UINT width, UINT height)
  {
-@@ -47,6 +48,15 @@ void wined3d_swapchain_cleanup(struct wined3d_swapchain *swapchain)
+@@ -47,6 +48,16 @@ void wined3d_swapchain_cleanup(struct wined3d_swapchain *swapchain)
  
      TRACE("Destroying swapchain %p.\n", swapchain);
  
-+    /* The 0058 gate's exit report: one line of evidence when this swapchain
-+     * ever took the fallback, so a session that spent an hour on the copy
-+     * path leaves a trace even if nobody saw the sustained warning fire. */
-+    if (swapchain->present_mismatch.mismatches)
++    /* The 0058 gate's exit report: one summary line, printed only when the
++     * sustained warning fired for this swapchain, so a session that spent
++     * an hour on the copy path leaves a trace even if nobody saw it fire.
++     * A transient fallback (a resize race) stays quiet at destroy. */
++    if (swapchain->present_mismatch.warned)
 +        ERR_(winediag)("Swapchain %p present-size mismatch summary: %u of %u presents fell back to GDI, "
 +                "longest run %u frames, longest identical-pair run %u frames.\n",
 +                swapchain, swapchain->present_mismatch.mismatches, swapchain->present_mismatch.total,
@@ -72,7 +76,7 @@ index 91c8c90..858dce3 100644
      if (swapchain->comp_dc)
      {
          SelectObject(swapchain->comp_dc, swapchain->comp_old_bitmap);
-@@ -1289,11 +1299,61 @@ static bool swapchain_present_is_partial_copy(struct wined3d_swapchain *swapchai
+@@ -1289,11 +1299,79 @@ static bool swapchain_present_is_partial_copy(struct wined3d_swapchain *swapchai
   * origin then lands the frame low, black band on top, bottom rows clipped
   * (issue 100; the niri report on PR 98).  The GDI present path anchors
   * top-left and shows the same frame correctly under the mismatch. */
@@ -83,6 +87,7 @@ index 91c8c90..858dce3 100644
 + * seconds above 50%, before it fires; a drag the user releases resets it. */
 +#define PRESENT_MISMATCH_STABLE_LIMIT 120
 +#define PRESENT_MISMATCH_WINDOW_MS 5000
++#define PRESENT_MISMATCH_IDLE_MS 1000
 +#define PRESENT_MISMATCH_WINDOW_MIN_PRESENTS 60
 +#define PRESENT_MISMATCH_WINDOW_STRIKES 2
 +
@@ -98,13 +103,30 @@ index 91c8c90..858dce3 100644
 +{
 +    HWND window = swapchain->win_handle;
 +    char session[32], desktop[64];
++    DWORD len;
 +
 +    swapchain->present_mismatch.warned = true;
 +
-+    if (!GetEnvironmentVariableA("XDG_SESSION_TYPE", session, sizeof(session)))
-+        strcpy(session, "unknown");
-+    if (!GetEnvironmentVariableA("XDG_CURRENT_DESKTOP", desktop, sizeof(desktop)))
-+        strcpy(desktop, "unknown");
++    /* Wine renames the host XDG_* variables with a WINE_HOST_ prefix in
++     * the Win32 environment block (ntdll is_special_env_var), so read the
++     * prefixed names first and keep the unprefixed ones as a fallback.
++     * GetEnvironmentVariableA() returns the required size, without a usable
++     * string, when the buffer is too small; reject that result before the
++     * values reach the %s diagnostics below. */
++    len = GetEnvironmentVariableA("WINE_HOST_XDG_SESSION_TYPE", session, sizeof(session));
++    if (!len || len >= sizeof(session))
++    {
++        len = GetEnvironmentVariableA("XDG_SESSION_TYPE", session, sizeof(session));
++        if (!len || len >= sizeof(session))
++            strcpy(session, "unknown");
++    }
++    len = GetEnvironmentVariableA("WINE_HOST_XDG_CURRENT_DESKTOP", desktop, sizeof(desktop));
++    if (!len || len >= sizeof(desktop))
++    {
++        len = GetEnvironmentVariableA("XDG_CURRENT_DESKTOP", desktop, sizeof(desktop));
++        if (!len || len >= sizeof(desktop))
++            strcpy(desktop, "unknown");
++    }
 +
 +    MESSAGE("ableton-wine: This window now shows each frame through a slow fallback path. "
 +            "This path can use one full processor core.\n");
@@ -135,7 +157,7 @@ index 91c8c90..858dce3 100644
  
      /* Ask the way translate_drawable_coords now asks (0059) and the way
       * dst_rect was captured (0023): in the window's own DPI context.  An
-@@ -1305,17 +1365,83 @@ static bool swapchain_gl_present_size_agrees(const struct wined3d_swapchain *swa
+@@ -1305,17 +1378,94 @@ static bool swapchain_gl_present_size_agrees(const struct wined3d_swapchain *swa
      GetClientRect(swapchain->win_handle, &client_rect);
      SetThreadDpiAwarenessContext(prev);
  
@@ -156,6 +178,21 @@ index 91c8c90..858dce3 100644
 +     * frame correct; what must not happen is a swapchain living on it with
 +     * nobody told.  The hot path below is integer work; the expensive
 +     * context gathering runs once, behind the warned latch. */
++    now = GetTickCount64();
++    if (swapchain->present_mismatch.window_start
++            && now - swapchain->present_mismatch.window_last_present >= PRESENT_MISMATCH_IDLE_MS)
++    {
++        swapchain->present_mismatch.window_start = now;
++        swapchain->present_mismatch.window_total = 0;
++        swapchain->present_mismatch.window_mismatches = 0;
++        swapchain->present_mismatch.window_strikes = 0;
++    }
++    else if (!swapchain->present_mismatch.window_start)
++    {
++        swapchain->present_mismatch.window_start = now;
++    }
++    swapchain->present_mismatch.window_last_present = now;
++
 +    ++swapchain->present_mismatch.total;
 +    ++swapchain->present_mismatch.window_total;
 +
@@ -199,22 +236,18 @@ index 91c8c90..858dce3 100644
 +    }
 +
 +    /* The rolling-ratio window catches a fault that oscillates between rect
-+     * pairs and so never grows a stable run.  The window only advances while
-+     * frames present; after an idle gap it is discarded, not judged, because
-+     * its few presents say nothing. */
-+    now = GetTickCount64();
-+    if (!swapchain->present_mismatch.window_start)
-+    {
-+        swapchain->present_mismatch.window_start = now;
-+    }
-+    else if (now - swapchain->present_mismatch.window_start >= PRESENT_MISMATCH_WINDOW_MS)
++     * pairs and so never grows a stable run.  An idle gap reset above drops
++     * both the partial window and its prior strike instead of counting two
++     * disconnected bursts as sustained fallback. */
++    if (now - swapchain->present_mismatch.window_start >= PRESENT_MISMATCH_WINDOW_MS)
 +    {
 +        if (swapchain->present_mismatch.window_total >= PRESENT_MISMATCH_WINDOW_MIN_PRESENTS
 +                && swapchain->present_mismatch.window_mismatches * 2 > swapchain->present_mismatch.window_total)
 +        {
 +            if (++swapchain->present_mismatch.window_strikes >= PRESENT_MISMATCH_WINDOW_STRIKES
 +                    && !swapchain->present_mismatch.warned)
-+                swapchain_present_mismatch_warn(swapchain, dst_rect, &client_rect);
++                swapchain_present_mismatch_warn(swapchain, &swapchain->present_mismatch.last_dst,
++                        &swapchain->present_mismatch.last_client);
 +        }
 +        else
 +        {
@@ -252,7 +285,7 @@ index 21c4adc..bc2c7aa 100644
 +        unsigned int consecutive, consecutive_max;
 +        unsigned int stable_run, stable_run_max;
 +        RECT last_dst, last_client;
-+        ULONGLONG window_start;
++        ULONGLONG window_start, window_last_present;
 +        unsigned int window_total, window_mismatches;
 +        unsigned int window_strikes;        /* consecutive windows over the ratio bar */
 +        bool warned;
@@ -263,4 +296,3 @@ index 21c4adc..bc2c7aa 100644
      HDC dc;
 -- 
 2.55.0
-

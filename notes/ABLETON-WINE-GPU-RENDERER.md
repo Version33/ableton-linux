@@ -142,7 +142,7 @@ disagreement it detects has a root cause worth fixing.
 
 The trigger is fractional display scaling, not a compositor, a driver
 or a window manager. It reproduces on AMD Navi 31 under COSMIC/Wayland
-— a setup with no symptom at 100% — by putting the prefix at 125%
+(a setup with no symptom at 100%) by putting the prefix at 125%
 (`ABLETON_DPI_MODE=dpi120`, LogPixels 120). That covers both reports:
 niri at 125%, and issue 100's KDE/NVIDIA machine, where the trigger is
 Live's Enable HiDPI Mode.
@@ -173,7 +173,7 @@ CPU sampled with `top -b`, 15 readings at 2s (one core = 100%):
 | + 0058 + 0059 | no | 25.2% | direct |
 
 0058 on its own trades the bar for the copy path's cost on every
-scaled setup, and that cost is not noticeable by feel — only by
+scaled setup, and that cost is not noticeable by feel, only by
 measurement. With 0059 there is nothing to trade: the bar is gone and
 the direct path survives. 0058 stays in as the safety net, silent, and
 as the assertion that the two contexts now agree.
@@ -213,24 +213,34 @@ name the symptom and ask the user to open an issue. One
 `err:winediag:` line carries the evidence: both rectangles, the
 backbuffer size, both DPI awareness contexts, the window DPI, the
 window styles, the swapchain flags, the GPU name, and the session type
-and desktop from the host environment. The line stays on one line so a
-user can copy it whole into an issue. The launchers now set
+and desktop from the host environment. Wine prefixes host XDG_*
+variables with WINE_HOST_ in the Win32 environment block, so the patch
+reads WINE_HOST_XDG_SESSION_TYPE and WINE_HOST_XDG_CURRENT_DESKTOP.
+The line stays on one line so a user can copy it whole into an issue.
+The launchers, the Max 9 launcher, and the beta tester kit now set
 `WINEDEBUG=-all,+winediag`, which keeps all debug output off and lets
 only these rare notices through. When Wine destroys a swapchain that
-ever fell back, it prints one summary line with the totals, so a long
-session leaves a record even when nobody watched it.
+warned, it prints one summary line with the totals, so a long session
+leaves a record even when nobody watched it.
 
 Status on 2026-08-05: the patch compiles clean and the built
 `wined3d.dll` contains both audit fingerprints. Runtime verification
-is pending. The planned checks are:
+is done. On the fault rig the warning fired at exactly identical-pair
+120, with dst (0,0)-(1706,896) against client (0,0)-(1365,717). On a
+healthy build, a 26 s edge drag measured 613 of 3028 presents falling
+back, longest run 7, and no warning. The checks were:
 
-1. Build with the 0059 `texture.c` hunk reverted. Set the prefix to
+1. Build with the 0059 `swapchain.c` bracket reverted. The gate then
+   compares a CS-thread-context height against a window-context
+   dst_rect and disagrees on every scaled frame. Set the prefix to
    125%. Start Live and move the mouse over the window. The warning
-   must appear within about ten seconds.
+   must appear within about ten seconds. Reverting the 0059
+   `texture.c` hunk instead does not work: the bar returns, but the
+   bracketed gate still sees two rectangles that agree.
 2. On a normal build at 125%, drag a window edge for ten seconds. The
    warning must not appear.
-3. On a normal build, run a full session. The log must show no new
-   lines, and the destroy summary must not appear.
+3. On a normal build, run a full session. No `Sustained present-size
+   mismatch` line and no destroy summary must appear.
 
 ## Device identification (added 2026-07-30, updated 2026-08-01, issue 84)
 

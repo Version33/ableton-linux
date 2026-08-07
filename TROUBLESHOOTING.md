@@ -63,30 +63,24 @@ include your graphics card model.
 
 ## CPU spikes when moving your mouse
 
-In some instances, we have seen big spikes in CPU usage during mouse input.
-This is a known issue and we have a number of fixes already in place.
-However, if this is happening to you, we would like you to report it.
+If Live's CPU use jumps while you move the mouse, run:
 
-First, we need to check if the CPU spikes are specific to Live.
-When you notice a spike, open your terminal and run this command:
+```bash
+journalctl --user --since "-15min" | grep -i "sustained present-size mismatch:"
+```
 
-- If you started Live from the desktop menu, run
-  `journalctl --user --since "-15min" | grep -i "present-size mismatch"`.
+If that prints anything,
+[open an issue](https://github.com/shibco/ableton-linux/issues) and paste
+the whole line, together with your desktop environment and your display
+scale.
 
-If that command returns any text related to Wine or Ableton, please
-[open an issue](https://github.com/shibco/ableton-linux/issues) and
-paste the full log line that contains `Sustained present-size
-mismatch`. 
+If you started Live from a terminal instead of the desktop menu, the line
+appears in that terminal rather than the system log. Look there for lines
+containing `ableton-wine:` and paste those instead.
 
-If you started Live from a terminal, these won't show up in your system
-log. Instead, in the terminal from which `ableton-live` is running,
-look for lines containing `ableton-wine:`.
-
-Please also share your desktop environment and your display scale.
-
-If Live's CPU use is high and the warning does not appear, the cause
-is different. Please do submit an issue, though! We want to fix any
-and all performance problems in this project.
+If nothing prints and Live's CPU use is still high, the cause is
+different. Open an issue and describe what you were doing when it
+happened.
 
 ## Live 11: Max for Live fails after the first launch
 
