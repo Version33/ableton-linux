@@ -13,11 +13,18 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROBE="${ABLETON_NTSYNC_PROBE:-$here/../beta/tester-kit/probes/windows/ntsyncprobe.exe}"
 TIMEOUT="${ABLETON_CHECK_TIMEOUT:-120}"
 
-[ -x "$WINE_ROOT/bin/wine" ] || { echo "!! no wine at $WINE_ROOT" >&2; exit 1; }
+[ -x "$WINE_ROOT/bin/wine" ] || {
+    echo "!! no wine at $WINE_ROOT; point ABLETON_WINE_ROOT at the runtime to check" >&2
+    echo "   (Nix: nix run github:shibco/ableton-linux#check-ntsync uses the flake's runtime)" >&2
+    exit 1
+}
 [ -f "$PROBE" ]              || { echo "!! probe not found at $PROBE (run beta/tester-kit/probes/build-maintainer-probes.sh)" >&2; exit 1; }
 
+# Another user's wineserver — or one of ours that ptrace_scope shields — has an
+# environ we cannot open, and the shell reports that failed redirect on its own
+# stderr, past any 2>/dev/null on tr. Silence the group, read nothing, move on.
 for pid in $(pgrep -x wineserver); do
-    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then
+    if { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then
         echo "!! wineserver $pid already serves $WINEPREFIX; close Live or set ABLETON_WINEPREFIX to a clone" >&2
         exit 1
     fi
@@ -27,13 +34,20 @@ done
 # and survives stripping. ntdll's ntsync strings are debug info, so a good
 # stripped ntdll has zero; the dynamic check below proves the client half
 # (the server only opens the device when a client uses in-process syncs).
+# Without strings(1) the gate is skipped rather than failed: reading zero
+# refs off a missing tool is not evidence. On a host with /dev/ntsync the
+# dynamic fd check below still catches a runtime built without ntsync.
 # See notes/ABLETON-WINE-NTSYNC-REGRESSION.md.
-srv=$(strings "$WINE_ROOT/bin/wineserver" 2>/dev/null | grep -c ntsync)
-ntd=$(strings "$WINE_ROOT/lib/wine/x86_64-unix/ntdll.so" 2>/dev/null | grep -c ntsync)
-echo "== static: wineserver ntsync refs: $srv (ntdll.so: $ntd, informational; 0 on stripped builds)"
-if [ "$srv" -eq 0 ]; then
-    echo "!! FAIL: ntsync not compiled in (no linux/ntsync.h at build time); every wait is a wineserver round trip" >&2
-    exit 1
+if command -v strings >/dev/null 2>&1; then
+    srv=$(strings "$WINE_ROOT/bin/wineserver" 2>/dev/null | grep -c ntsync)
+    ntd=$(strings "$WINE_ROOT/lib/wine/x86_64-unix/ntdll.so" 2>/dev/null | grep -c ntsync)
+    echo "== static: wineserver ntsync refs: $srv (ntdll.so: $ntd, informational; 0 on stripped builds)"
+    if [ "$srv" -eq 0 ]; then
+        echo "!! FAIL: ntsync not compiled in (no linux/ntsync.h at build time); every wait is a wineserver round trip" >&2
+        exit 1
+    fi
+else
+    echo "== static: skipped, no strings(1) in PATH (binutils gates the compiled-in check)"
 fi
 [ -c /dev/ntsync ] || echo "-- note: no /dev/ntsync (kernel < 6.14?); checking fallback semantics only"
 
@@ -45,7 +59,7 @@ cd "$work" || exit 1
 sleep 1
 sp=""
 for pid in $(pgrep -x wineserver); do
-    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then sp=$pid; fi
+    if { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then sp=$pid; fi
 done
 [ -n "$sp" ] || { echo "!! lost track of the eval wineserver" >&2; exit 1; }
 

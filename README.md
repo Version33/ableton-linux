@@ -91,7 +91,11 @@ vendored in the package, so that step needs no network. The Live 11 recipe
 still downloads its extras; see the [Live 11 instructions](#live-11).
 
 Your host needs a running PipeWire daemon and `/dev/ntsync` (kernel 6.14 or
-newer with the `ntsync` module; `scripts/check-ntsync.sh` verifies this).
+newer with the `ntsync` module); `test -c /dev/ntsync` answers that. To also
+prove the runtime uses the device, run
+`nix run github:shibco/ableton-linux#check-ntsync` with Live closed — it drives
+its own wineserver on your prefix. The `scripts/check-ntsync.sh` in a checkout
+looks for the Wine runtime under `~/.local/opt`, which Nix never creates.
 
 For daily use, prefer `nix profile install github:shibco/ableton-linux`, or the
 NixOS configuration below, over a bare `nix run`. A `nix run` leaves no GC root,
@@ -295,10 +299,20 @@ There are two common ways to install Windows plugins:
      "/path/to/PluginInstaller.exe"
    ```
 
+   On Nix that path does not exist, because the runtime lives in the Nix
+   store. Use the flake's Wine, which targets `~/.wine-ableton` itself:
+
+   ```bash
+   nix run github:shibco/ableton-linux#wine -- "/path/to/PluginInstaller.exe"
+   ```
+
+   With the package in a profile or in `environment.systemPackages`, the same
+   runner is on your PATH as `ableton-wine`.
+
 3. Your installer should install directly into your Ableton environment. By
    default, this is `~/.wine-ableton`.
 
-You can also use the command in step 2 to run patches, software updaters, and
+Either command in step 2 also runs patches, software updaters, and
 copy-protection tools.
 
 ### If you have a VST3 file

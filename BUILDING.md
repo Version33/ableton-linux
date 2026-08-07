@@ -72,13 +72,16 @@ nix build                    # the full runtime -> result/
 ```
 
 The flake also exposes the setup steps as apps: `.#setup-prefix`,
-`.#setup-realtime` and `.#setup-link`. See the Nix section of the README for
-installation instructions.
+`.#setup-realtime` and `.#setup-link`. `.#wine` runs any Windows executable
+against the Ableton prefix on this runtime, and `.#check-ntsync` runs
+`scripts/check-ntsync.sh` with its Wine root already pointed at the store. See
+the Nix section of the README for installation instructions.
 
 ## Environment variables
 
 - `ABLETON_WINE_ROOT` selects the Wine runtime. The default is
-  `~/.local/opt/wine-d2d1-nspa-11.13`.
+  `~/.local/opt/wine-d2d1-nspa-11.13`; the Nix package's launchers and shipped
+  scripts default to their own store path instead.
 - `ABLETON_WINEPREFIX` selects the Wine prefix. The default is
   `~/.wine-ableton`.
 - `ABLETON_LIVE_VERSION=11|12` selects a Live major version.

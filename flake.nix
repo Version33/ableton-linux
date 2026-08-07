@@ -44,6 +44,16 @@
         program = "${self.packages.${system}.ableton-wine}/bin/ableton-live";
         meta.description = "Launch Ableton Live through the patched Wine";
       };
+      wine = {
+        type = "app";
+        program = "${self.packages.${system}.ableton-wine}/bin/ableton-wine";
+        meta.description = "Run a Windows executable (plugin installer, updater, copy-protection tool) in the Ableton prefix on this runtime";
+      };
+      check-ntsync = {
+        type = "app";
+        program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/check-ntsync.sh";
+        meta.description = "Verify this runtime uses /dev/ntsync and that NT sync semantics hold (needs a prefix no wineserver is serving)";
+      };
       setup-prefix = {
         type = "app";
         program = "${self.packages.${system}.ableton-wine}/share/ableton-wine/scripts/setup-prefix.sh";
