@@ -11,8 +11,8 @@ window. The installer then continues by itself. An update that stops at
 
 Ableton's own installer adds a small Windows helper program that Live does
 not need on Linux. The helper stays open, and setup waits for it. Releases
-newer than 2026.08.04.1 skip the helper and close leftover copies, so the
-stop does not come back.
+newer than 2026.08.04.1 close leftover copies of the helper, so the stop
+does not come back.
 
 To update, download
 [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)

@@ -277,18 +277,25 @@ echo "== [1/5] initialise prefix at $WINEPREFIX =="
 # launch - so disable them here and wineboot stops asking.
 WINEDLLOVERRIDES="mscoree,mshtml=" wineboot -u
 # A prefix that installed Live before 2026.08.04.1 carries the Ableton USB Audio driver's
-# tray app (Thesycon's tusbaudiocplapp.exe). wineboot's Run-key pass relaunches it, it never
+# tray app (Thesycon's tusbaudiocplapp.exe). wineboot's startup pass relaunches it, it never
 # exits, and the wineserver -w below then waits on it until the user closes it by hand (the
-# --update half of issue #111). Stop the process and delete its autostart value, wherever the
-# driver registered it, so this update and every later prefix boot come up clean.
+# --update half of issue #111). Stop the process first: that alone unblocks this boot. Then
+# delete its autostart entries so later boots come up clean. wineboot runs the HKLM Run key
+# (64-bit and Wow6432Node views), the HKCU Run key, and the Startup folders, so the scrub
+# covers exactly those.
 wine taskkill /f /im tusbaudiocplapp.exe >/dev/null 2>&1 || true
 for run_key in 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' \
-               'HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run'; do
+               'HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run' \
+               'HKCU\Software\Microsoft\Windows\CurrentVersion\Run'; do
     (wine reg query "$run_key" 2>/dev/null || true) | \
         sed -n 's/^    \(.*\)    REG_[A-Z_]*    .*tusbaudiocplapp.*/\1/Ip' | \
         while IFS= read -r run_value; do
             wine reg delete "$run_key" /v "$run_value" /f >/dev/null 2>&1 || true
         done
+done
+for startup_root in "$WINEPREFIX/drive_c/users" "$WINEPREFIX/drive_c/ProgramData"; do
+    [ -d "$startup_root" ] || continue
+    find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' -iname '*tusbaudio*' -delete
 done
 "$WINESERVER" -w
 
@@ -638,51 +645,17 @@ wine reg query "$push2_key" /v libusb-1.0
 # still runs and still writes the backtrace to stderr.
 wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f
 
-# That suppression still leaves Live 11's installer trying the driver: its WiX Burn bundle has
-# no Inno-style /MERGETASKS, and its InstallAudioDriver variable is not command-line
-# overridable, so the flags that skip the driver on Live 12 cannot reach it. The bundle does
-# guard the package with 'InstalledPush3AudioDriverVersion <= v5.68.0', fed by an MSI product
-# search on the driver's UpgradeCode. Register a placeholder driver at version 99.0.0 and the
-# bundle plans the package out itself: tlsetupfx.exe never runs, no failure is logged, and the
-# wizard hides its driver checkbox (shown only at v0.0.0.0). A Windows USB kernel driver
-# cannot load under Wine and audio is PipeASIO, so nothing real is lost. Live 12's Inno
-# installer never consults MSI product state; these keys are inert there. Both UpgradeCodes
-# paths are written: CurrentVersion\Installer is where Wine's MsiEnumRelatedProducts looks,
-# Classes\Installer is where Windows' would.
-# GUIDs are MSI packed form: 86C5CFEA... is the driver UpgradeCode
-# {AEFC5C68-0264-4E30-9685-28712A91CF4E}; 16A75B0B... is the placeholder ProductCode
-# {B0B57A61-11E0-4A2E-9A11-AB1E70201126}, invented for this registration.
-seed_reg="$(mktemp)"
-cat > "$seed_reg" <<'EOF'
-Windows Registry Editor Version 5.00
-
-[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4]
-"16A75B0B0E11E2A4A911BAE107021162"=""
-
-[HKEY_LOCAL_MACHINE\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4]
-"16A75B0B0E11E2A4A911BAE107021162"=""
-
-[HKEY_LOCAL_MACHINE\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162]
-"ProductName"="Ableton Push USB Audio Driver (ableton-linux placeholder)"
-"PackageCode"="16A75B0B0E11E2A4A911BAE107021162"
-"Version"=dword:63000000
-"Language"=dword:00000409
-"Assignment"=dword:00000001
-"AdvertiseFlags"=dword:00000184
-"InstanceType"=dword:00000000
-"AuthorizedLUAApp"=dword:00000000
-"DeploymentFlags"=dword:00000003
-
-[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162\InstallProperties]
-"DisplayName"="Ableton Push USB Audio Driver (ableton-linux placeholder)"
-"DisplayVersion"="99.0.0"
-"VersionMajor"=dword:00000063
-"VersionMinor"=dword:00000000
-"WindowsInstaller"=dword:00000001
-"Language"=dword:00000409
-EOF
-wine regedit /S "$seed_reg"
-rm -f "$seed_reg"
+# Earlier revisions of this script registered a placeholder Ableton Push USB Audio Driver
+# product (version 99.0.0, invented ProductCode {B0B57A61-11E0-4A2E-9A11-AB1E70201126})
+# here, so Live 11's Burn bundle would plan its driver package out. That only works on the
+# WiX 4 generation of the bundle; the seed now lives in setup-run-header.sh, gated on the
+# bundle's generation. Remove any leftover registration: the ProductCode is ours, so only
+# the placeholder can be under it. This also clears the orphaned InstallProperties key a
+# WiX 3 bundle leaves behind when its RelatedPackage sweep removes the placeholder.
+wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
 
 # winemenubuilder's entries assume `wine` on PATH (never true here) and are dead buttons: disable
 # it and delete entries it already wrote for this prefix (matched by WINEPREFIX=; install.sh's entries can't match).

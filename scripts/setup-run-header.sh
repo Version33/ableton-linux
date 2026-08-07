@@ -343,13 +343,71 @@ if [ "$manual_install" -eq 0 ]; then
         live_flags=()
         if grep -qaF '.wixburn' <(head -c 4k -- "$live_exe"); then
             # Burn has no /MERGETASKS and no /SUPPRESSMSGBOXES, and reads /SILENT as /quiet -
-            # no window at all. /passive keeps the progress bar without the wizard. The USB
-            # audio driver package is not skipped by flag (its InstallAudioDriver variable is
-            # not command-line overridable): the placeholder driver registration seeded by
-            # setup-prefix.sh makes the bundle's own version guard plan the package out.
+            # no window at all - so /passive is the flag set; how quiet that is, and whether
+            # the USB audio driver can be planned out, depends on the bundle generation.
+            # WiX 4 generation (trial 11.3.35, suite 11.3.42): the driver package is guarded
+            # by 'InstalledPush3AudioDriverVersion <= v5.68.0', fed by an MSI product search
+            # on the driver UpgradeCode (its InstallAudioDriver variable is not command-line
+            # overridable, so no flag can skip the driver). Registering a placeholder driver
+            # at version 99.0.0 makes the bundle plan the package out itself: tlsetupfx.exe
+            # never runs and no failure is logged. WiX 3 generation (suite 11.3.25 and
+            # older): no search, no guard, and the driver UpgradeCode is a RelatedPackage
+            # with OnlyDetect=no, so a seed there suppresses nothing and the bundle
+            # uninstalls the placeholder, leaving orphaned installer keys; Setup.msi also
+            # has DisplayInternalUI=yes, so /passive shows the Live setup wizard and the
+            # user clicks through it (same on Windows). The generations are told apart by
+            # content: WiX 4 engine stubs carry the 'wixtoolset.dutil' build path within the
+            # first megabyte, the WiX 3 stub has no such string. A missed detection degrades
+            # to unseeded behaviour, never to a broken one.
+            # grep -q closes the process substitution as soon as it matches;
+            # silence head's expected EPIPE rather than printing a false error.
+            if grep -qa 'wixtoolset' <(head -c 4M -- "$live_exe" 2>/dev/null); then
+                # GUIDs are MSI packed form: 86C5CFEA... is the driver UpgradeCode
+                # {AEFC5C68-0264-4E30-9685-28712A91CF4E}; 16A75B0B... is the placeholder
+                # ProductCode {B0B57A61-11E0-4A2E-9A11-AB1E70201126}, invented for this
+                # registration. Both UpgradeCodes paths are written:
+                # CurrentVersion\Installer is where Wine's MsiEnumRelatedProducts looks,
+                # Classes\Installer is where Windows' would.
+                seed_reg="$(mktemp)"
+                cat > "$seed_reg" <<'EOF'
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4]
+"16A75B0B0E11E2A4A911BAE107021162"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4]
+"16A75B0B0E11E2A4A911BAE107021162"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162]
+"ProductName"="Ableton Push USB Audio Driver (ableton-linux placeholder)"
+"PackageCode"="16A75B0B0E11E2A4A911BAE107021162"
+"Version"=dword:63000000
+"Language"=dword:00000409
+"Assignment"=dword:00000001
+"AdvertiseFlags"=dword:00000184
+"InstanceType"=dword:00000000
+"AuthorizedLUAApp"=dword:00000000
+"DeploymentFlags"=dword:00000003
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162\InstallProperties]
+"DisplayName"="Ableton Push USB Audio Driver (ableton-linux placeholder)"
+"DisplayVersion"="99.0.0"
+"VersionMajor"=dword:00000063
+"VersionMinor"=dword:00000000
+"WindowsInstaller"=dword:00000001
+"Language"=dword:00000409
+EOF
+                WINEPREFIX="$HOME/.wine-ableton" \
+                    "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" \
+                    regedit /S "$seed_reg" >/dev/null 2>&1 || true
+                rm -f "$seed_reg"
+                say "-- installing Ableton Live; a progress window opens, no clicks needed"
+                say "   (Live is large, so this can take several minutes)"
+            else
+                say "-- installing Ableton Live; a window opens with a few steps to confirm"
+                say "   (Live is large, so this can take several minutes)"
+            fi
             live_flags=(/passive /norestart)
-            say "-- installing Ableton Live; a progress window opens, no clicks needed"
-            say "   (Live is large, so this can take several minutes)"
         elif grep -qa 'Inno Setup' <(head -c 4M -- "$live_exe"); then
             # /MERGETASKS drops the USB audio driver task: a Windows USB kernel driver Wine
             # cannot load (audio is PipeASIO).
