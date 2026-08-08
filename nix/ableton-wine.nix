@@ -237,6 +237,29 @@ stdenv.mkDerivation {
         ln -s ${cabextract}/bin/cabextract   $out/bin/cabextract
         ln -s ${lib.getBin unzip}/bin/unzip  $out/bin/unzip
 
+        # -- Max for Live font fallback (Bitstream Vera) --
+        # MaxPlug's fallback chain terminates at the three Vera families, so a
+        # device that asks for a typeface the prefix lacks hangs Live outright —
+        # frozen window, audio still playing (see
+        # notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md). A
+        # Windows or macOS host always has them; a minimal NixOS has no host
+        # font package to fall back on, so they must ship here.
+        # setup-prefix.sh's install_maxplug_fallback_fonts() takes them from
+        # <kit>/vendor/fonts, which for this package is share/ableton-wine.
+        # Checked against the manifest make-installer.sh uses: it pins content
+        # AND completeness, so a missing or substituted face fails the build
+        # instead of shipping a runtime that can freeze Live's UI.
+        install -m644 ${../vendor/bitstream-vera.sha256} \
+          $out/share/ableton-wine/vendor/bitstream-vera.sha256
+        mkdir -p $out/share/ableton-wine/vendor/fonts/bitstream-vera
+        # COPYRIGHT.TXT travels beside the faces: the Bitstream license permits
+        # redistribution only while its notices come along.
+        install -m644 ${../vendor/fonts/bitstream-vera}/*.ttf \
+                      ${../vendor/fonts/bitstream-vera}/COPYRIGHT.TXT \
+                      $out/share/ableton-wine/vendor/fonts/bitstream-vera/
+        ( cd $out/share/ableton-wine/vendor && sha256sum -c --quiet bitstream-vera.sha256 ) \
+          || { echo "!! vendored Bitstream Vera faces do not match vendor/bitstream-vera.sha256 — Max for Live devices with a missing typeface would freeze Live" >&2; exit 1; }
+
         # -- Desktop entries --
         # Rendered into share/applications so profiles surface them; Path= is
         # unknowable at build time and the launchers are cwd-agnostic. Edition
@@ -318,6 +341,19 @@ stdenv.mkDerivation {
     # check-ntsync.sh resolves its probe relative to its own directory.
     [ -f $out/share/ableton-wine/beta/tester-kit/probes/windows/ntsyncprobe.exe ] \
       || { echo "the ntsync probe is not staged where check-ntsync.sh looks for it"; exit 1; }
+    # The Vera faces must sit where setup-prefix.sh's kit_root() finds them:
+    # vendor/ beside the scripts directory, the same place vendor/winetricks is
+    # resolved from. Anywhere else and it silently falls through to host font
+    # directories that do not exist here, leaving Max for Live able to freeze
+    # Live's UI on a missing typeface.
+    [ -f $out/share/ableton-wine/vendor/winetricks ] \
+      || { echo "vendor/winetricks moved — setup-prefix.sh's kit root no longer resolves here"; exit 1; }
+    for f in Vera VeraBd VeraIt VeraBI VeraMono VeraMoBd VeraMoIt VeraMoBI VeraSe VeraSeBd; do
+      [ -s $out/share/ableton-wine/vendor/fonts/bitstream-vera/$f.ttf ] \
+        || { echo "$f.ttf is not staged where setup-prefix.sh looks for the M4L fallback fonts"; exit 1; }
+    done
+    [ -s $out/share/ableton-wine/vendor/fonts/bitstream-vera/COPYRIGHT.TXT ] \
+      || { echo "the Bitstream Vera notice does not ship beside the faces"; exit 1; }
     # Both launchers, setup-link.sh and the unit must all name the staged
     # daemon: a missed substitution leaves Link silently unanchored here.
     [ -x $out/share/ableton-wine/ableton-linkd ] \
