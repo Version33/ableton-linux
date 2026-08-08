@@ -122,6 +122,9 @@ stdenv.mkDerivation {
         cat > $out/bin/wine <<WRAPWRP
     #!/bin/sh
     export LD_LIBRARY_PATH="${wine.libPath}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+    # Same reason bin/wine in the wine tree exports it: winegstreamer finds its
+    # mp3/mp4/wma decoders through this path, not through the linker.
+    export GST_PLUGIN_SYSTEM_PATH_1_0="${wine.gstPluginPath}\''${GST_PLUGIN_SYSTEM_PATH_1_0:+:\$GST_PLUGIN_SYSTEM_PATH_1_0}"
     # -a "\$0": apploader symlinks (wineboot, regsvr32, ...) need argv[0] intact.
     exec -a "\$0" $out/bin/.wine-wrapped "\$@"
     WRAPWRP
@@ -287,6 +290,13 @@ stdenv.mkDerivation {
   installCheckPhase = ''
     grep -qF "$out/bin/.wine-wrapped" $out/bin/wine \
       || { echo "bin/wine wrapper does not exec this tree"; exit 1; }
+    # The media bridge and its plugin path have to survive the copy: the tree
+    # ships winegstreamer, and the regenerated wrapper above must still point at
+    # the plugins, or mp3/mp4/wma import fails with no message (issue #44).
+    [ -s $out/lib/wine/x86_64-unix/winegstreamer.so ] \
+      || { echo "winegstreamer.so is missing from the shipped tree"; exit 1; }
+    grep -qF 'export GST_PLUGIN_SYSTEM_PATH_1_0="${wine.gstPluginPath}' $out/bin/wine \
+      || { echo "bin/wine does not export the GStreamer plugin path"; exit 1; }
     ${stdenv.shell} -n $out/bin/ableton-live || { echo "launch shim has a syntax error"; exit 1; }
     if grep -qF '@out@' $out/bin/ableton-live; then echo "launch shim has unsubstituted @out@ tokens"; exit 1; fi
     grep -qF "exec \"$out/libexec/ableton-live\"" $out/bin/ableton-live \

@@ -32,6 +32,8 @@
   # Audio
   alsa-lib,
   libpulseaudio,
+  # Media: winegstreamer (mp3/mp4/wma import)
+  gst_all_1,
   # Network / USB / system
   gnutls,
   libusb1,
@@ -43,6 +45,27 @@
   ntsyncUapi,
   clangUnwrapped ? llvmPackages.clang-unwrapped, # PE cross-compiler: Nix wrapper breaks -target
 }:
+
+let
+  # winegstreamer needs gstreamer-1.0 plus gst-plugins-base's audio, video and
+  # tag libraries to build at all (configure.ac: WINE_PACKAGE_FLAGS(GSTREAMER,
+  # [gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0])).
+  # The decoders themselves are plugins it loads through
+  # GST_PLUGIN_SYSTEM_PATH_1_0, so the plugin sets ship with the runtime rather
+  # than being borrowed from the host the way the .run installer does it:
+  #   good   mpg123 (mp3), isomp4/qtdemux (mp4), audioparsers
+  #   ugly   asf (wma/asf container)
+  #   libav  aac, h.264 and wmav1/2 decoders
+  #   bad    the remaining containers and codecs Live's browser can meet
+  gstPlugins = with gst_all_1; [
+    gstreamer
+    gst-plugins-base
+    gst-plugins-good
+    gst-plugins-bad
+    gst-plugins-ugly
+    gst-libav
+  ];
+in
 
 stdenv.mkDerivation rec {
   pname = "wine-d2d1-nspa";
@@ -92,7 +115,8 @@ stdenv.mkDerivation rec {
     libusb1
     udev
     dbus
-  ];
+  ]
+  ++ gstPlugins;
 
   # The tarball is zstd-compressed with no top-level directory.
   unpackPhase = ''
@@ -143,6 +167,11 @@ stdenv.mkDerivation rec {
     "--prefix=${placeholder "out"}"
     "--enable-archs=i386,x86_64"
     "--disable-tests"
+    # Explicit, not implied: with --with-gstreamer a missing gstreamer-1.0 or
+    # base-plugins dev tree is a configure ERROR (aclocal.m4 WINE_NOTICE_WITH),
+    # instead of a notice that quietly drops winegstreamer — and mp3, mp4 and
+    # wma import with it (issue #44).
+    "--with-gstreamer"
   ];
 
   # configure silently drops ntsync without linux/ntsync.h (every NT wait then
@@ -176,6 +205,41 @@ stdenv.mkDerivation rec {
           || { echo "!! winealsa.so missing — alsa-lib not seen at configure time; no ALSA MIDI" >&2; exit 1; }
         echo "winealsa gate passed"
 
+        # Same failure mode, same verdict for media: no winegstreamer means
+        # Live's mp3/mp4/wma import has no decoder and fails without a message.
+        # --with-gstreamer above already makes that a configure error; this also
+        # covers a build that configured it and then produced no artifact.
+        for f in lib/wine/x86_64-unix/winegstreamer.so \
+                 lib/wine/x86_64-windows/winegstreamer.dll; do
+          [ -s $out/$f ] \
+            || { echo "!! $f missing — no mp3/mp4/wma import" >&2; exit 1; }
+        done
+        ${stdenv.cc.bintools.targetPrefix}readelf -d $out/lib/wine/x86_64-unix/winegstreamer.so \
+          | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \
+          || { echo "!! winegstreamer.so does not link libgstreamer-1.0.so.0" >&2; exit 1; }
+        # A winegstreamer with no plugins on its path imports nothing, so gate
+        # the plugins that carry the three formats, not just the bridge.
+        for p in libgstmpg123.so libgstisomp4.so libgstasf.so libgstlibav.so; do
+          hit=""
+          for d in $(printf '%s\n' '${passthru.gstPluginPath}' | tr ':' ' '); do
+            if [ -e "$d/$p" ]; then hit=1; break; fi
+          done
+          [ -n "$hit" ] \
+            || { echo "!! $p is not on GST_PLUGIN_SYSTEM_PATH_1_0" >&2; exit 1; }
+        done
+        # winegstreamer resolves the GStreamer libraries through its own
+        # RUNPATH, which is why they stay OFF the LD_LIBRARY_PATH bin/wine
+        # exports (passthru.libPath below): that variable is for the libraries
+        # wine dlopens by soname, and every entry added to it perturbs the
+        # environment of every wine process. ntdll.so is wine's own builtin,
+        # resolved by its loader and never by ld.so.
+        ldd_out=$(env -u LD_LIBRARY_PATH ldd $out/lib/wine/x86_64-unix/winegstreamer.so 2>&1 || true)
+        unresolved=$(printf '%s\n' "$ldd_out" | grep 'not found' | grep -v 'ntdll\.so' || true)
+        [ -z "$unresolved" ] || {
+          echo "!! winegstreamer.so cannot resolve its libraries from its RUNPATH:" >&2
+          printf '%s\n' "$unresolved" >&2; exit 1; }
+        echo "winegstreamer gate passed (bridge + mp3/mp4/wma plugins)"
+
         echo "Stripping PE builtins"
         find $out/lib/wine \( -name '*.dll' -o -name '*.exe' -o -name '*.sys' \
           -o -name '*.drv' -o -name '*.cpl' -o -name '*.ocx' \) \
@@ -199,6 +263,9 @@ stdenv.mkDerivation rec {
         cat > $out/bin/wine <<WRAPWRP
     #!/bin/sh
     export LD_LIBRARY_PATH="${passthru.libPath}\''${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+    # winegstreamer loads its decoders as GStreamer plugins, not as linked
+    # libraries, so the bridge alone still imports nothing without this path.
+    export GST_PLUGIN_SYSTEM_PATH_1_0="${passthru.gstPluginPath}\''${GST_PLUGIN_SYSTEM_PATH_1_0:+:\$GST_PLUGIN_SYSTEM_PATH_1_0}"
     # -a "\$0": the apploader symlinks (wineboot, regsvr32, ...) point here and
     # the loader picks the app from argv[0].
     exec -a "\$0" $out/bin/.wine-wrapped "\$@"
@@ -206,8 +273,16 @@ stdenv.mkDerivation rec {
         chmod +x $out/bin/wine
   '';
 
-  # dlopen path, reused by ableton-wine's regenerated wrapper.
-  passthru.libPath = lib.makeLibraryPath buildInputs;
+  passthru = {
+    # dlopen path, reused by ableton-wine's regenerated wrapper. The GStreamer
+    # packages are deliberately excluded although they are buildInputs: they are
+    # needed to COMPILE winegstreamer, which then finds them through its own
+    # RUNPATH (gated in postInstall). Listing them here would only lengthen the
+    # environment of every wine process for nothing.
+    libPath = lib.makeLibraryPath (lib.subtractLists gstPlugins buildInputs);
+    # The plugin search path bin/wine exports above; reused by that same wrapper.
+    gstPluginPath = lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" gstPlugins;
+  };
 
   # Smoke gate: the installed tree must boot a prefix and run a builtin.
   # No copy-and-relocate: bin/wine hardcodes this store path anyway, so a
@@ -215,8 +290,35 @@ stdenv.mkDerivation rec {
   doInstallCheck = true;
   installCheckPhase = ''
     echo "Smoke gate: verify wine runs from its installed path"
-    WINEPREFIX=$(mktemp -d)/prefix WINEDEBUG=-all \
-      $out/bin/wine cmd /c "echo smoke-ok" 2>/dev/null | grep -q smoke-ok
+    smoke=$(mktemp -d)
+    mkdir -p $smoke/home
+    # Captured, not piped into grep -q: piping raced wine's exit against grep's
+    # early exit, and 2>/dev/null left a failing gate saying only "it failed".
+    #
+    # env -i is load-bearing, not tidiness. Nix runs builders with address-space
+    # randomisation disabled, so the layout of a process is a deterministic
+    # function of its environment, and wine's preloader reserves fixed low
+    # ranges before ntdll can report anything. Inheriting the builder's
+    # environment therefore made this gate a function of unrelated things: after
+    # gstreamer joined buildInputs the environment grew, the layout shifted into
+    # a collision, and wine SIGSEGV'd here 100% of the time while the very same
+    # tree ran fine on a host and in any other sandbox. A fixed, explicit
+    # environment keeps the gate testing wine rather than the build environment.
+    # HOME must be writable: the builder's /homeless-shelter is not, and
+    # GStreamer would rescan every plugin for each process wine spawns.
+    rc=0
+    timeout 600 env -i \
+      PATH=$out/bin \
+      HOME=$smoke/home \
+      WINEPREFIX=$smoke/prefix \
+      WINEDEBUG=-all \
+      $out/bin/wine cmd /c "echo smoke-ok" >$smoke/out 2>$smoke/err || rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -q smoke-ok $smoke/out; then
+      [ "$rc" -eq 124 ] && echo "!! wine did not finish within 600s" >&2
+      echo "!! wine did not run from its installed path (exit $rc); its stderr:" >&2
+      cat $smoke/err >&2
+      exit 1
+    fi
     echo "  smoke gate passed"
   '';
 
