@@ -152,11 +152,20 @@ FINGERPRINTS='
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
+0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
+0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
 STAMP_ONLY='
+0081|logic-only (subpixel rasterisation for ClearType glyph textures; adds no string literal)
+0082|logic-only (per-channel blend passes for ClearType runs; adds no string literal)
+0083|logic-only (ClearType level and pixel geometry from system settings; adds no string literal)
+0085|logic-only (filter tails retained in glyph bounds; adds no string literal)
+0086|logic-only (pixel geometry and target policy for ClearType; adds no string literal)
+0087|logic-only (smoothing resolved by source precedence; adds no string literal)
+0089|logic-only (signed ClearType coverage interpolation; adds no string literal)
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)
 0005|logic-only (NC frame allowance)
