@@ -3,6 +3,27 @@
 Here are some common ailments we've seen, and how to fix them.
 
 
+## The installer does not finish after Live installs
+
+If an **Ableton USB Driver** window is in your taskbar, close it. The
+installer then continues by itself. If there is no such window, press
+Ctrl-C, then download
+[the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and run:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run --update
+```
+
+An update that stops at `== [1/5] initialise prefix ==` has the same fix.
+The update keeps your Live installation, your license, and your projects.
+
+Ableton's own installer adds a small Windows helper program that Live does
+not need on Linux. The helper stays open, often without any window, and
+setup used to wait for it. Releases newer than 2026.08.04.1 stop the
+helper themselves and remove its autostart entry, so the wait clears after
+about half a minute and the stop does not come back.
+
 ## Live has no sound
 
 Open **Settings > Audio** and select:
@@ -144,9 +165,33 @@ For advanced host tuning from a repository checkout, run:
 ./scripts/setup-realtime.sh
 ```
 
-The script requests `sudo` before changing realtime permissions, swappiness,
-or CPU-governor settings. Log out and back in after it completes. Run
-`ABLETON_RT=off ableton-live` to compare normal scheduling.
+The script asks for `sudo`, gives your user account permission to run audio
+at realtime priority, and tells the system to avoid moving Live's memory to
+swap. Log out and back in after it completes. Run
+`env ABLETON_RT=off ableton-live` to compare normal scheduling.
+
+While Live runs, the launcher also holds the computer in its fastest power
+mode, and releases it when Live exits, so battery use stays normal while
+Live is closed. This uses the `power-profiles-daemon` service, which GNOME
+and KDE ship by default. Run `env ABLETON_POWER=off ableton-live` to
+compare a launch without it.
+
+On Pop!_OS and other System76 computers, do not install the
+`power-profiles-daemon` package. The package manager removes the System76
+power management tools to make room for it. Use the power settings in your
+desktop instead.
+
+Earlier releases kept the CPU at full speed from every boot instead.
+Remove that old boot setting with:
+
+```bash
+sudo systemctl disable ableton-cpufreq-performance.service
+sudo rm /etc/systemd/system/ableton-cpufreq-performance.service
+sudo systemctl daemon-reload
+```
+
+From a repository checkout, run `./scripts/setup-realtime.sh` to remove it
+instead.
 
 ## Display scaling is wrong
 

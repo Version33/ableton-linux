@@ -71,7 +71,6 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
-    [0057]="reserved 2026-07-30 for the Intel GPU identification fix on fix/intel-gpu"
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
@@ -80,12 +79,6 @@ declare -A SERIES_GAPS=(
     [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
     [0073]="reserved for PR 152"
     [0074]="reserved for PR 152"
-    [0075]="reserved for the Win32 application compatibility series"
-    [0076]="reserved for the Win32 application compatibility series"
-    [0077]="reserved for the Win32 application compatibility series"
-    [0078]="reserved for the Win32 application compatibility series"
-    [0079]="reserved for the Win32 application compatibility series"
-    [0080]="reserved for the Win32 application compatibility series"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -156,6 +149,9 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
+0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
+0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
+0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
@@ -208,6 +204,9 @@ STAMP_ONLY='
 0052|logic-only (DT_HIDEPREFIX on the menu bar DrawTextW call; no new string literal)
 0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 0054|logic-only (per-string SystemLink font fallback in draw_menu_item, plus the calc_menu_item_size CJK-measurement fix; no new string literal)
+0077|logic-only (minimize/maximize Motif functions advertised unconditionally; extends 0037, no new string literal)
+0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
+0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
