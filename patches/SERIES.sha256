@@ -27,7 +27,7 @@ b0501b6e4632289482ff941a4f5c56a8b2f46ecb16d22b04abb9476da5a78045  0024-wined3d-k
 cc29b3c62ed515f36a3df6ea40726fc2179d4fe6d8e588f1da9b2b7e0e896e60  0028-winealsa-re-subscribe-MIDI-devices-when-they-reappea.patch
 b3d943e5df5286b48fbfee62299febe6b3988932f00de4404e0e5788c71a61fb  0029-win32u-lay-out-the-menu-bar-4px-taller-than-SM_CYMEN.patch
 c2826c5068b5f8407e7dedb65c6f43cb0f7a83b2d831a6451103750bd90defe4  0030-dxgi-don-t-blit-stale-sized-dcomp-comp-buffers-into-.patch
-3781400eb89817029c6b88fd57c7d4359cdeb8da639bf8562c2bb8dd0c581c0d  0031-comdlg32-add-XDG-file-dialog-portal.patch
+62418193ab94f338b872c2dcfe9f08d76b27d5314c3836c8e05b149831ce7107  0031-comdlg32-add-XDG-file-dialog-portal.patch
 3742ab32c39a5be16d1cc589a5a5867d6b91bfcf5d1642ccc501113909af9e61  0032-libusb-1.0-add-host-USB-bridge-for-Push-2.patch
 6bd2836da3679670bc7f012f741f5a36c26490c5586298eea932c8375160437a  0033-ntdll-let-WINE_DISABLE_UNIX_MOUNT_REPARSE-turn-off-m.patch
 099669fac44d35948fff9dcc48448d9c4a67438f70c86a74fd7312a13ab1f6cd  0034-winex11-flush-XdndStatus-replies-before-the-source-s.patch
@@ -63,5 +63,11 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 7931be1771a070325eb0b87f970e51f7089c216f1bad128fb5ecf504e100e005  0065-win32u-normalize-selected-fullscreen-window.patch
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 f45f017f21733461ddcc11ab443526ad999d43d3a220e191ce05e973a790148c  0071-wined3d-count-and-report-sustained-present-size-fall.patch
+8520b205e8b38440ed942c1b88ee4f48c6dd6e38f93c758104d85b4dcca931ec  0075-kernel32-add-UnregisterApplicationRecoveryCallback.patch
+da2bf5c70a4fe1276637b383bb849d5c02df0829bb7a00aa9a5be3a7b16b6271  0076-userenv-implement-DeriveAppContainerSidFromAppContai.patch
+4358788143a886085e54911e0cceccf59f5afb6b58a83029eff0dcc22cacd390  0077-winex11-advertise-the-minimize-and-maximize-motif-fu.patch
+5c4e740aad0c06cce1d3c5152ca66bee59c07fcaeaee1d107617abe03b70978c  0078-win32u-pass-the-initial-monitor-dpi-to-the-window-cr.patch
+ca9c10db2c1d77d48c206aaca598f3583758eccbdbdbb3096e98b7417a7b4b62  0079-dxgi-skip-the-standalone-surface-window-search-when-.patch
+72630dc732643520061175f594a5de2ff9a5cb5e21e2e9a6b1ea37c87212b264  0080-ninput-implement-the-pointer-interaction-context-ent.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

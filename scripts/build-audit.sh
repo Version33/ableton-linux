@@ -74,7 +74,10 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
-    [0070]="reserved 2026-08-05 for the Max for Live font-list cache on performance-moonshot-m4l"
+    [0070]="reserved for PRs 139, 140 and 153, which each add a 0070"
+    [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
+    [0073]="reserved for PR 152"
+    [0074]="reserved for PR 152"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -146,6 +149,9 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
+0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
+0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
+0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -189,6 +195,9 @@ STAMP_ONLY='
 0052|logic-only (DT_HIDEPREFIX on the menu bar DrawTextW call; no new string literal)
 0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 0054|logic-only (per-string SystemLink font fallback in draw_menu_item, plus the calc_menu_item_size CJK-measurement fix; no new string literal)
+0077|logic-only (minimize/maximize Motif functions advertised unconditionally; extends 0037, no new string literal)
+0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
+0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
 '
 wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
