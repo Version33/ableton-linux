@@ -12,10 +12,13 @@
 # port when a firewall is active and to remove the old hook where one exists.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 # Bump whenever this script's system-level effects change (firewall rule, unit
 # handling): forces one re-run on hosts with a stale marker so an existing
 # install picks up the fix instead of silently keeping old behavior.
-LINK_SETUP_VERSION=3
+# 4: the unit's ExecStart goes through the runtime link, so a Nix upgrade or a
+#    garbage collection no longer leaves it naming a dead store path.
+LINK_SETUP_VERSION=4
 
 if pgrep -f "Ableton Live.*\.exe" >/dev/null 2>&1; then
     echo "!! Live is running: close it before changing Link networking" >&2
@@ -86,7 +89,36 @@ else
     else
         unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
         mkdir -p "$unit_dir"
-        cp "$unit_src" "$unit_dir/ableton-linkd.service"
+        # A unit is user configuration and outlives the package it names. On a
+        # Nix install the daemon sits in the store, so copying the shipped
+        # ExecStart verbatim would pin this unit to one package hash: an upgrade
+        # keeps starting the old daemon and a garbage collection breaks the
+        # service outright. Point it at the stable runtime link instead, which
+        # every launcher re-points (and keeps GC-rooted). A .run install already
+        # names ~/.local/share, so nothing is rewritten there.
+        exec_path="$linkd"
+        case "$linkd" in
+            "$WINE_ROOT"/*)
+                runtime_lib="$WINE_ROOT/share/ableton-wine/scripts/runtime-link.sh"
+                [ -r "$runtime_lib" ] || runtime_lib="$here/runtime-link.sh"
+                if [ -r "$runtime_lib" ]; then
+                    # shellcheck source=runtime-link.sh
+                    . "$runtime_lib"
+                    stable="$(ableton_runtime_link "$WINE_ROOT")" \
+                        && exec_path="$stable/${linkd#"$WINE_ROOT"/}"
+                fi
+                ;;
+        esac
+        if [ "$exec_path" = "$linkd" ]; then
+            cp "$unit_src" "$unit_dir/ableton-linkd.service"
+        else
+            sed "s#^ExecStart=.*#ExecStart=$exec_path#" "$unit_src" \
+                > "$unit_dir/ableton-linkd.service"
+            grep -qxF "ExecStart=$exec_path" "$unit_dir/ableton-linkd.service" || {
+                echo "!! could not point the unit's ExecStart at $exec_path" >&2
+                exit 1
+            }
+        fi
         if command -v systemctl >/dev/null 2>&1 \
            && systemctl --user daemon-reload \
            && systemctl --user enable --now ableton-linkd.service; then

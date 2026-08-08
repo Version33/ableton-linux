@@ -251,6 +251,12 @@ echo "== install detection libs -> ~/.local/share/ableton-wine =="
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
+# runtime-link.sh: the launcher and setup-link.sh source it before writing any
+# path into user configuration (.desktop handlers, the ableton-linkd unit), so
+# those never record a runtime root that can move. Here that root is the stable
+# ~/.local/opt tree and the indirection is inert; it matters for the Nix package,
+# where the root is a store path, and one code path serves both.
+install -m644 "$here/runtime-link.sh" "$HOME/.local/share/ableton-wine/runtime-link.sh"
 # setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
 # without it the colors still apply on the next launch. Kit stages it next to
 # these scripts; a repo checkout carries it in tools/.

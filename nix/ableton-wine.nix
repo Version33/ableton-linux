@@ -195,6 +195,11 @@ stdenv.mkDerivation {
         install -m644 ${../tools/learnheal.exe}          $out/share/ableton-wine/learnheal.exe
         install -m755 ${../scripts/setup-realtime.sh}    $out/share/ableton-wine/scripts/setup-realtime.sh
         install -m755 ${../scripts/setup-link.sh}        $out/share/ableton-wine/scripts/setup-link.sh
+        # Sourced by the launcher and setup-link.sh: every path they write into
+        # user configuration goes through the stable link it maintains, never
+        # this store path (which a garbage collection can delete and an upgrade
+        # renames). Same $HOME-then-$WINE_ROOT lookup as the detection libs.
+        install -m755 ${../scripts/runtime-link.sh}      $out/share/ableton-wine/scripts/runtime-link.sh
         # install.sh / uninstall.sh are tarball tools — not shipped.
 
         # -- Ableton Link session anchor --
@@ -215,14 +220,15 @@ stdenv.mkDerivation {
                            "$out/share/ableton-wine/ableton-linkd"
         done
         # %h/... in the shipped unit resolves to the user's home, where nothing
-        # is installed; setup-link.sh copies this file verbatim into
-        # ~/.config/systemd/user, so the ExecStart has to name the store path.
+        # is installed, so the ExecStart here names the store path. setup-link.sh
+        # rewrites it to the runtime link on the way into ~/.config/systemd/user:
+        # a user unit outlives package hashes, this copy does not have to.
         substituteInPlace $out/share/ableton-wine/ableton-linkd.service \
           --replace-fail '%h/.local/share/ableton-wine/ableton-linkd' \
                          "$out/share/ableton-wine/ableton-linkd"
 
         # Point default WINE_ROOT (and the launcher path) at the store.
-        for script in setup-prefix.sh check-live-audio.sh check-ntsync.sh; do
+        for script in setup-prefix.sh check-live-audio.sh check-ntsync.sh setup-link.sh; do
           substituteInPlace $out/share/ableton-wine/scripts/$script \
             --replace-fail '$HOME/.local/opt/wine-d2d1-nspa-11.13' "$out"
         done
@@ -333,7 +339,7 @@ stdenv.mkDerivation {
     # The shipped scripts must default to THIS runtime. The tarball's
     # ~/.local/opt path does not exist on Nix, and a script that keeps it
     # aborts with "no wine at ..." for every Nix user who runs it.
-    for f in setup-prefix.sh check-live-audio.sh check-ntsync.sh; do
+    for f in setup-prefix.sh check-live-audio.sh check-ntsync.sh setup-link.sh; do
       if grep -qF '.local/opt/wine-d2d1-nspa' $out/share/ableton-wine/scripts/$f; then
         echo "$f still defaults to the tarball wine root"; exit 1
       fi
@@ -363,6 +369,20 @@ stdenv.mkDerivation {
              share/ableton-wine/ableton-linkd.service; do
       grep -qF "$out/share/ableton-wine/ableton-linkd" $out/$f \
         || { echo "$f does not point at the staged ableton-linkd"; exit 1; }
+    done
+    # Nothing this package installs may write THIS store path into user
+    # configuration: it is deleted by a garbage collection of an unrooted
+    # `nix run` closure and superseded by every upgrade. The launcher's handler
+    # entries and setup-link.sh's user unit both route through the runtime link,
+    # so its library has to be staged where their $HOME-then-$WINE_ROOT lookup
+    # finds it, and both must still call it.
+    [ -r $out/share/ableton-wine/scripts/runtime-link.sh ] \
+      || { echo "runtime-link.sh is not staged for the launcher and setup-link.sh"; exit 1; }
+    ${stdenv.shell} -n $out/share/ableton-wine/scripts/runtime-link.sh \
+      || { echo "runtime-link.sh has a syntax error"; exit 1; }
+    for f in libexec/ableton-live share/ableton-wine/scripts/setup-link.sh; do
+      grep -qF 'ableton_runtime_link' $out/$f \
+        || { echo "$f does not route user configuration through the runtime link"; exit 1; }
     done
     echo "PipeASIO registration gate"
     gate=$(mktemp -d)

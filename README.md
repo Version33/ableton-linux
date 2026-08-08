@@ -98,8 +98,18 @@ its own wineserver on your prefix. The `scripts/check-ntsync.sh` in a checkout
 looks for the Wine runtime under `~/.local/opt`, which Nix never creates.
 
 For daily use, prefer `nix profile install github:shibco/ableton-linux`, or the
-NixOS configuration below, over a bare `nix run`. A `nix run` leaves no GC root,
-so `nix-collect-garbage` deletes the compiled Wine and the next run rebuilds it.
+NixOS configuration below, over a bare `nix run`: a profile install also
+registers the menu entries and upgrades in one step. What a `nix run` no longer
+loses is the build. The first Live launch (and `setup-link`) points
+`~/.local/share/ableton-wine/runtime` at the running package and registers it as
+an indirect GC root, so `nix-collect-garbage` keeps the compiled Wine; deleting
+that symlink releases it.
+
+That link is also the only runtime path this package writes into your
+configuration. The authorisation handler entries the launcher installs and the
+`ableton-linkd` user unit `setup-link` writes both go through it, never through a
+store path: an upgrade re-points the link on the next launch instead of leaving
+them pinned to a package hash that a garbage collection can delete.
 
 Two optional apps mirror the `.run` installer's extra steps. Both change host
 policy: `setup-realtime` needs `sudo`, and `setup-link` asks for it only when it
@@ -176,7 +186,10 @@ bare `nix run` registers nothing.
 Standalone Max 9, installed into the same prefix with `msiexec`, launches with
 `max9` from the package. Its menu entries are staged but not active, because the
 store cannot see whether Max is installed. Copy them from
-`share/ableton-wine/desktop/` into `~/.local/share/applications` if you use Max.
+`share/ableton-wine/desktop/` into `~/.local/share/applications` if you use Max,
+and point their `Exec=` at `~/.local/share/ableton-wine/runtime/bin/max9`: unlike
+the entries the launcher maintains, a plain copy keeps the package path it was
+rendered with and stops working when that package goes away.
 
 ### Running Live
 

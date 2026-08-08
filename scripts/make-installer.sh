@@ -65,10 +65,10 @@ kit="$stage/kit"
 mkdir -p "$kit/bin" "$kit/dist" "$kit/vendor"
 cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
 cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
-mkdir -p "$kit/scripts"
 cp -a scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
       scripts/detect-theme.sh scripts/check-live-audio.sh scripts/setup-link.sh \
+      scripts/runtime-link.sh \
       "$kit/scripts/"
 install -m644 scripts/ableton-linkd.service "$kit/scripts/ableton-linkd.service"
 install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"

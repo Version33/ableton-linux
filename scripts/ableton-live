@@ -51,29 +51,64 @@ fi
 # mandatory: nothing under Wine can sandbox the renderer. User-supplied flags come first.
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:+$WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS }--use-gl=angle --use-angle=swiftshader --disable-gpu-compositing --disable-gpu-rasterization --disable-direct-composition --disable-features=ForceSWDCompWhenDCompFallbackRequired --edge-webview-foreground-boost-opt-out --no-sandbox"
 
+# The runtime link: any path this launcher writes into user configuration has to
+# be stable and user-owned, never $WINE_ROOT itself, which on a Nix install is a
+# store path that a garbage collection can delete and that every upgrade
+# renames. Resolved (and on Nix registered as a GC root) on every launch, so an
+# upgrade re-points it without the user re-running a setup step. Empty when the
+# library is absent, e.g. an install predating it: the copies below then behave
+# as they always did.
+RUNTIME_LINK=""
+runtime_lib="$HOME/.local/share/ableton-wine/runtime-link.sh"
+[ -r "$runtime_lib" ] || runtime_lib="$WINE_ROOT/share/ableton-wine/scripts/runtime-link.sh"
+if [ -r "$runtime_lib" ]; then
+    . "$runtime_lib"
+    RUNTIME_LINK="$(ableton_runtime_link "$WINE_ROOT")" || RUNTIME_LINK=""
+fi
+
 # Reinstate the authorisation handler entries when a foreign prefix took them
 # over: winemenubuilder (disabled in kit prefixes, live everywhere else, e.g.
 # in a scratch prefix holding a Live beta) exports handlers under the same
 # canonical names with `env WINEPREFIX=<prefix> wine start` Exec lines, which
 # target stock wine and the wrong prefix. Online authorisation then never
-# reaches this install. install.sh stages the canonical entries; missing or
-# winemenubuilder-signed copies are replaced and the defaults re-pinned.
-# Hand-edited entries stay. See notes/ABLETON-WINE-ONLINE-AUTH.md.
+# reaches this install. install.sh stages the canonical entries; copies that are
+# missing, winemenubuilder-signed or point at a runtime that has moved (a Nix
+# upgrade or garbage collection) are replaced through RUNTIME_LINK, and the
+# defaults re-pinned. Hand-edited entries stay.
+# See notes/ABLETON-WINE-ONLINE-AUTH.md.
 repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    local staged d repaired=0
+    local staged d exec_bin reason repaired=0
     for d in wine-protocol-ableton wine-extension-auz; do
         staged="$HOME/.local/share/ableton-wine/$d.desktop"
         # Packaged installs (nix) stage them under the runtime root instead of $HOME.
         [ -f "$staged" ] || staged="$WINE_ROOT/share/ableton-wine/$d.desktop"
         [ -f "$staged" ] || continue
-        if [ ! -f "$apps/$d.desktop" ] \
-            || grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
-            echo "ableton-live: reinstating $d.desktop (a foreign wine prefix took the handler over)" >&2
-            mkdir -p "$apps"
-            cp "$staged" "$apps/$d.desktop"
-            repaired=1
+        reason=""
+        if [ ! -f "$apps/$d.desktop" ]; then
+            reason="missing"
+        elif grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
+            reason="a foreign wine prefix took the handler over"
+        else
+            # Entries this launcher (or an older install.sh) wrote with a store
+            # path in them: hash-pinned to a superseded package at best, deleted
+            # by a garbage collection at worst. Only absolute Exec targets are
+            # judged, so a hand-edited entry still stays.
+            exec_bin="$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' "$apps/$d.desktop" | head -n 1)"
+            case "$exec_bin" in
+                /nix/store/*) reason="it names a garbage-collectable store path" ;;
+                /*) [ -x "$exec_bin" ] || reason="its Exec target no longer exists" ;;
+            esac
         fi
+        [ -n "$reason" ] || continue
+        echo "ableton-live: reinstating $d.desktop ($reason)" >&2
+        mkdir -p "$apps"
+        if [ -n "$RUNTIME_LINK" ] && grep -qF "$WINE_ROOT/" "$staged"; then
+            sed "s#$WINE_ROOT/#$RUNTIME_LINK/#g" "$staged" > "$apps/$d.desktop"
+        else
+            cp "$staged" "$apps/$d.desktop"
+        fi
+        repaired=1
     done
     [ "$repaired" -eq 1 ] || return 0
     update-desktop-database "$apps" 2>/dev/null || true
