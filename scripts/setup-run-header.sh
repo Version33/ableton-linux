@@ -357,11 +357,12 @@ if [ "$manual_install" -eq 0 ]; then
             # has DisplayInternalUI=yes, so /passive shows the Live setup wizard and the
             # user clicks through it (same on Windows). The generations are told apart by
             # content: WiX 4 engine stubs carry the 'wixtoolset.dutil' build path within the
-            # first megabyte, the WiX 3 stub has no such string. Case matters here: WiX 3
-            # stubs do carry 'WiX Toolset Bootstrapper' in their manifest, so the match is
-            # deliberately case-sensitive and unspaced - a -i added later would match both
-            # generations and silently invert the gate. A missed detection degrades to
-            # unseeded behaviour, never to a broken one.
+            # first megabyte, the WiX 3 stub has no such string. WiX 3 stubs do carry
+            # 'WiX Toolset Bootstrapper' - spaced - so the missing space is what keeps them
+            # out of this match; adding -i changes nothing on either generation (measured on
+            # four stubs), but allowing a separator in the pattern would match both and
+            # silently invert the gate. A missed detection degrades to unseeded behaviour,
+            # never to a broken one.
             if grep -qa 'wixtoolset' <(head -c 4M -- "$live_exe"); then
                 # GUIDs are MSI packed form: 86C5CFEA... is the driver UpgradeCode
                 # {AEFC5C68-0264-4E30-9685-28712A91CF4E}; 16A75B0B... is the placeholder
@@ -428,21 +429,27 @@ EOF
             say "!! the Ableton installer exited with an error; instructions below"
             manual_install=1
         fi
-        # The USB audio driver's tray app never exits by itself; a prefix that got the driver
-        # from an older install would park this wait until the user closes the window by hand
-        # (issue #111). End it directly, then wait bounded: if something is still running
-        # after 30 seconds, say what unblocks the wait instead of hanging silently.
-        WINEPREFIX="$HOME/.wine-ableton" \
-            "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" \
-            taskkill /f /im tusbaudiocplapp.exe >/dev/null 2>&1 || true
+        # Live's installer can leave residents behind: the USB audio driver's tray agent
+        # (AbletonPushCpl.exe on Live 11; an Ableton*.exe run -hide on Live 12, so there is
+        # no window anyone could close) and WebView2's MicrosoftEdgeUpdate.exe task. None of
+        # them exits by itself, and this wait only flushes the prefix - the installer's own
+        # work ended when it returned. Stop the known images, wait bounded, and on timeout
+        # end whatever still holds the prefix rather than hanging (issue #111); the next
+        # setup run's prefix scrub removes the agent's autostart entries for good.
+        for tray_image in AbletonPushCpl.exe tusbaudiocplapp.exe; do
+            WINEPREFIX="$HOME/.wine-ableton" \
+                "$HOME/.local/opt/$RUNTIME_NAME/bin/wine" \
+                taskkill /f /im "$tray_image" >/dev/null 2>&1 || true
+        done
         wait_rc=0
         WINEPREFIX="$HOME/.wine-ableton" \
             timeout 30 "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -w 2>/dev/null || wait_rc=$?
         if [ "$wait_rc" -eq 124 ]; then
-            say "-- waiting for leftover installer processes in the prefix to finish"
-            say "   (close any window the installer left open to let setup continue)"
+            say "-- stopping leftover installer processes in the prefix"
             WINEPREFIX="$HOME/.wine-ableton" \
-                "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -w 2>/dev/null || true
+                "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -k 2>/dev/null || true
+            WINEPREFIX="$HOME/.wine-ableton" \
+                timeout 30 "$HOME/.local/opt/$RUNTIME_NAME/bin/wineserver" -w 2>/dev/null || true
         fi
         rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/ableton-wine-setup" 2>/dev/null || true
     fi
