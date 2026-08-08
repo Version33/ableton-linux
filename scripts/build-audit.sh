@@ -71,7 +71,6 @@ extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
-    [0057]="reserved 2026-07-30 for the Intel GPU identification fix on fix/intel-gpu"
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"

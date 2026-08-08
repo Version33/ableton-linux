@@ -17,14 +17,15 @@ set -u
 # ">>" creates the file and proves it writable without discarding anything.
 diagnostic_dir="$HOME/.log/ableton-wine"
 if mkdir -p -- "$diagnostic_dir" && : >> "$diagnostic_dir/live.log"; then
-    # Start a fresh log only when this launcher is the one bringing Live up. Every
+    # Rotate to a fresh log only when this launcher is the one bringing Live up. Every
     # Live desktop entry - .als, .auz, ableton:// - runs this same script to hand
     # its argument to the running instance, so truncating unconditionally would
     # wipe the running session's diagnostics, including the patch 0071 present
     # fallback warning that lands about two seconds into a faulted session. Same
-    # already-running test as the single-instance guard below.
+    # already-running test as the single-instance guard below. Rotation preserves
+    # the previous session when a later guard refuses this launch.
     pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData" \
-        || : > "$diagnostic_dir/live.log"
+        || mv -f -- "$diagnostic_dir/live.log" "$diagnostic_dir/live.log.1"
     exec 2> >(tee -a "$diagnostic_dir/live.log" >&2)
 else
     echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2

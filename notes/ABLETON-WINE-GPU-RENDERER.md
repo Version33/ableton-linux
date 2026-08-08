@@ -217,8 +217,8 @@ mismatch to about five and a half.
 
 The 30-second reset is a chosen trade rather than a derived bound. It
 admits one narrow false positive: two 6-second bursts of more than half
-fallback warn when they are 20 seconds apart, and do not when they are
-60 apart. Measured healthy sessions sit well below that shape.
+fallback warn across any gap shorter than 30 seconds. Measured healthy
+sessions sit well below that shape.
 
 The report prints once for each swapchain and has two parts. Two
 `ableton-wine:` lines always print, on every WINEDEBUG setting. They
@@ -270,11 +270,10 @@ full-session checks below remain runtime acceptance checks:
 Status on 2026-08-08: the burst figures above come from review, from a
 sweep of the counter logic rather than a Live session. Sweeping burst
 length at 100% mismatch with 6-second pauses, bursts of 5.5 seconds and
-longer warned after 16.5 to 19 seconds, and bursts of 5 seconds and
-shorter stayed silent through 3000 mismatched frames. The same sweep
-put the false-positive edge at a 20-second gap. A Live session has not
-been run against these thresholds; acceptance checks 1 to 3 above still
-stand.
+longer warned, and bursts of 5 seconds and shorter stayed silent through
+3000 mismatched frames. The same sweep put the false-positive boundary at
+a 30-second gap. A Live session has not been run against these thresholds;
+acceptance checks 1 to 3 above still stand.
 
 ## Device identification (added 2026-07-30, updated 2026-08-01, issue 84)
 

@@ -71,6 +71,9 @@ use jumps while you move the mouse, run:
 grep -i "sustained present-size mismatch:" ~/.log/ableton-wine/live.log
 ```
 
+The beta launcher writes `live-beta.log` in the same directory; use that
+filename instead when testing Live 12 Beta.
+
 If that prints anything,
 [open an issue](https://github.com/shibco/ableton-linux/issues) and paste
 the whole line. It starts with `err:winediag:` and includes your desktop

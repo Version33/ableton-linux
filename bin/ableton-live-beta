@@ -10,8 +10,10 @@ set -u
 # file and proves it writable without discarding anything.
 diagnostic_dir="$HOME/.log/ableton-wine"
 if mkdir -p -- "$diagnostic_dir" && : >> "$diagnostic_dir/live-beta.log"; then
+    # Rotation preserves the previous beta session if the stable-Suite guard
+    # below refuses this launch.
     pgrep -af 'Ableton Live 12 Beta[.]exe' 2>/dev/null | grep -q 'ProgramData' \
-        || : > "$diagnostic_dir/live-beta.log"
+        || mv -f -- "$diagnostic_dir/live-beta.log" "$diagnostic_dir/live-beta.log.1"
     exec 2> >(tee -a "$diagnostic_dir/live-beta.log" >&2)
 else
     echo "ableton-live-beta: cannot write diagnostics to $diagnostic_dir/live-beta.log" >&2
