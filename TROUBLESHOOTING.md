@@ -3,6 +3,27 @@
 Here are some common ailments we've seen, and how to fix them.
 
 
+## The installer does not finish after Live installs
+
+If an **Ableton USB Driver** window is in your taskbar, close it. The
+installer then continues by itself. If there is no such window, press
+Ctrl-C, then download
+[the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and run:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run --update
+```
+
+An update that stops at `== [1/5] initialise prefix ==` has the same fix.
+The update keeps your Live installation, your license, and your projects.
+
+Ableton's own installer adds a small Windows helper program that Live does
+not need on Linux. The helper stays open, often without any window, and
+setup used to wait for it. Releases newer than 2026.08.04.1 stop the
+helper themselves and remove its autostart entry, so the wait clears after
+about half a minute and the stop does not come back.
+
 ## Live has no sound
 
 Open **Settings > Audio** and select:
