@@ -195,6 +195,35 @@ if [ -n "$live_exe_unix" ]; then
     fi
 fi
 
+# Keep the menu entry tracking the installed edition: install.sh renders it
+# before Live exists in the prefix, so name, icon and window class heal here
+# on each start. An entry that does not route through this launcher is
+# hand-made and stays untouched.
+if [ -n "$exe_base" ]; then
+    apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    live_entry="$apps_dir/ableton-live.desktop"
+    if [ -f "$live_entry" ] && grep -qF ".local/bin/ableton-live" "$live_entry"; then
+        entry_name="${exe_base%.exe}"
+        entry_wmclass="$(printf '%s' "$exe_base" | tr '[:upper:]' '[:lower:]')"
+        entry_edition="$(printf '%s' "$entry_name" | awk '{print tolower($NF)}')"
+        entry_icon="live-suite"
+        [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/live-$entry_edition.svg" ] \
+            && entry_icon="live-$entry_edition"
+        if ! grep -qxF "Name=$entry_name" "$live_entry" \
+            || ! grep -qxF "Icon=$entry_icon" "$live_entry" \
+            || ! grep -qxF "StartupWMClass=$entry_wmclass" "$live_entry"; then
+            awk -v name="$entry_name" -v icon="$entry_icon" -v wmclass="$entry_wmclass" '
+                /^Name=/           { print "Name=" name; next }
+                /^Icon=/           { print "Icon=" icon; next }
+                /^StartupWMClass=/ { print "StartupWMClass=" wmclass; seen = 1; next }
+                { print }
+                END { if (!seen) print "StartupWMClass=" wmclass }
+            ' "$live_entry" > "$live_entry.tmp" && mv "$live_entry.tmp" "$live_entry"
+            update-desktop-database "$apps_dir" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # If Live isn't running, kill any stale wineserver so the prefix binds to this build's server.
 if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData"; then
     "$WINE_ROOT/bin/wineserver" -k 2>/dev/null || true
