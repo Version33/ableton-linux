@@ -654,24 +654,27 @@ sync_font_fallback() {   # family -> register its SystemLink chain from what syn
 
 # Wine takes the antialiasing mode for GDI text from the host's Xft resources,
 # so a desktop set to grayscale renders Live's menus and dialogs grayscale
-# whatever the prefix asks for. An explicit FontSmoothingType in the prefix
-# outranks that (patch 0084), and this is what keeps it set: setup-prefix.sh
+# whatever the prefix asks for. An explicit prefix policy outranks that
+# (patch 0087), and this is what keeps it set: setup-prefix.sh
 # seeds it, and a prefix made by an older release has nothing.
-# ABLETON_TEXT_SMOOTHING=grayscale drops back to grayscale antialiasing,
+# ABLETON_TEXT_SMOOTHING=grayscale writes a deliberate grayscale marker,
 # preserve leaves whatever the prefix already carries.
 sync_text_smoothing() {
-    local want_type order cur_enabled cur_type
+    local want_enabled want_type order cur_enabled cur_type
     case "${ABLETON_TEXT_SMOOTHING:-subpixel}" in
         preserve) return 0 ;;
-        grayscale) want_type=1 ;;
-        subpixel)  want_type=2 ;;
+        grayscale) want_enabled=1; want_type=1 ;;
+        subpixel)  want_enabled=2; want_type=2 ;;
         *)
             echo "ableton-live: ABLETON_TEXT_SMOOTHING must be subpixel, grayscale, or preserve: using subpixel" >&2
-            want_type=2 ;;
+            want_enabled=2; want_type=2 ;;
     esac
     cur_enabled="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"FontSmoothing"=/{gsub(/.*="?/,""); gsub(/"\r?$/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
     cur_type="$(awk '/^\[Control Panel\\\\Desktop\]/{f=1;next} /^\[/{f=0} f&&/"FontSmoothingType"=dword:/{gsub(/.*dword:/,""); gsub(/\r/,""); print; exit}' "$WINEPREFIX/user.reg" 2>/dev/null || true)"
-    [ "$cur_enabled" = 2 ] && [ "$((16#${cur_type:-0}))" = "$want_type" ] && return 0
+    # Smoothing off is itself an explicit prefix policy. Never turn it back on
+    # merely because the launcher defaults to subpixel rendering.
+    [ "$cur_enabled" = 0 ] && return 0
+    [ "$cur_enabled" = "$want_enabled" ] && [ "$((16#${cur_type:-0}))" = "$want_type" ] && return 0
 
     # A BGR panel rendered as RGB fringes the wrong way, so follow the host
     # where it states an order.
@@ -682,7 +685,7 @@ sync_text_smoothing() {
         esac
     fi
     echo "ableton-live: setting text antialiasing to ${ABLETON_TEXT_SMOOTHING:-subpixel}" >&2
-    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f >/dev/null 2>&1 9>&-
+    "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d "$want_enabled" /f >/dev/null 2>&1 9>&-
     "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d "$want_type" /f >/dev/null 2>&1 9>&-
     "$WINE_ROOT/bin/wine" reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$order" /f >/dev/null 2>&1 9>&-
 }

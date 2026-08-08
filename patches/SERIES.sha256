@@ -68,7 +68,7 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 73d311551c1ae9eac2f24b8f9943fca2c72569c6d9c426351c7069eebafcd72c  0084-win32u-let-a-prefix-s-own-font-smoothing-outrank-the.patch
 9df990613259dc1fff4b101b71734e8ce9f10c62dc6c06fc7a9235697fd55676  0085-dwrite-preserve-ClearType-filter-tails-in-glyph-boun.patch
 56e890417210af2d12f6e4a0db044d0f20224a0da3ac26eb5c549dfe02555be6  0086-d2d1-honor-ClearType-geometry-and-safe-target-policy.patch
-f90e6287a366b7cda839358c3284689ff76de6426b0508a5ed041136882d7066  0087-win32u-resolve-font-smoothing-by-source-precedence.patch
+ee36bbf26e5ea22b8d6ecd5344cb72fc7883ac59ed733661dfb4e73f773fc18f  0087-win32u-resolve-font-smoothing-by-source-precedence.patch
 efec6729f1663efe78c7efa941b826b2a28d219bf6faa974294a3bfa854b84f5  0088-win32u-allow-a-semantic-desktop-UI-stock-font.patch
 10d34c085b2a1b554457524978e8a380d3c15aaafd290657e5ef8ca9874221c2  0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch

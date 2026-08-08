@@ -157,6 +157,7 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
+0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -168,7 +169,6 @@ STAMP_ONLY='
 0085|logic-only (filter tails retained in glyph bounds; adds no string literal)
 0086|logic-only (pixel geometry and target policy for ClearType; adds no string literal)
 0087|logic-only (smoothing resolved by source precedence; adds no string literal)
-0088|logic-only (semantic desktop UI stock font; adds no string literal)
 0089|logic-only (signed ClearType coverage interpolation; adds no string literal)
 0002|logic-only (visible-rect gates; adds no string literal)
 0004|logic-only (reentrant wpchanged state)

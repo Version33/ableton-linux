@@ -3,11 +3,13 @@
  * coverage, or one greyscale value copied into all three subpixels.
  *
  * Renders a glyph run through IDWriteGlyphRunAnalysis, asks for a
- * DWRITE_TEXTURE_CLEARTYPE_3x1 alpha texture, and reports the total ink in
- * each subpixel channel. Greyscale replicated across three channels gives
- * exactly R == G == B for every glyph, whatever the text or size. Genuine
- * subpixel rendering does not: the channels differ wherever a stem lands
- * between pixel boundaries.
+ * DWRITE_TEXTURE_CLEARTYPE_3x1 alpha texture, and compares each covered
+ * pixel's RGB coverage triple. Greyscale replicated across three channels
+ * gives exactly R == G == B for every pixel, whatever the text or size.
+ * Genuine subpixel rendering does not: the channels differ wherever a stem
+ * lands between pixel boundaries. Channel totals are only diagnostic; a
+ * symmetric LCD filter can give equal totals even when individual triples
+ * differ.
  *
  * So the test needs no reference image and no Windows machine to be
  * informative: the "before" value is a known constant.
@@ -28,7 +30,7 @@ int main(int argc, char **argv)
 {
     /* Em size matters: a face with embedded bitmaps returns one at small
      * sizes, and an embedded bitmap has no subpixel coverage to carry. */
-    float emsize = argc > 1 ? (float)atof(argv[1]) : 16.0f;
+    float emsize = argc > 1 ? (float)atof(argv[1]) : 24.0f;
     IDWriteFactory *factory = NULL;
     IDWriteFontFace *fontface = NULL;
     IDWriteFontCollection *collection = NULL;
@@ -44,7 +46,7 @@ int main(int argc, char **argv)
     BOOL exists = FALSE;
     RECT bounds;
     BYTE *texture = NULL;
-    SIZE_T size;
+    SIZE_T size, covered = 0, differing = 0;
     double ink[3] = {0.0, 0.0, 0.0};
     int width, height, x, y;
     HRESULT hr;
@@ -133,18 +135,26 @@ int main(int argc, char **argv)
         const BYTE *row = texture + (SIZE_T)y * width * 3;
 
         for (x = 0; x < width; x++)
+        {
+            const BYTE *pixel = row + x * 3;
+
+            if (pixel[0] || pixel[1] || pixel[2]) covered++;
+            if (pixel[0] != pixel[1] || pixel[1] != pixel[2]) differing++;
             for (i = 0; i < 3; i++)
-                ink[i] += row[x * 3 + i];
+                ink[i] += pixel[i];
+        }
     }
 
-    printf("texture   : %dx%d pixels, %d subpixel samples\n", width, height, width * 3);
+    printf("texture   : %dx%d pixels, %llu subpixel samples\n", width, height,
+            (unsigned long long)size);
     printf("ink R/G/B : %.0f / %.0f / %.0f\n", ink[0], ink[1], ink[2]);
-    if (ink[0] == ink[1] && ink[1] == ink[2])
+    printf("RGB triples: %llu / %llu covered triples differ\n", (unsigned long long)differing,
+            (unsigned long long)covered);
+    if (!differing)
         printf("verdict   : GREYSCALE replicated across three channels (no subpixel resolution)\n");
     else
-        printf("verdict   : SUBPIXEL, channels differ by %.2f%% / %.2f%% from the red channel\n",
-                ink[0] ? 100.0 * (ink[1] - ink[0]) / ink[0] : 0.0,
-                ink[0] ? 100.0 * (ink[2] - ink[0]) / ink[0] : 0.0);
+        printf("verdict   : SUBPIXEL, %.2f%% of covered RGB triples differ\n",
+                covered ? 100.0 * differing / covered : 0.0);
 
     return 0;
 }

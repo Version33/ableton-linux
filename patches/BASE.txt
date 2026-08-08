@@ -12,9 +12,9 @@ catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
 The current Wine series contains 73 files, numbered 0001 through 0089.
-Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0080
-are reserved by open pull requests and will enter this branch as those
-merge.
+Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
+and 0070 through 0080 are reserved by open pull requests and will enter this
+branch as those merge.
 
 ## Applying the series
 
@@ -309,7 +309,8 @@ Apply them in sequence with the rest of the series.
   for `DEFAULT_GUI_FONT`, including its DPI-scaled stock object. This gives
   desktop integration a Wine-owned UI-font route without globally replacing
   an application's explicit request for Tahoma or changing legacy
-  `SYSTEM_FONT` metrics.
+  `SYSTEM_FONT` metrics. Nothing in this repository writes the value; it is
+  an integration hook for downstream desktop tooling.
 - `0089`: keep ClearType coverage interpolation signed. The first 0086
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
