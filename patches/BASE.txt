@@ -270,9 +270,8 @@ Apply them in sequence with the rest of the series.
   Backport of Wine MR 11573, the proposed fix for upstream bug 60023,
   the 11.12 to 11.13 regression that sizes windows of per-monitor-aware
   processes at a quarter of their request. Includes the regenerated
-  protocol files; the SERVER_PROTOCOL_VERSION bump rides the
-  performance series patch that follows in this stack, so a build
-  that drops the performance series must bump it here instead.
+  protocol files; 0078 carries the SERVER_PROTOCOL_VERSION bump
+  itself (956 → 957).
 - `0079`: skip the standalone-surface window search in dxgi's ReleaseDC
   when the surface's owner presents it itself. Nothing binds a
   standalone DXGI surface to a window, so ReleaseDC enumerates the
@@ -281,8 +280,9 @@ Apply them in sequence with the rest of the series.
   runs GetDC/ReleaseDC twice per frame. An application drawing its
   interface this way triggered 138 enumerations in fifteen seconds of
   startup on the measured setup. The owner marks the surface through a private-data GUID
-  in a shared header; unmarked surfaces, including the composition
-  surfaces the search was written for, are unaffected.
+  in a shared header; the gate also skips when the dirty rectangle
+  is empty. Unmarked surfaces, including the composition surfaces
+  the search was written for, are unaffected.
 - `0080`: implement the ninput pointer interaction context entry points.
   An application driving pointer input through an interaction context
   calls `ProcessPointerFramesInteractionContext` once per frame while
