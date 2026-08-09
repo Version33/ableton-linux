@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourceable runtime indirection. ableton_runtime_link <runtime-root> prints a
 # stable, user-owned path that resolves to that runtime, creating or re-pointing
 # it as needed, and returns 1 when it cannot provide one.
