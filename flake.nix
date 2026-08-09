@@ -33,6 +33,7 @@
       ableton-wine = pkgs.callPackage ./nix/ableton-wine.nix {
         wine = wine-d2d1-nspa;
         inherit pipeasio ableton-linkd;
+        patchesDir = ./patches;
       };
 
       default = ableton-wine;

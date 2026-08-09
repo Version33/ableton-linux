@@ -285,10 +285,18 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
         && ok "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
         || bad "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
-    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
-        bad "pipeasio64.dll.so rpath" "carries a build-container rpath"
-    else
+    # The tarball must resolve the HOST's libpipewire, so it carries no rpath;
+    # the Nix package deliberately pins the closure's (nix/pipeasio.nix gates
+    # that RUNPATH). Both are right for their packaging. What must never ship
+    # is a path from the build container, which resolves on no user's machine.
+    asio_rpath="$(readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null \
+        | sed -n 's/.*R\(UN\)\?PATH).*\[\(.*\)\]/\2/p')"
+    if [ -z "$asio_rpath" ]; then
         ok "pipeasio64.dll.so rpath" "none (resolves via host loader)"
+    elif printf '%s' "$asio_rpath" | tr ':' '\n' | grep -qv '^/nix/store/'; then
+        bad "pipeasio64.dll.so rpath" "carries a build-container rpath: $asio_rpath"
+    else
+        ok "pipeasio64.dll.so rpath" "nix store pin ($asio_rpath)"
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \

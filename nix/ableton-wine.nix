@@ -7,6 +7,9 @@
   ableton-linkd,
   cabextract,
   unzip,
+  # The frozen patch manifest (patches/): stamped into the tree and diffed
+  # against it by the build audit below.
+  patchesDir,
   # Pin PipeASIO settings, e.g.
   #   ableton-wine.override { pipeasioSettings = { buffer_size = 256; inputs = 8; }; }
   # The launch shim exports each pin as the driver's matching PIPEASIO_*
@@ -314,6 +317,44 @@ stdenv.mkDerivation {
         install -m644 ${../desktop/icons/application-ableton-live.xml} \
           $out/share/mime/packages/application-ableton-live.xml
 
+        # -- Provenance --
+        # The two files the tarball carries (scripts/container-build.sh), for
+        # the same two reasons: build-audit.sh diffs the stack against
+        # patches/SERIES.sha256 and reads the patch count out of the stamp, and
+        # a bug report can name the runtime it came from. Regenerated from the
+        # patches this build applied, never copied from the manifest — a copy
+        # would only agree with itself.
+        ( cd ${patchesDir} && sha256sum 00*.patch pipeasio/*.patch ) \
+          > $out/ABLETON-WINE-PATCH-STACK.txt
+        n_wine=$(ls ${patchesDir}/00*.patch | wc -l)
+        n_asio=$(ls ${patchesDir}/pipeasio/*.patch | wc -l)
+        stack_sha=$(sha256sum $out/ABLETON-WINE-PATCH-STACK.txt | awk '{print $1}')
+        sha_of() { sha256sum "$out/$1" | awk '{print $1}'; }
+        # $out is the whole identity here: it is content-addressed over every
+        # input, including the Wine and PipeASIO derivations this tree was
+        # assembled from. Their store paths cannot be named in this file —
+        # disallowedReferences keeps the donor Wine out of the closure.
+        cat > $out/ABLETON-WINE-BUILD-INFO.txt <<INFO
+    dist-version: nix
+    package:      $out
+    wine:         wine-${wine.version}
+    base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
+    patches:      $((n_wine + n_asio))
+    wine-patches: $n_wine
+    pipeasio-patches: $n_asio
+    patch-stack:  $stack_sha
+    pipeasio:     1.2.2
+    pipewire:     pinned in the closure via RUNPATH (the .run resolves the host's)
+    gst-decoders: base/good/bad/ugly/libav pinned in the closure (the .run uses the host's)
+    ntsync:       yes (vendored linux/ntsync.h, gated in nix/wine.nix)
+    libusb-pe:    $(sha_of lib/wine/x86_64-windows/libusb-1.0.dll)
+    libusb-unix:  $(sha_of lib/wine/x86_64-unix/libusb-1.0.so)
+    portal-unix:  $(sha_of lib/wine/x86_64-unix/comdlg32.so)
+    pipeasio-pe:  $(sha_of lib/wine/x86_64-windows/pipeasio64.dll)
+    pipeasio-unix: $(sha_of lib/wine/x86_64-unix/pipeasio64.dll.so)
+    built-by:     nix
+    INFO
+
         runHook postInstall
   '';
 
@@ -409,6 +450,19 @@ stdenv.mkDerivation {
       || { echo "PipeASIO CLSID not registered"; exit 1; }
     $out/bin/wineserver -k 2>/dev/null || true
     echo "  pipeasio registration gate passed"
+    # Full build audit, the same one make-installer.sh runs against the
+    # tarball: every patch verified against the tree that shipped it, the
+    # provenance stamps matched to the frozen manifest, and the structural
+    # invariants (winealsa, winegstreamer, the 64-bit-only libusb bridge, the
+    # PipeASIO pair, DT_NEEDED and RUNPATH) checked. Those invariants are the
+    # must list this package used to reimplement one gate at a time.
+    # It resolves the manifest as ../patches beside itself, so give it a kit.
+    echo "Build audit"
+    auditkit=$(mktemp -d)
+    mkdir -p $auditkit/scripts
+    cp ${../scripts/build-audit.sh} $auditkit/scripts/build-audit.sh
+    cp -r ${patchesDir} $auditkit/patches
+    bash $auditkit/scripts/build-audit.sh $out
   '';
 
   meta = {
