@@ -438,6 +438,14 @@ stdenv.mkDerivation {
         || { echo "$f does not route user configuration through the runtime link"; exit 1; }
     done
     echo "PipeASIO registration gate"
+    # No env -i here, unlike wine.nix's smoke gate. That one needs a fixed,
+    # explicit environment because Nix disables address-space randomisation,
+    # which makes wine's preloader reservations a function of the builder's
+    # environment size; the smoke gate is the one that got bitten. This gate
+    # runs against the assembled tree and has never shown it, and env -i would
+    # cost it the loader variables the PipeASIO half needs. If it ever does
+    # start SIGSEGV'ing on an unrelated input change, the comment in
+    # nix/wine.nix's installCheckPhase is the reason and env -i is the fix.
     gate=$(mktemp -d)
     export WINEPREFIX=$gate/prefix WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
     # Bare symlink invocations on purpose: they exercise the apploader argv[0]
