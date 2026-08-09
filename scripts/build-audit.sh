@@ -75,7 +75,6 @@ declare -A SERIES_GAPS=(
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0070]="reserved for PRs 139, 140 and 153, which each add a 0070"
-    [0071]="reserved for PR 141"
     [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
     [0073]="reserved for PR 152"
     [0074]="reserved for PR 152"
@@ -149,6 +148,7 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_FULLSCREEN_CLASS
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
+0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u

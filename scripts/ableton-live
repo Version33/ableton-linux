@@ -11,13 +11,36 @@
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
 #            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
 set -u
+
+# Keep diagnostics from the current launch at one stable path. Tee preserves
+# terminal output while also covering desktop launchers whose stderr is
+# otherwise inherited from the desktop environment (and may be /dev/null).
+# ">>" creates the file and proves it writable without discarding anything.
+diagnostic_dir="$HOME/.log/ableton-wine"
+if mkdir -p -- "$diagnostic_dir" && : >> "$diagnostic_dir/live.log"; then
+    # Rotate to a fresh log only when this launcher is the one bringing Live up. Every
+    # Live desktop entry - .als, .auz, ableton:// - runs this same script to hand
+    # its argument to the running instance, so truncating unconditionally would
+    # wipe the running session's diagnostics, including the patch 0071 present
+    # fallback warning that lands about two seconds into a faulted session. Same
+    # already-running test as the single-instance guard below. Rotation preserves
+    # the previous session when a later guard refuses this launch.
+    pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep -q "ProgramData" \
+        || mv -f -- "$diagnostic_dir/live.log" "$diagnostic_dir/live.log.1"
+    exec 2> >(tee -a "$diagnostic_dir/live.log" >&2)
+else
+    echo "ableton-live: cannot write diagnostics to $diagnostic_dir/live.log" >&2
+fi
+
 # Clear inherited Wine variables so this launch uses only the patched build.
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
 # Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
-export WINEDEBUG="${WINEDEBUG:--all}"
+# Keep the winediag channel on: it carries only rare one-line notices that a
+# person should read, such as the present-fallback warning from patch 0071.
+export WINEDEBUG="${WINEDEBUG:--all,+winediag}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINED3D_DCOMP_FORCE_FULL_REDRAW="${WINED3D_DCOMP_FORCE_FULL_REDRAW:-1}"
 # M4L child visibility otherwise makes winex11 detach and reattach Live's whole
