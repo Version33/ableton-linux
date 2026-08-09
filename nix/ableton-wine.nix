@@ -133,6 +133,12 @@ stdenv.mkDerivation {
         # -- Launcher --
         mkdir -p $out/bin $out/libexec
         install -m755 ${../scripts/ableton-live} $out/libexec/ableton-live
+        # The launcher sources this for ABLETON_SHORTCUTS=take (holding the GNOME
+        # shortcuts that shadow Live's own). Unlike the detection libs it looks
+        # for it beside itself, not under share/ableton-wine/scripts, so it is
+        # staged next to the launcher; without it that feature silently does
+        # nothing here while it works from the .run install.
+        install -m644 ${../scripts/shortcut-hold.sh} $out/libexec/shortcut-hold.sh
         # Quoted heredoc ('SHIM'): nothing shell-expands at build; @out@ is
         # substituted after. Runtime shell ''${...} is written with the '''' escape;
         # the pinBlock lines (nix-interpolated) are already literal shell.
@@ -378,6 +384,12 @@ stdenv.mkDerivation {
     # finds it, and both must still call it.
     [ -r $out/share/ableton-wine/scripts/runtime-link.sh ] \
       || { echo "runtime-link.sh is not staged for the launcher and setup-link.sh"; exit 1; }
+    # Same failure mode as the fonts: the launcher resolves this one beside
+    # itself, so a miss is silent — ABLETON_SHORTCUTS=take would just do nothing.
+    [ -r $out/libexec/shortcut-hold.sh ] \
+      || { echo "shortcut-hold.sh is not staged beside the launcher"; exit 1; }
+    grep -qF '}/shortcut-hold.sh' $out/libexec/ableton-live \
+      || { echo "the launcher no longer resolves shortcut-hold.sh beside itself"; exit 1; }
     ${stdenv.shell} -n $out/share/ableton-wine/scripts/runtime-link.sh \
       || { echo "runtime-link.sh has a syntax error"; exit 1; }
     for f in libexec/ableton-live share/ableton-wine/scripts/setup-link.sh; do

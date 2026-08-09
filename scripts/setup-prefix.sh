@@ -396,6 +396,34 @@ echo "== [1/6] initialise prefix at $WINEPREFIX =="
 WINEDLLOVERRIDES="mscoree,mshtml=" DISPLAY='' WAYLAND_DISPLAY='' \
     wine reg add 'HKCU\Software\Wine\DllOverrides' /v MicrosoftEdgeUpdate.exe /t REG_SZ /d '' /f >/dev/null
 WINEDLLOVERRIDES="mscoree,mshtml=" DISPLAY='' WAYLAND_DISPLAY='' wineboot -u
+# A prefix that got Ableton's USB audio driver carries the driver's tray agent, and
+# wineboot's startup pass relaunches it on every boot. The agent never exits by itself and
+# does not always have a window: Live 11's driver MSI (v5.57 File table) installs
+# AbletonPushCpl.exe under Ableton\Push Driver with a Startup shortcut; a field capture of
+# a hung update shows Live 12's agent as ABLE~OCJ.EXE -hide under Ableton\USB Audio Driver,
+# an Ableton*.exe started through its 8.3 path whose long name is not yet confirmed (issue
+# #111). Stop the known images, then delete the autostart entries so later boots come up
+# clean. wineboot runs the HKLM Run key (64-bit and Wow6432Node views), the HKCU Run key,
+# and the Startup folders, so the scrub covers exactly those. Entries are matched by what
+# they point at - an Ableton\USB or Ableton\Push path, long or 8.3 form - not by image
+# name, because the names vary by driver generation.
+for tray_image in AbletonPushCpl.exe tusbaudiocplapp.exe; do
+    wine taskkill /f /im "$tray_image" >/dev/null 2>&1 || true
+done
+for run_key in 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' \
+               'HKLM\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Run' \
+               'HKCU\Software\Microsoft\Windows\CurrentVersion\Run'; do
+    (wine reg query "$run_key" 2>/dev/null || true) | \
+        sed -n 's/^    \(.*\)    REG_[A-Z_]*    .*\(ableton\\usb\|ableton\\push\|tusbaudio\).*/\1/Ip' | \
+        while IFS= read -r run_value; do
+            wine reg delete "$run_key" /v "$run_value" /f >/dev/null 2>&1 || true
+        done
+done
+for startup_root in "$WINEPREFIX/drive_c/users" "$WINEPREFIX/drive_c/ProgramData"; do
+    [ -d "$startup_root" ] || continue
+    find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' \
+        \( -iname '*ableton*' -o -iname '*push*' -o -iname '*tusbaudio*' \) -delete 2>/dev/null || true
+done
 settle
 
 if [ "$refresh" -eq 1 ]; then
@@ -705,6 +733,27 @@ fi
 wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
 settle
 
+echo "== [3c/6] text: subpixel antialiasing =="
+# Wine takes the antialiasing mode from the host's Xft resources, so a desktop
+# set to grayscale renders every Win32 menu, dialog and control grayscale
+# whatever the prefix asks for. Patch 0084 lets an explicit FontSmoothingType
+# in the prefix outrank that, and this is what sets it. Without these values
+# the patch has nothing to act on and text stays grayscale.
+#
+# The subpixel order follows the host where it states one: a BGR panel
+# rendered as RGB fringes the wrong way.
+smoothing_order=1   # FE_FONTSMOOTHINGORIENTATIONRGB
+if command -v gsettings >/dev/null 2>&1; then
+    case "$(gsettings get org.gnome.desktop.interface font-rgba-order 2>/dev/null | tr -d "'")" in
+        bgr) smoothing_order=0 ;;
+    esac
+fi
+case "$smoothing_order" in 0) echo "   subpixel order: BGR" ;; *) echo "   subpixel order: RGB" ;; esac
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2 /f
+wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$smoothing_order" /f
+"$WINESERVER" -w
+
 echo "== [4/6] register packaged PipeASIO =="
 # The driver's unix half must resolve libpipewire-0.3.so.0 — the tarball build
 # from the host's libs (it carries no rpath on purpose), the nix build from its
@@ -761,6 +810,18 @@ wine reg query "$push2_key" /v libusb-1.0
 # "Program Error" boxes make a working install look broken. Suppress the dialog only: winedbg
 # still runs and still writes the backtrace to stderr.
 wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f
+
+# Earlier revisions of this script registered a placeholder Ableton Push USB Audio Driver
+# product (version 99.0.0, invented ProductCode {B0B57A61-11E0-4A2E-9A11-AB1E70201126})
+# here, so Live 11's Burn bundle would plan its driver package out. That only works on the
+# WiX 4 generation of the bundle; the seed now lives in setup-run-header.sh, gated on the
+# bundle's generation. Remove any leftover registration: the ProductCode is ours, so only
+# the placeholder can be under it. This also clears the orphaned InstallProperties key a
+# WiX 3 bundle leaves behind when its RelatedPackage sweep removes the placeholder.
+wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
+wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
 
 # winemenubuilder's entries assume `wine` on PATH (never true here) and are dead buttons: disable
 # it and delete entries it already wrote for this prefix (matched by WINEPREFIX=; install.sh's entries can't match).

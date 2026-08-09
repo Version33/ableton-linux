@@ -50,7 +50,7 @@ dist/cabextract-static --version >/dev/null 2>&1 || \
     { echo "!! dist/cabextract-static does not run on this host" >&2; exit 1; }
 echo "   cabextract-static: $(dist/cabextract-static --version 2>&1 | head -1)"
 
-echo "== [2/5] ableton-linkd (persistent Ableton Link peer, from the vendored SDK) =="
+echo "== [2/5] ableton-linkd (Ableton Link session anchor, from the vendored SDK) =="
 if [ ! -x dist/ableton-linkd ]; then
     ENGINE="$ENGINE" IMAGE="$IMAGE" ./scripts/build-ableton-linkd.sh
 fi
@@ -67,7 +67,8 @@ cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
 cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
 cp -a scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
-      scripts/detect-theme.sh scripts/check-live-audio.sh scripts/setup-link.sh \
+      scripts/detect-theme.sh scripts/shortcut-hold.sh \
+      scripts/check-live-audio.sh scripts/setup-link.sh \
       scripts/runtime-link.sh \
       "$kit/scripts/"
 install -m644 scripts/ableton-linkd.service "$kit/scripts/ableton-linkd.service"

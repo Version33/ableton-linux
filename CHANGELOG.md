@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+- Link setup records its version marker only when the service step
+  completed, so a host where that step failed retries it on the next
+  update instead of counting itself configured. The version moves to 5.
+- The session power-profile hold now covers launches through ableton://
+  URLs and .auz files. Live is started with `start /w`, so the launcher
+  waits on Live itself and the hold no longer ends right after the
+  handoff.
+- The launchers bound the power-profile probe with a 10-second timeout,
+  so an unresponsive power daemon no longer stalls Live's launch.
+- The uninstaller now names the boot-time CPU speed setting that earlier
+  releases installed, and prints the commands to remove it.
+- The realtime setup script and the troubleshooting guide now warn
+  Pop!_OS and other System76 users off power-profiles-daemon: the
+  package manager removes the System76 power tools to install it.
+- ableton-linkd rejects fractional `--linger` values instead of
+  truncating them toward the never-exit setting.
+
+## 2026.08.08.1
+
+- Experimental ClearType-style subpixel rendering is now available to
+  DirectWrite, Direct2D and GDI text. Prefix setup enables it by default and
+  follows the desktop's RGB/BGR order; set `ABLETON_TEXT_SMOOTHING=grayscale`
+  for deliberate greyscale rendering or `preserve` to leave an existing
+  prefix policy untouched. An explicitly disabled `FontSmoothing=0` is never
+  overwritten by the launcher.
+- Added standalone DirectWrite, Direct2D and GDI probes for checking the text
+  path without launching Live. The ClearType texture probe uses an outline
+  size and compares each RGB coverage triple, so symmetric filtering no longer
+  produces a false greyscale verdict.
+- Added a downstream `DesktopUIFont` integration hook for changing Wine's
+  semantic desktop UI stock font without globally substituting Tahoma.
+
 ## 2026.08.04.1
 
 - Full Screen works (issue 42). Entering it no longer shifts Live's

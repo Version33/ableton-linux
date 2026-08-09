@@ -247,7 +247,8 @@ fi
 install -m755 "$here/ableton-live" "$BIN/ableton-live"
 
 echo "== install detection libs -> ~/.local/share/ableton-wine =="
-# The launcher sources these on every start (DPI auto-calibration, light/dark theme sync).
+# The launcher sources these on every start (DPI auto-calibration, light/dark
+# theme sync, and crash-safe GNOME shortcut holding).
 mkdir -p "$HOME/.local/share/ableton-wine"
 install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
 install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
@@ -257,6 +258,7 @@ install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-th
 # ~/.local/opt tree and the indirection is inert; it matters for the Nix package,
 # where the root is a store path, and one code path serves both.
 install -m644 "$here/runtime-link.sh" "$HOME/.local/share/ableton-wine/runtime-link.sh"
+install -m644 "$here/shortcut-hold.sh" "$HOME/.local/share/ableton-wine/shortcut-hold.sh"
 # setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
 # without it the colors still apply on the next launch. Kit stages it next to
 # these scripts; a repo checkout carries it in tools/.
@@ -307,11 +309,11 @@ echo "== install desktop entries -> $APPS =="
 mkdir -p "$APPS"
 # Detect the installed Live edition for the menu entry (issue #39): the
 # newest Program exe under the prefix wins, matching the launcher's
-# discovery. Without an install yet, generic values apply; rerunning the
-# installer after Live is installed refreshes the entry.
+# discovery. Without an install yet, generic values apply; the launcher
+# completes the entry on the first start after Live is installed.
 live_name="Ableton Live"
 live_icon="live-suite"
-live_wmclass="ableton live 12 suite.exe"
+live_wmclass=""
 live_prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 newest=""
 for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
@@ -335,6 +337,8 @@ else
     sed -e "s#@HOME@#$HOME#g" -e "s#@NAME@#$live_name#g" \
         -e "s#@ICON@#$live_icon#g" -e "s#@WMCLASS@#$live_wmclass#g" \
         "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
+    # A guessed window class would not match the installed edition's window.
+    [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$APPS/ableton-live.desktop"
     echo "   installed $APPS/ableton-live.desktop ($live_name)"
 fi
 # The authorisation handlers (ableton: URLs, .auz response files). They take
