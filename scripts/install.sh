@@ -303,11 +303,11 @@ echo "== install desktop entries -> $APPS =="
 mkdir -p "$APPS"
 # Detect the installed Live edition for the menu entry (issue #39): the
 # newest Program exe under the prefix wins, matching the launcher's
-# discovery. Without an install yet, generic values apply; rerunning the
-# installer after Live is installed refreshes the entry.
+# discovery. Without an install yet, generic values apply; the launcher
+# completes the entry on the first start after Live is installed.
 live_name="Ableton Live"
 live_icon="live-suite"
-live_wmclass="ableton live 12 suite.exe"
+live_wmclass=""
 live_prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 newest=""
 for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
@@ -331,6 +331,8 @@ else
     sed -e "s#@HOME@#$HOME#g" -e "s#@NAME@#$live_name#g" \
         -e "s#@ICON@#$live_icon#g" -e "s#@WMCLASS@#$live_wmclass#g" \
         "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
+    # A guessed window class would not match the installed edition's window.
+    [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$APPS/ableton-live.desktop"
     echo "   installed $APPS/ableton-live.desktop ($live_name)"
 fi
 # The authorisation handlers (ableton: URLs, .auz response files). They take
