@@ -74,7 +74,6 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
-    [0070]="reserved for PRs 139, 140 and 153, which each add a 0070"
     [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
     [0073]="reserved for PR 152"
     [0074]="reserved for PR 152"
@@ -204,6 +203,7 @@ STAMP_ONLY='
 0052|logic-only (DT_HIDEPREFIX on the menu bar DrawTextW call; no new string literal)
 0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 0054|logic-only (per-string SystemLink font fallback in draw_menu_item, plus the calc_menu_item_size CJK-measurement fix; no new string literal)
+0070|logic-only (break Alt/F10 menu-bar arming when the app consumes the chord key; no new string literal)
 0077|logic-only (minimize/maximize Motif functions advertised unconditionally; extends 0037, no new string literal)
 0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
 0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)

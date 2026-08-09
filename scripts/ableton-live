@@ -5,6 +5,9 @@
 #            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
 #            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
 #            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
+#            ABLETON_SHORTCUTS=take (GNOME: hold the desktop shortcuts that shadow Live
+#              bindings, Ctrl+Alt+Up/Down and for Live 11 Ctrl+Alt+Delete, while Live
+#              runs; they restore when Live exits; default preserve touches nothing),
 #            ABLETON_POWER=off (skip the session performance power-profile hold),
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
@@ -857,6 +860,35 @@ if ! pgrep -af "Ableton Live.*\.exe" 2>/dev/null | grep "ProgramData" >/dev/null
     fi
     sync_ui_font
     sync_text_smoothing
+fi
+
+# GNOME consumes Live's Ctrl+Alt+Up/Down shortcuts (and Live 11's
+# Ctrl+Alt+Delete) before Wine sees them.  ABLETON_SHORTCUTS=take temporarily
+# removes only those entries.  The helper uses session-global, crash-recoverable
+# state because GSettings itself is session-global; it also preserves any user
+# edit made while Live runs.  Opt-in: the held keys are unavailable to every
+# other window until the last opted-in Live exits.  See the shortcut support note.
+shortcut_lib=""
+for f in "$HOME/.local/share/ableton-wine/shortcut-hold.sh" \
+         "${BASH_SOURCE[0]%/*}/shortcut-hold.sh"; do
+    if [ -r "$f" ]; then shortcut_lib="$f"; break; fi
+done
+ableton_shortcuts_active=0
+if [ -n "$shortcut_lib" ]; then
+    . "$shortcut_lib"
+    shortcut_allow_hold=0
+    [ -n "$EXE" ] && shortcut_allow_hold=1
+    # Always run recovery, even if Live was uninstalled after an interrupted
+    # hold.  A new hold is allowed only after discovery confirmed an executable.
+    ableton_shortcuts_prepare "$exe_base" "$WINEPREFIX/.ableton-shortcut-hold" "$shortcut_allow_hold"
+    if [ "$ableton_shortcuts_active" -eq 1 ]; then
+        # The watcher can outlive a failed launch.  Do not let it keep the
+        # single-launch guard open while it waits to restore the desktop.
+        ( exec 9>&-; ableton_shortcuts_watch_loop ) </dev/null >/dev/null 2>&1 &
+        disown
+    fi
+elif [ "${ABLETON_SHORTCUTS:-preserve}" = take ] && [ -n "$EXE" ]; then
+    echo "ableton-live: shortcut hold helper is missing; leaving desktop shortcuts unchanged" >&2
 fi
 
 # Audio: PipeASIO -> PipeWire (native client, no JACK layer). Defaults live in
