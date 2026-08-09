@@ -82,10 +82,10 @@ make verify
 ## Nix build
 
 The flake builds the same runtime as the Podman pipeline, from the same
-vendored sources and patch series, and applies the same build-time gates: the
-patch series must match `patches/SERIES.sha256`, ntsync must be compiled into
-wineserver and ntdll, ALSA must be built, and PipeASIO must register end to end
-in a throwaway prefix.
+vendored sources and patch series, and applies the same build-time gates: both
+patch series — Wine's and PipeASIO's — must match `patches/SERIES.sha256`,
+ntsync must be compiled into wineserver and ntdll, ALSA must be built, and
+PipeASIO must register end to end in a throwaway prefix.
 
 ```bash
 nix build .#wine-d2d1-nspa   # the patched Wine only

@@ -4,8 +4,15 @@
   wine,
   pipewire,
   pipeasioSrc,
-  pipeasioPatches,
+  patchesDir,
 }:
+
+let
+  # Same directory the wine half is pinned from: SERIES.sha256 covers both
+  # series, the pipeasio one under a pipeasio/ prefix.
+  pipeasioPatches = patchesDir + "/pipeasio";
+  seriesRe = "^[0-9a-f]{64}  pipeasio/[0-9]{4}-.*\\.patch$";
+in
 
 stdenv.mkDerivation {
   pname = "pipeasio";
@@ -18,6 +25,22 @@ stdenv.mkDerivation {
   patches = builtins.map (f: pipeasioPatches + "/${f}") (
     builtins.filter (lib.hasSuffix ".patch") (builtins.attrNames (builtins.readDir pipeasioPatches))
   );
+
+  # The same gate the wine half gets, on the same manifest: checksum
+  # mismatches, unlisted on-disk patches, and an empty series all fail loud.
+  # Runs at the head of patchPhase, before the list above is applied.
+  prePatch = ''
+    echo "Verifying pipeasio patch series from ${pipeasioPatches} (pinned by SERIES.sha256)"
+    series=$(grep -E '${seriesRe}' ${patchesDir}/SERIES.sha256 | awk '{print $2}')
+    [ -n "$series" ] || { echo "!! SERIES.sha256 lists no pipeasio patches" >&2; exit 1; }
+    (cd ${patchesDir} && grep -E '${seriesRe}' SERIES.sha256 | sha256sum -c --quiet) \
+      || { echo "!! pipeasio patch series does not match SERIES.sha256" >&2; exit 1; }
+    for f in ${pipeasioPatches}/[0-9]*.patch; do
+      echo "$series" | grep -qx "pipeasio/$(basename $f)" \
+        || { echo "!! $(basename $f) on disk but not in SERIES.sha256 — update the manifest" >&2; exit 1; }
+    done
+    echo "Verified $(echo "$series" | wc -l) pipeasio patches"
+  '';
 
   # winegcc/winebuild come from the patched Wine; libpipewire backs the unix half.
   nativeBuildInputs = [ wine ];

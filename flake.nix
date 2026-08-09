@@ -19,7 +19,7 @@
       pipeasio = pkgs.callPackage ./nix/pipeasio.nix {
         wine = wine-d2d1-nspa;
         pipeasioSrc = ./vendor/pipeasio-1.2.2.tar.gz;
-        pipeasioPatches = ./patches/pipeasio;
+        patchesDir = ./patches;
       };
 
       # The Ableton Link session anchor the launcher and setup-link.sh drive
