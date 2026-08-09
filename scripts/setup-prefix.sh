@@ -69,6 +69,9 @@ export MESA_VK_IGNORE_CONFORMANCE_WARNING=1
 # "$WINESERVER" -w with narration: name the processes still holding the
 # session open instead of blocking silently — a stray autostart like
 # MicrosoftEdgeUpdate.exe can pin the session for minutes.
+# settle [seconds]: bounded when given a limit, and it then returns the wait's
+# own status (124 on timeout) for the caller to act on. Unbounded otherwise,
+# for the barriers whose only holder is work this script just started.
 settle_procs() {   # basenames of windows processes still running under this runtime
     local p cmd out=""
     for p in $(pgrep -f '\.exe' 2>/dev/null || true); do
@@ -84,8 +87,13 @@ settle_procs() {   # basenames of windows processes still running under this run
     printf '%s\n' "${out# }"
 }
 settle() {
-    "$WINESERVER" -w &
-    local w=$! t=0 tick now last="(unset)"   # sentinel: the first tick past 15s always narrates
+    local limit="${1:-}"
+    if [ -n "$limit" ]; then
+        timeout "$limit" "$WINESERVER" -w &
+    else
+        "$WINESERVER" -w &
+    fi
+    local w=$! t=0 tick now last="(unset)" rc=0   # sentinel: the first tick past 15s always narrates
     while kill -0 "$w" 2>/dev/null; do
         # 1s ticks while a fast settle can still finish (they add latency, not
         # noise); 5s once we are narrating anyway.
@@ -99,7 +107,12 @@ settle() {
             last="$now"
         fi
     done
-    wait "$w" 2>/dev/null || true
+    wait "$w" 2>/dev/null || rc=$?
+    # Only a bounded caller is asking for the status - it needs 124 to tell a
+    # timeout from a clean settle. Unbounded barriers wait on work this script
+    # just started and have always ignored it; keep that under `set -e`.
+    [ -n "$limit" ] || rc=0
+    return "$rc"
 }
 
 # --post-first-run: Max for Live 8 (ships with Live 11) crashes on its SECOND start
@@ -424,7 +437,22 @@ for startup_root in "$WINEPREFIX/drive_c/users" "$WINEPREFIX/drive_c/ProgramData
     find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' \
         \( -iname '*ableton*' -o -iname '*push*' -o -iname '*tusbaudio*' \) -delete 2>/dev/null || true
 done
-settle
+# Bounded, because any resident wineboot started parks this barrier forever: the agent
+# under a name the scrub above missed (it matches known image names, and those vary by
+# driver generation), or WebView2's MicrosoftEdgeUpdate.exe, whose scheduled task fires
+# about two minutes after a boot and has no window (the --update half of issue #111 is
+# exactly this wait). On timeout, end every process in the prefix and continue - the
+# boot's registry writes are persisted when the server exits. The second wait stays
+# bounded too, in case a straggler survives even SIGKILL.
+boot_wait_rc=0
+settle 30 || boot_wait_rc=$?
+if [ "$boot_wait_rc" -eq 124 ]; then
+    echo "-- a leftover background program is holding the prefix open; stopping it"
+    "$WINESERVER" -k 2>/dev/null || true
+    settle 30 || true
+elif [ "$boot_wait_rc" -ne 0 ]; then
+    exit "$boot_wait_rc"
+fi
 
 if [ "$refresh" -eq 1 ]; then
     echo "== [2/6] winetricks: skipped (--refresh keeps the installed fonts/runtimes) =="
