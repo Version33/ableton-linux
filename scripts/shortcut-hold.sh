@@ -391,6 +391,9 @@ ableton_shortcuts_prepare()
     exec 8>&-
 
     if [ "$watch_needed" -eq 1 ]; then
+        # Read by the sourcing launcher (scripts/ableton-live) to decide whether
+        # to start the detached watcher; nothing in this file reads it.
+        # shellcheck disable=SC2034
         ableton_shortcuts_active=1
     fi
 }
