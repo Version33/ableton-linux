@@ -90,6 +90,12 @@ support files (corefonts, vcrun2022, mfc42) come from the winetricks cache
 vendored in the package, so that step needs no network. The Live 11 recipe
 still downloads its extras; see the [Live 11 instructions](#live-11).
 
+Unlike the `.run` install, which uses the GStreamer plugins already on your
+system, the flake pins its own decoder set — base, good, bad, ugly and libav —
+so a minimal NixOS needs no media packages for Live's browser to preview
+mp3/mp4/wma. That also puts ffmpeg in the closure, which is the main reason
+this package is larger than the tarball.
+
 Your host needs a running PipeWire daemon and `/dev/ntsync` (kernel 6.14 or
 newer with the `ntsync` module); `test -c /dev/ntsync` answers that. To also
 prove the runtime uses the device, run
