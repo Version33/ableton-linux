@@ -64,7 +64,16 @@ while read -r sum file; do
         sha_ok["$file"]=0
     fi
 done < "$SERIES"
-extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
+# Globs, not `ls | grep`: a patch filename comes out of the glob verbatim, with
+# no listing text around it to match against. nullglob so an empty patches dir
+# reports nothing here rather than the unexpanded pattern as an "extra".
+extras="$(
+    cd "$root/patches" || exit
+    shopt -s nullglob
+    on_disk=(00*.patch pipeasio/*.patch)
+    [ "${#on_disk[@]}" -gt 0 ] || exit 0
+    printf '%s\n' "${on_disk[@]}" | grep -vxF -f <(awk '{print $2}' "$SERIES") || true
+)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch
 # titles and notes/); a gap is fine if documented here, a dropped patch is not.
