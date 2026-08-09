@@ -11,9 +11,9 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 80 files, numbered 0001 through 0089.
+The current Wine series contains 81 files, numbered 0001 through 0089.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
-and 0071 through 0074 are reserved by open pull requests and will enter this
+and 0072 through 0074 are reserved by open pull requests and will enter this
 branch as those merge.
 
 ## Applying the series
@@ -259,6 +259,16 @@ Apply them in sequence with the rest of the series.
   consumption cannot starve. Alt+letter menu mnemonics and bare Alt are
   unchanged. Repro: `tools/altnum-menu-repro.c`. See
   `notes/ABLETON-WINE-SHORTCUT-PARITY.md`.
+- `0071`: report a sustained present-size fallback instead of staying
+  silent. The 0058 gate keeps every frame correct but decides per frame; a
+  persistent coordinate fault once pinned a swapchain to the GDI copy path
+  at about one core of CPU with no visible sign (issue 100: 98.9% against
+  25.2% of a core). Counts gate decisions per swapchain, separates resize
+  races from persistent faults by whether the mismatched rect pair repeats,
+  warns once per swapchain with the evidence on the `winediag` channel plus
+  an unconditional MESSAGE line, and prints a one-line summary when the
+  swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
+  so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
   raised EXCEPTION_WINE_STUB during exit teardown. Fakes success to

@@ -10,7 +10,10 @@ unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
 WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
 export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
-export WINEDEBUG="${WINEDEBUG:--all}"
+# Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
+# Keep the winediag channel on: it carries only rare one-line notices that a
+# person should read, such as the present-fallback warning from patch 0071.
+export WINEDEBUG="${WINEDEBUG:--all,+winediag}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"

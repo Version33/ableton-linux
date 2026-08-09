@@ -82,6 +82,28 @@ If the setting is still greyed out on 2026.08.01.1 or newer,
 [open an issue](https://github.com/shibco/ableton-linux/issues) and
 include your graphics card model.
 
+## CPU spikes when moving your mouse
+
+Live keeps its current diagnostics in `~/.log/ableton-wine/live.log`,
+whether you start it from the desktop menu or a terminal. If Live's CPU
+use jumps while you move the mouse, run:
+
+```bash
+grep -i "sustained present-size mismatch:" ~/.log/ableton-wine/live.log
+```
+
+The beta launcher writes `live-beta.log` in the same directory; use that
+filename instead when testing Live 12 Beta.
+
+If that prints anything,
+[open an issue](https://github.com/shibco/ableton-linux/issues) and paste
+the whole line. It starts with `err:winediag:` and includes your desktop
+environment and window DPI.
+
+If nothing prints and Live's CPU use is still high, the cause is
+different. Open an issue and describe what you were doing when it
+happened.
+
 ## Live 11: Max for Live fails after the first launch
 
 After running Live 11 once, close Live and run:
