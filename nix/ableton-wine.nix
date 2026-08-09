@@ -277,18 +277,25 @@ stdenv.mkDerivation {
 
         # -- Desktop entries --
         # Rendered into share/applications so profiles surface them; Path= is
-        # unknowable at build time and the launchers are cwd-agnostic. Edition
-        # name/icon/WM class use install.sh's no-install defaults — the store
-        # cannot see the user's prefix.
+        # unknowable at build time and the launchers are cwd-agnostic.
         # wine.desktop (from the wine tree copy) is Wine's .exe/.msi MIME
         # handler — not this package's job.
+        #
+        # Name/icon are install.sh's generic pre-install values, and
+        # StartupWMClass is dropped for install.sh's own reason: the class is
+        # the Live executable's filename, it differs per edition, and the store
+        # cannot see the user's prefix. A guess only matches Suite; for
+        # everyone else it associates the window with nothing, which is worse
+        # than the desktop's own fallback matching. install.sh can fill it in
+        # later from an installed prefix, and the launcher heals the entry it
+        # writes; neither applies to a read-only store entry, so it stays out.
         rm -f $out/share/applications/wine.desktop
         mkdir -p $out/share/applications $out/share/ableton-wine/desktop
         render_desktop() {
           sed -e "s#@HOME@/.local/bin/#$out/bin/#" \
               -e 's#@NAME@#Ableton Live#' \
               -e 's#@ICON@#live-suite#' \
-              -e 's#@WMCLASS@#ableton live 12 suite.exe#' \
+              -e '/^StartupWMClass=@WMCLASS@$/d' \
               -e '/^Path=/d' "$1" > "$2"
           if grep -qE '@[A-Z]+@' "$2"; then
             echo "!! unsubstituted token in $2:" >&2; grep -E '@[A-Z]+@' "$2" >&2; exit 1
@@ -437,6 +444,11 @@ stdenv.mkDerivation {
       grep -qF 'ableton_runtime_link' $out/$f \
         || { echo "$f does not route user configuration through the runtime link"; exit 1; }
     done
+    # No guessed window class: it is per edition, the store cannot see the
+    # prefix, and a wrong one associates the window with nothing at all.
+    if grep -q '^StartupWMClass=' $out/share/applications/ableton-live.desktop; then
+      echo "the menu entry ships a guessed StartupWMClass"; exit 1
+    fi
     echo "PipeASIO registration gate"
     # No env -i here, unlike wine.nix's smoke gate. That one needs a fixed,
     # explicit environment because Nix disables address-space randomisation,
