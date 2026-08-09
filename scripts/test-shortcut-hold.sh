@@ -4,7 +4,9 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/shortcut-hold-test.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-export ABLETON_SHORTCUTS_STATE_DIR="$work/state"
+export XDG_RUNTIME_DIR="$work/runtime"
+export XDG_STATE_HOME="$work/state-home"
+mkdir -m 700 -- "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
 . "$here/shortcut-hold.sh"
 
 declare -A values writable fail_set
@@ -71,6 +73,8 @@ check "Live 12 leaves logout alone" "${values[$logout]}" "['<Control><Alt>Delete
 check "state format is versioned" "$(head -1 "$ableton_shortcuts_state")" "ABLETON_SHORTCUT_HOLD_V2"
 check "state contains each key once" "$(tail -n +2 "$ableton_shortcuts_state" | wc -l)" "2"
 check "state is private" "$(stat -c %a "$ableton_shortcuts_state")" "600"
+check "recovery snapshot uses persistent state" "$ableton_shortcuts_state" "$XDG_STATE_HOME/ableton-wine/hold-v2"
+check "leases and locks use runtime state" "$ableton_shortcuts_state_dir" "$XDG_RUNTIME_DIR/ableton-wine-shortcuts"
 check "launcher lease is private" "$(stat -c %a "$ableton_shortcuts_state_dir/lease.$$")" "600"
 
 ableton_shortcuts_hold_locked 'Ableton Live 12 Suite.exe'
@@ -90,6 +94,17 @@ check "restore returns exact Up value" "${values[$up]}" "['<Control><Alt>Up', '<
 check "restore returns exact Down value" "${values[$down]}" "['<Primary><Alt>Down']"
 check "restore returns exact logout value" "${values[$logout]}" "['<Control><Alt>Delete']"
 check "successful restore removes state" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
+
+# A logout removes XDG_RUNTIME_DIR but not dconf.  A later launch must recover
+# the held bindings from persistent state once the new session has no lease.
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+[ "$XDG_RUNTIME_DIR" = "$work/runtime" ] || exit 1
+rm -rf -- "$XDG_RUNTIME_DIR"
+mkdir -m 700 -- "$XDG_RUNTIME_DIR"
+ableton_shortcuts_prepare '' '' 0
+check "relaunch after runtime loss restores Up" "${values[$up]}" "['<Control><Alt>Up', '<Super>Up']"
+check "relaunch after runtime loss restores Down" "${values[$down]}" "['<Primary><Alt>Down']"
+check "runtime-loss recovery removes snapshot" "$([ ! -e "$ableton_shortcuts_state" ]; echo $?)" "0"
 
 # A user edit while Live runs wins over the stale snapshot.
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'

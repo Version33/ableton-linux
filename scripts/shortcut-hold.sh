@@ -2,9 +2,10 @@
 # Session-scoped GNOME shortcut hold for scripts/ableton-live.
 #
 # This file is sourced by the launcher and intentionally has no top-level side
-# effects.  State is session-global (under XDG_RUNTIME_DIR), because GSettings
-# is session-global too: per-prefix state races as soon as two Wine prefixes
-# run Live at the same time.
+# effects.  Coordination is session-global (under XDG_RUNTIME_DIR), because
+# GSettings is session-global too: per-prefix state races as soon as two Wine
+# prefixes run Live at the same time.  The recovery snapshot is persistent so
+# it survives logout and reboot.
 
 ableton_shortcuts_normalize_value()
 {
@@ -84,17 +85,35 @@ ableton_shortcuts_live_running()
 
 ableton_shortcuts_init_state()
 {
-    local runtime
+    local runtime state state_home
+    runtime="${XDG_RUNTIME_DIR:-}"
+    if [ -z "$runtime" ] || [ ! -d "$runtime" ] || [ ! -w "$runtime" ] \
+        || [ -L "$runtime" ] || [ ! -O "$runtime" ]; then
+        echo "ableton-live: cannot safely hold GNOME shortcuts without an owned, writable XDG_RUNTIME_DIR" >&2
+        return 1
+    fi
+    runtime="$runtime/ableton-wine-shortcuts"
+
     if [ -n "${ABLETON_SHORTCUTS_STATE_DIR:-}" ]; then
-        runtime="$ABLETON_SHORTCUTS_STATE_DIR"
+        state="$ABLETON_SHORTCUTS_STATE_DIR"
     else
-        runtime="${XDG_RUNTIME_DIR:-}"
-        if [ -z "$runtime" ] || [ ! -d "$runtime" ] || [ ! -w "$runtime" ] \
-            || [ -L "$runtime" ] || [ ! -O "$runtime" ]; then
-            echo "ableton-live: cannot safely hold GNOME shortcuts without an owned, writable XDG_RUNTIME_DIR" >&2
-            return 1
+        state_home="${XDG_STATE_HOME:-}"
+        if [ -z "$state_home" ]; then
+            if [ -z "${HOME:-}" ]; then
+                echo "ableton-live: cannot persist GNOME shortcut recovery state without HOME or XDG_STATE_HOME" >&2
+                return 1
+            fi
+            state_home="$HOME/.local/state"
         fi
-        runtime="$runtime/ableton-wine-shortcuts"
+        state="$state_home/ableton-wine"
+    fi
+
+    if [ ! -e "$state" ]; then
+        ( umask 077; mkdir -p -- "$state" ) || return 1
+    fi
+    if [ ! -d "$state" ] || [ -L "$state" ] || [ ! -O "$state" ] || [ ! -w "$state" ]; then
+        echo "ableton-live: refusing unsafe shortcut recovery directory: $state" >&2
+        return 1
     fi
 
     if [ -e "$runtime" ]; then
@@ -107,7 +126,8 @@ ableton_shortcuts_init_state()
     fi
 
     ableton_shortcuts_state_dir="$runtime"
-    ableton_shortcuts_state="$runtime/hold-v2"
+    ableton_shortcuts_snapshot_dir="$state"
+    ableton_shortcuts_state="$state/hold-v2"
     ableton_shortcuts_op_lock="$runtime/operation.lock"
     ableton_shortcuts_watch_lock="$runtime/watcher.lock"
 }
@@ -136,7 +156,7 @@ ableton_shortcuts_append_state()
     case "$schema$key$original$held" in
         *'|'*|*$'\n'*) return 1 ;;
     esac
-    tmp="$(mktemp "$ableton_shortcuts_state_dir/.hold-v2.XXXXXX")" || return 1
+    tmp="$(mktemp "$ableton_shortcuts_snapshot_dir/.hold-v2.XXXXXX")" || return 1
     if [ -f "$ableton_shortcuts_state" ]; then
         cp -- "$ableton_shortcuts_state" "$tmp" || { rm -f -- "$tmp"; return 1; }
     else
@@ -157,7 +177,7 @@ ableton_shortcuts_restore_locked()
         return 1
     fi
 
-    tmp="$(mktemp "$ableton_shortcuts_state_dir/.hold-v2.pending.XXXXXX")" || return 1
+    tmp="$(mktemp "$ableton_shortcuts_snapshot_dir/.hold-v2.pending.XXXXXX")" || return 1
     printf '%s\n' "$header" > "$tmp"
     while IFS='|' read -r schema key original held; do
         [ "$schema" = "ABLETON_SHORTCUT_HOLD_V2" ] && continue
