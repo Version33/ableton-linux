@@ -102,14 +102,105 @@ Open **Settings > Audio** and select:
 - **Audio Device:** PipeASIO
 
 Confirm that PipeWire and WirePlumber are running on the host. If audio
-crackles, try a larger PipeASIO buffer:
+crackles, raise the buffer size with **PipeASIO Settings** in your
+application menu (`pipeasio-settings` in a terminal), or for one launch:
 
 ```bash
 env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 ```
 
-See the [PipeASIO implementation note](notes/ABLETON-WINE-PIPEASIO.md) for
-driver details.
+## Crackle on Ubuntu 24.04 and Linux Mint 22
+
+These distributions ship PipeWire 1.0.5, an older audio server than this
+project is tuned for. Check the version with:
+
+```bash
+pipewire --version
+```
+
+On PipeWire older than 1.2, Live runs and plays, but the audio driver
+keeps to the standard buffer sizes (128, 256, 512 and so on), and some
+crackle can remain at any buffer size. That crackle is a fault inside
+that PipeWire version, fixed in newer PipeWire, so no setting in Live or
+in this project removes it completely.
+
+The full fix is PipeWire 1.4.2 or newer, which on these distributions
+means upgrading to a release that ships it. Until then, a larger buffer
+size reduces the crackle.
+
+Releases of this project up to 2026.08.08.1 could also crash when
+switching **Driver Type** to ASIO on these systems. Updating this project
+fixes the crash.
+
+## Crackle with two audio devices
+
+With input and output on different devices (a USB interface plus the
+built-in card, for example), one device follows the other's clock. Some
+devices need extra buffer room to follow cleanly; without it, audio
+crackles at any buffer size while the same setup with one device is
+clean.
+
+The audio report shows whether this is your case and names the device:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
+bash /tmp/ableton-kit/scripts/audio-report.sh
+```
+
+From a repository checkout, run `./scripts/audio-report.sh` instead.
+
+When the report finds a follower device with resyncs, it prints a
+ready-made WirePlumber block for that device. The extra buffer room is
+host configuration, set once per device. The block looks like this, with
+your device's name filled in:
+
+```
+# ~/.config/wireplumber/wireplumber.conf.d/99-ableton-follower-headroom.conf
+monitor.alsa.rules = [
+  {
+    matches = [
+      { node.name = "alsa_output.usb-Example-00.analog-stereo" }
+    ]
+    actions = {
+      update-props = {
+        api.alsa.headroom = 512
+      }
+    }
+  }
+]
+```
+
+Save it to a file in `~/.config/wireplumber/wireplumber.conf.d/`
+(WirePlumber 0.5 or newer), then log out and back in, or run:
+
+```bash
+systemctl --user restart wireplumber
+```
+
+Remove the file again if it does not help, and attach the audio report
+to an issue.
+
+## Audio cuts out for a few seconds, or plays at the wrong speed
+
+Another audio application (usually a JACK one) told PipeWire to run at a
+different buffer size. Live mutes for a moment while the driver moves to
+that size, then audio comes back on its own. If it happens once, there is
+nothing to do.
+
+If audio plays too fast or too slow instead of coming back, you are on a
+release up to 2026.08.08.1: update this project. Until you can update,
+clear the stuck buffer size and restart Live:
+
+```bash
+pw-metadata -n settings 0 clock.force-quantum 0
+```
+
+On PipeWire 1.2 or newer, Live can use any buffer size in the driver's
+range; it does not have to be a power of two. On older PipeWire (Ubuntu
+24.04, Linux Mint 22) the standard sizes apply; see the entry above.
+
+If the problems come back after a reboot, run the audio report as
+described in the previous entry and attach the output to an issue.
 
 ## A plugin window resizes repeatedly or shows stale pixels
 
@@ -245,8 +336,11 @@ Link peers on another network visible.
 
 ## Audio latency remains high
 
-PipeWire 1.6 or newer can match its graph quantum to PipeASIO's buffer. Check
-the PipeWire version before changing the host.
+Lower the buffer size with **PipeASIO Settings** in your application menu
+(`pipeasio-settings` in a terminal), then set **Audio Device** in Live to
+None and back to PipeASIO to restart the audio engine. Updating this
+project also helps: with PipeWire 1.4.2 or newer, the round trip through
+the audio driver is half of what releases up to 2026.08.08.1 measured.
 
 For advanced host tuning from a repository checkout, run:
 

@@ -38,7 +38,7 @@ You need an x86-64 Linux system that meets Ableton Live's hardware requirements.
 Additionally, you need:
 
 - glibc 2.35 or newer
-- PipeWire 0.3.56 or newer (we recommend 1.6 or newer for audio performance)
+- PipeWire (1.4.2 or newer recommended; older versions run with standard buffer sizes only)
 - GStreamer with its base and good plugin sets
 - GNU coreutils, `tar`, `zstd`, and `flock`
 - your installation files and activation details from Ableton

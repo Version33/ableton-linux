@@ -1,0 +1,189 @@
+From: Shibco <cade@parare.al>
+Subject: [PATCH] asio: show the ControlPanel hint off the host's GUI thread
+
+Ableton Live services ControlPanel() on its GUI thread and does not drain
+its internal engine->GUI message queue until the call returns. The upstream
+handler opens a modal MessageBox there, so while the box is up Live stops
+draining that queue; with the transport playing it overflows in about a
+minute and Live aborts with EXCEPTION_ACCESS_VIOLATION.
+
+Hand the informational dialog to a detached thread and return immediately,
+so the host thread is never blocked. The thread owns the message buffer and
+frees it when the user closes the box.
+
+This is an Ableton-compatibility fix; the modal box is fine for hosts that
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -26,15 +26,21 @@
+  * this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
++#ifndef PIPEASIO_WOW64_PE
++#define _GNU_SOURCE /* posix_spawn's POSIX_SPAWN_SETSID */
++#endif
++
+ #include <stdbool.h>
+ #include <stdio.h>
+ #include <stdarg.h>
+ #include <limits.h>
+ #ifndef PIPEASIO_WOW64_PE
+ #include <unistd.h>
++#include <string.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <pthread.h>
++#include <spawn.h> /* posix_spawn: launch the host settings panel */
+ #endif
+ #include <stdatomic.h>
+ 
+@@ -2768,40 +2774,131 @@
+ /* Returns -1000 if no control panel exists, but the return code should be
+  * ignored. Call sendNotification if something changed. */
+ 
++#ifndef PIPEASIO_WOW64_PE
++/* Locate pipeasio-settings on PATH.  The launcher puts the runtime's own bin
++ * directory, where the panel is installed, at the front of PATH, so a plain
++ * PATH walk resolves it without hard-coding a location.  Returns true with a
++ * full, executable path in out. */
++static bool
++pipeasio_find_settings_panel(char *out, size_t out_size)
++{
++    const char *path = getenv("PATH");
++    if (!path || !*path)
++        return false;
++    for (const char *seg = path; *seg;)
++    {
++        const char  *sep = strchr(seg, ':');
++        size_t       len = sep ? (size_t)(sep - seg) : strlen(seg);
++        static const char leaf[] = "/pipeasio-settings";
++        if (len > 0 && len + sizeof leaf <= out_size)
++        {
++            memcpy(out, seg, len);
++            memcpy(out + len, leaf, sizeof leaf);
++            if (access(out, X_OK) == 0)
++                return true;
++        }
++        if (!sep)
++            break;
++        seg = sep + 1;
++    }
++    return false;
++}
++
++/* Launch the panel in its own session so it outlives this call and is not tied
++ * to the host's controlling terminal.  posix_spawn does not run pthread_atfork
++ * handlers, which matters inside Wine's many-threaded process. */
++static bool
++pipeasio_launch_settings_panel(const char *panel)
++{
++    extern char     **environ;
++    char *const       argv[] = { (char *)panel, NULL };
++    posix_spawnattr_t attr;
++    posix_spawnattr_t *attrp = NULL;
++    pid_t             pid;
++    int               rc;
++
++    if (posix_spawnattr_init(&attr) == 0)
++    {
++        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
++        attrp = &attr;
++    }
++    rc = posix_spawn(&pid, panel, NULL, attrp, argv, environ);
++    if (attrp)
++        posix_spawnattr_destroy(attrp);
++    return rc == 0;
++}
++#endif /* !PIPEASIO_WOW64_PE */
++
++/* Open the settings panel off the host's calling thread.  Ableton Live services
++ * ControlPanel() on its GUI thread and does not drain its internal engine->GUI
++ * message queue until the call returns.  A modal MessageBox here blocks that
++ * thread; with the transport playing, Live's queue overflows in about a minute
++ * and the process aborts (EXCEPTION_ACCESS_VIOLATION).  So the work runs on a
++ * detached thread that returns nothing to the host: it launches the native
++ * pipeasio-settings panel when it is installed, and otherwise shows a hint box
++ * telling the user how to run it.  The thread owns the heap-allocated message.
++ * (pipeasio-ableton-controlpanel) */
++static DWORD WINAPI controlpanel_hint_thread(LPVOID param)
++{
++    char *message = param;
++#ifndef PIPEASIO_WOW64_PE
++    char  panel[PATH_MAX];
++    if (pipeasio_find_settings_panel(panel, sizeof panel)
++        && pipeasio_launch_settings_panel(panel))
++    {
++        HeapFree(GetProcessHeap(), 0, message);
++        return 0;
++    }
++#endif
++    MessageBoxA(NULL, message, "PipeASIO Settings",
++                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
++    HeapFree(GetProcessHeap(), 0, message);
++    return 0;
++}
++
+ DEFINE_THISCALL_WRAPPER(ControlPanel, 4)
+ HIDDEN LONG STDMETHODCALLTYPE
+ ControlPanel(LPPIPEASIO iface)
+ {
+     char           cfg_path[1024];
+-    char           message[1536];
++    char          *message;
++    HANDLE         hint;
+     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+     method_token   token;
+     if (!method_begin(This, false, &token))
+         return -1000;
+ 
+-    TRACE("iface: %p\n", iface);
++    TRACE("iface: %p (pipeasio-ableton-controlpanel)\n", iface);
+ 
+-    /* The settings panel (pipeasio-settings) is a native Linux/Qt app and
+-     * cannot run inside the Wine/Proton container the host loads us into:
+-     * the container has no Qt libraries and no clean route back to the host.
+-     * Rather than fork/exec it and silently fail, tell the user to launch it
+-     * from a host terminal, and point at the exact INI it edits. */
++    /* Build the fallback hint now, on the host thread, so the config path is
++     * resolved in the host's environment.  The detached thread launches the
++     * native pipeasio-settings panel when it is on PATH and only shows this
++     * message when it is not installed. */
+     if (!pipeasio_config_path(cfg_path, sizeof cfg_path))
+         lstrcpynA(cfg_path, "$XDG_CONFIG_HOME/pipeasio/config.ini", sizeof cfg_path);
+ 
+-    snprintf(message, sizeof message,
+-             "Please launch the PipeASIO settings panel from a terminal on your "
+-             "Linux host:\n\n"
+-             "    pipeasio-settings\n\n"
+-             "It is a native Linux app, so it cannot run inside this Wine/Proton "
+-             "container.\n\n"
+-             "Settings are saved to:\n    %s\n\n"
+-             "Changes are applied automatically about a second after you save, "
+-             "while PipeASIO is active. If they don't appear, reselect PipeASIO "
+-             "or restart this application.",
+-             cfg_path);
++    message = HeapAlloc(GetProcessHeap(), 0, 1536);
++    if (message)
++    {
++        snprintf(message, 1536,
++                 "Please launch the PipeASIO settings panel from a terminal on your "
++                 "Linux host:\n\n"
++                 "    pipeasio-settings\n\n"
++                 "It is a native Linux app, so it cannot run inside this Wine/Proton "
++                 "container.\n\n"
++                 "Settings are saved to:\n    %s\n\n"
++                 "Changes are applied automatically about a second after you save, "
++                 "while PipeASIO is active. If they don't appear, reselect PipeASIO "
++                 "or restart this application.",
++                 cfg_path);
+ 
+-    MessageBoxA(NULL, message, "PipeASIO Settings", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
++        /* Detached, so the host's GUI thread never blocks on the dialog. */
++        hint = CreateThread(NULL, 0, controlpanel_hint_thread, message, 0, NULL);
++        if (hint)
++            CloseHandle(hint);
++        else
++            HeapFree(GetProcessHeap(), 0, message);
++    }
+     method_end(&token);
+     return 0;
+ }

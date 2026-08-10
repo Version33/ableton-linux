@@ -832,8 +832,66 @@ wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWO
 ableton_wineserver_wait
 
 echo "== [4/5] register packaged PipeASIO =="
-ldconfig -p 2>/dev/null | grep -F 'libpipewire-0.3.so.0' >/dev/null || \
-  echo "!! host libpipewire-0.3.so.0 not found; install pipewire (0.3.56 or newer, 1.6+ recommended)"
+# PipeWire preflight: probe the client library and the daemon separately. The
+# daemon version decides driver behaviour at run time: 1.4.2 or newer is the
+# tested lowest-latency setup; below 1.2 (Ubuntu 24.04 and Linux Mint 22 ship
+# 1.0.5) the driver limits itself to standard power-of-two buffer sizes and
+# says so in its log. Setup only reports: registration proceeds whatever the
+# probe finds, and a failed probe (no daemon reachable, e.g. a chroot or a
+# container build) falls back to the library presence check alone.
+pw_probe() {
+    # Bounded, never fails; empty output means "could not probe".
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 5 "$@" 2>/dev/null || true
+    else
+        "$@" 2>/dev/null || true
+    fi
+}
+pw_ver_ge() {
+    # pw_ver_ge A B: true when version A >= version B
+    [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]
+}
+pw_lib_ver=""
+if command -v pkg-config >/dev/null 2>&1; then
+    pw_lib_ver="$(pkg-config --modversion libpipewire-0.3 2>/dev/null || true)"
+fi
+if [ -z "$pw_lib_ver" ] && command -v pw-cli >/dev/null 2>&1; then
+    pw_lib_ver="$(pw_probe pw-cli --version | sed -n 's/^Linked with libpipewire //p' | head -n 1 || true)"
+fi
+if [ -z "$pw_lib_ver" ] && command -v pipewire >/dev/null 2>&1; then
+    pw_lib_ver="$(pw_probe pipewire --version | sed -n 's/^Linked with libpipewire //p' | head -n 1 || true)"
+fi
+pw_daemon_ver=""
+if command -v pw-cli >/dev/null 2>&1; then
+    pw_daemon_ver="$(pw_probe pw-cli info 0 | sed -n 's/.*version: "\([0-9][0-9.]*\)".*/\1/p' | head -n 1 || true)"
+fi
+if [ -z "$pw_daemon_ver" ] && command -v pw-dump >/dev/null 2>&1; then
+    pw_daemon_ver="$(pw_probe pw-dump 0 | grep -o '"version" *: *"[0-9][0-9.]*"' | head -n 1 | grep -o '[0-9][0-9.]*' | head -n 1 || true)"
+fi
+if [ -n "$pw_daemon_ver" ]; then
+    if pw_ver_ge "$pw_daemon_ver" 1.4.2; then
+        echo "   PipeWire daemon $pw_daemon_ver, client library ${pw_lib_ver:-unknown}"
+    elif pw_ver_ge "$pw_daemon_ver" 1.2; then
+        echo "   PipeWire daemon $pw_daemon_ver, client library ${pw_lib_ver:-unknown}"
+        echo "   note: lowest-latency operation is untested on this PipeWire version;"
+        echo "   1.4.2 or newer is the tested configuration"
+    else
+        echo "!! PipeWire $pw_daemon_ver is older than 1.2 (Ubuntu 24.04 and Linux Mint 22 ship 1.0.5)."
+        echo "!! The audio driver limits itself to standard buffer sizes on this system."
+        echo "!! Crackle on this PipeWire generation is a fault in the audio server itself,"
+        echo "!! fixed in newer PipeWire: update PipeWire or the distribution for the full"
+        echo "!! fix, or continue with this setup as it is. Setup continues either way."
+    fi
+else
+    if ldconfig -p 2>/dev/null | grep -F 'libpipewire-0.3.so.0' >/dev/null; then
+        echo "!! PipeWire daemon not reachable from here (not running, or no user session):"
+        echo "!! client library ${pw_lib_ver:-present}; the driver checks the daemon version"
+        echo "!! itself when Live first starts. Setup continues."
+    else
+        echo "!! host libpipewire-0.3.so.0 not found; install pipewire (1.4.2 or newer"
+        echo "!! recommended; older versions run with standard buffer sizes only)"
+    fi
+fi
 # Pre-2026-07 runtimes shipped WineASIO; drop its registration and the stale
 # system32 placeholders so nothing references the removed driver. Harmless on
 # fresh prefixes.

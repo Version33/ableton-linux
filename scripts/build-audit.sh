@@ -90,9 +90,29 @@ for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     [ "$num" = "$want" ] || bad "series numbering" "expected $want, found $num"
     seq_expect=$((seq_expect+1))
 done
+# The pipeasio series is numbered independently of the Wine one, and the loop
+# above skips it. Check it the same way, or a dropped or misnumbered patch
+# passes with only its checksum looked at.
+declare -A PIPEASIO_GAPS=(
+    [0003]="warning-text fix superseded by the 1.5.0 diagnostic relay; the corrected text lives in 0005's quantum diagnostic (both arbitration and converge wordings)"
+    [0007]="follower headroom retired 2026-08-10, mechanism ineffective mid-stream (a live api.alsa.headroom write lands in default_headroom only and takes effect on the next renegotiation, not the running stream)"
+)
+asio_expect=1
+for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
+    base="${f#pipeasio/}"
+    num="${base%%-*}"
+    printf -v want '%04d' "$asio_expect"
+    while [ "$num" != "$want" ] && [ -n "${PIPEASIO_GAPS[$want]:-}" ]; do
+        ok "pipeasio numbering" "$want gap documented (${PIPEASIO_GAPS[$want]})"
+        asio_expect=$((asio_expect+1))
+        printf -v want '%04d' "$asio_expect"
+    done
+    [ "$num" = "$want" ] || bad "pipeasio numbering" "expected $want, found $num"
+    asio_expect=$((asio_expect+1))
+done
 n_wine="$(awk '{print $2}' "$SERIES" | grep -vc '^pipeasio/' || true)"
 n_asio="$(awk '{print $2}' "$SERIES" | grep -c '^pipeasio/' || true)"
-say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio pipeasio patch(es)"
+say "   series: $n_wine wine patches (0001..$(printf '%04d' "$((seq_expect-1))"), documented gaps ok) + $n_asio pipeasio patches (0001..$(printf '%04d' "$((asio_expect-1))"))"
 
 # --- [2/4] artifact provenance stamp ------------------------------------------
 say "== [2/4] artifact provenance (patch stack stamped at build time) =="
@@ -153,10 +173,25 @@ FINGERPRINTS='
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
-pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
-pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
+pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clamp-sample-rate
+pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-midi-timebase
+pipeasio/0004|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-any-buffer-size
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-converge
+pipeasio/0005|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-quantum-arbitration
+pipeasio/0006|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-clock-domains
+pipeasio/0008|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-daemon-version
+pipeasio/0009|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-honest-realtime
+pipeasio/0010|wide|bin/pipeasio-settings|pick a preset or type any value
+pipeasio/0011|ascii|lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio-ableton-controlpanel
+'
+# 0010's source marker (pipeasio-any-buffer-size-panel) is a comment and does
+# not reach the panel binary; its fingerprint is the tooltip literal above,
+# stored as UTF-16 by QStringLiteral, hence the wide encoding.
+PIPEASIO_MARKER_TODO='
 '
 # pipeasio's code is in the unix .so; the PE pipeasio64.dll is a codeless fake module.
+# Wine loads the unix half under the spec-file name pipeasio.dll.so, so the
+# fingerprints (and the readelf checks below) aim at that file.
 STAMP_ONLY='
 0081|logic-only (subpixel rasterisation for ClearType glyph textures; adds no string literal)
 0082|logic-only (per-channel blend passes for ClearType runs; adds no string literal)
@@ -213,6 +248,7 @@ wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
         | sed -e 's/^ //' -e 's/ $//' -e 's/ /\\x00\\x/g' -e 's/^/\\x/' -e 's/$/\\x00/'
 }
 say "== [3/4] per-patch verification ($n_series patches) =="
+todo_markers=0
 for f in $(awk '{print $2}' "$SERIES" | sort); do
     num="${f%%-*}"
     integrity="sha✓"
@@ -220,6 +256,18 @@ for f in $(awk '{print $2}' "$SERIES" | sort); do
     stamp_note="stamp✓"
     [ "$stamp_ok" = 1 ] || stamp_note="stamp✗"
     fps="$(printf '%s\n' "$FINGERPRINTS" | grep "^$num|" || true)"
+    if [ -z "$fps" ] && printf '%s\n' "$PIPEASIO_MARKER_TODO" | grep -qxF "$num"; then
+        # Transitional: the series is being rewritten and the marker strings
+        # are not final. Integrity and stamp still gate; the binary marker is
+        # the only check deferred, and the NOTICE below keeps it loud.
+        todo_markers=$((todo_markers+1))
+        if [ "${sha_ok[$f]:-0}" = 1 ] && [ "$stamp_ok" = 1 ]; then
+            ok "$f" "$integrity $stamp_note via stack stamp (marker TODO(reconcile-markers))"
+        else
+            bad "$f" "$integrity $stamp_note (marker TODO(reconcile-markers))"
+        fi
+        continue
+    fi
     if [ -n "$fps" ]; then
         fp_fail=""
         fp_desc=""
@@ -270,6 +318,9 @@ must lib/wine/x86_64-windows/pipeasio64.dll
 must lib/wine/x86_64-unix/pipeasio64.dll.so
 must lib/wine/x86_64-windows/pipeasio.dll
 must lib/wine/x86_64-unix/pipeasio.dll.so
+must bin/pipeasio-settings
+must share/applications/pipeasio-settings.desktop
+must share/icons/hicolor/scalable/apps/pipeasio.svg
 must lib/wine/x86_64-windows/libusb-1.0.dll
 must lib/wine/x86_64-unix/libusb-1.0.so
 for absent in lib/wine/i386-windows/libusb-1.0.dll lib/wine/i386-unix/libusb-1.0.so; do
@@ -281,14 +332,14 @@ if command -v readelf >/dev/null; then
         | grep -qF 'Shared library: [libusb-1.0.so.0]' \
         && ok "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0" \
         || bad "libusb-1.0.so DT_NEEDED" "host libusb-1.0.so.0 not linked"
-    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null \
+    readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null \
         | grep -qF 'Shared library: [libpipewire-0.3.so.0]' \
-        && ok "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
-        || bad "pipeasio64.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
-    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio64.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
-        bad "pipeasio64.dll.so rpath" "carries a build-container rpath"
+        && ok "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0" \
+        || bad "pipeasio.dll.so DT_NEEDED" "host libpipewire-0.3.so.0 not linked"
+    if readelf -d "$tree/lib/wine/x86_64-unix/pipeasio.dll.so" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
+        bad "pipeasio.dll.so rpath" "carries a build-container rpath"
     else
-        ok "pipeasio64.dll.so rpath" "none (resolves via host loader)"
+        ok "pipeasio.dll.so rpath" "none (resolves via host loader)"
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \
@@ -296,6 +347,17 @@ if command -v readelf >/dev/null; then
         || bad "winegstreamer.so DT_NEEDED" "host libgstreamer-1.0.so.0 not linked"
 else
     bad "readelf" "binutils missing — cannot verify bridge DT_NEEDED (install binutils)"
+fi
+
+if [ "$todo_markers" -gt 0 ]; then
+    say ""
+    say "*** NOTICE *********************************************************"
+    say "*** $todo_markers pipeasio patch(es) passed on stack stamp alone: their binary"
+    say "*** marker strings are pending reconciliation after the rewritten"
+    say "*** series lands. Fill the TODO(reconcile-markers) entries in"
+    say "*** FINGERPRINTS (scripts/build-audit.sh) and empty"
+    say "*** PIPEASIO_MARKER_TODO before any release."
+    say "********************************************************************"
 fi
 
 say ""

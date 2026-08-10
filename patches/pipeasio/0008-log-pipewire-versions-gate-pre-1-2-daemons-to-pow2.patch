@@ -1,0 +1,382 @@
+From 94c57d052e90f0bae7a0cd2abc5a0d268922b4a1 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Mon, 10 Aug 2026 18:27:15 +0200
+Subject: [PATCH 6/7] log the PipeWire versions at init, gate pre-1.2 daemons
+ to pow2
+
+The client library version says nothing about the daemon it talks to,
+and the two populations diverge exactly where it matters: Ubuntu 24.04
+and Mint 22.x ship a 1.0.5 daemon with no async scheduling and 1.0-era
+graph semantics, so buffer sizes the 1.5 client can express are sizes
+that graph cannot schedule.
+
+At init the driver now logs pw_get_library_version() and the daemon
+version from pw_core_info (the info event lands during audio_open's
+first core sync, before Init returns). When the daemon parses older
+than 1.2, one clear log line names the daemon version and the
+restriction, and the driver runs in a restricted envelope instead of
+refusing: CreateBuffers and GetBufferSize revert to the power-of-two
+contract (granularity -1), non-power-of-two configured or derived sizes
+round to the nearest power of two with a logged adjustment, the predict
+path only advertises power-of-two pins, and the adopt path never asks
+the host for a non-power-of-two rebuild.
+
+The WoW64 proxy gains PAU_DAEMON_RESTRICTED and the ABI layout guard
+covers it.
+---
+ include/audio.h               |  7 +++
+ include/pipeasio_unix_abi.h   |  1 +
+ src/asio.c                    | 86 +++++++++++++++++++++++++++++++----
+ src/audio.c                   | 49 ++++++++++++++++++++
+ src/wow64/audio_proxy.c       |  6 +++
+ src/wow64/audio_unix.c        | 16 +++++++
+ tests/wow64/unix_abi_layout.c |  3 +-
+ 7 files changed, 157 insertions(+), 11 deletions(-)
+
+diff --git a/include/audio.h b/include/audio.h
+index 29eb1c6..92da3c4 100644
+--- a/include/audio.h
++++ b/include/audio.h
+@@ -139,6 +139,13 @@ bool audio_forcer_present(audio_client_t *client);
+  * so the graph keeps the foreign quantum being adopted. */
+ void audio_drop_force_quantum(audio_client_t *client);
+ 
++/* True when the connected PipeWire daemon is older than 1.2: no async
++ * scheduling, 1.0-era graph semantics (the Ubuntu 24.04 / Mint 22.x
++ * population).  The ASIO side then reverts CreateBuffers and
++ * GetBufferSize to the power-of-two contract.  The daemon version is
++ * logged once when the core info arrives. */
++bool audio_daemon_restricted(audio_client_t *client);
++
+ /* Nanosecond timestamp (PipeWire graph clock) of the most recent process cycle,
+  * 0 before the first cycle. Feeds the ASIO host's systemTime. */
+ uint64_t audio_get_time_nsec(audio_client_t *client);
+diff --git a/include/pipeasio_unix_abi.h b/include/pipeasio_unix_abi.h
+index cb866af..863693c 100644
+--- a/include/pipeasio_unix_abi.h
++++ b/include/pipeasio_unix_abi.h
+@@ -70,6 +70,7 @@ enum pa_call
+     PAU_QUANTUM_MUTED,        /* pa_simple_params, result = bool */
+     PAU_FORCER_PRESENT,       /* pa_simple_params, result = bool */
+     PAU_DROP_FORCE_QUANTUM,   /* pa_simple_params, result = 1 */
++    PAU_DAEMON_RESTRICTED,    /* pa_simple_params, result = bool (daemon < 1.2) */
+     PAU_CALL_COUNT
+ };
+ 
+diff --git a/src/asio.c b/src/asio.c
+index 3a61703..a8ce732 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -1046,6 +1046,9 @@ config_watch_proc(LPVOID arg)
+             && This->host_driver_state == Running)
+         {
+             LONG q = (LONG)audio_observed_quantum(This->audio_client);
++            if (q && audio_daemon_restricted(This->audio_client) && (q & (q - 1)) != 0)
++                q = 0; /* restricted envelope: never ask for a non-pow2 rebuild
++                        * (pipeasio-daemon-version) */
+             if (q && pipeasio_buffer_size_supported(q) && q != This->host_current_buffersize)
+             {
+                 if (q == This->adopt_seen)
+@@ -1333,6 +1336,53 @@ effective_global_quantum(IPipeASIOImpl *This)
+     return pipeasio_buffer_size_supported(pin) ? pin : 0;
+ }
+ 
++/* Restricted envelope (pipeasio-daemon-version): daemons older than 1.2
++ * have no async scheduling and 1.0-era graph semantics, so the driver
++ * keeps the power-of-two buffer contract there. */
++static bool
++daemon_restricted(IPipeASIOImpl *This)
++{
++    return This->audio_client && audio_daemon_restricted(This->audio_client);
++}
++
++/* True when the size may be advertised to or accepted from the host: in
++ * range always, and a power of two under the restricted envelope. */
++static bool
++advertisable_buffer_size(IPipeASIOImpl *This, LONG frames)
++{
++    if (!pipeasio_buffer_size_supported(frames))
++        return false;
++    return !daemon_restricted(This) || (frames & (frames - 1)) == 0;
++}
++
++/* Nearest power of two inside the accepted range (ties round up). */
++static LONG
++nearest_pow2_buffer(LONG frames)
++{
++    LONG p = PIPEASIO_MIN_BUFFER_SIZE;
++    while (p < PIPEASIO_MAX_BUFFER_SIZE && p < frames)
++        p <<= 1;
++    if (p <= PIPEASIO_MIN_BUFFER_SIZE || p < frames)
++        return p;
++    LONG lower = p >> 1;
++    return (frames - lower) < (p - frames) ? lower : p;
++}
++
++/* Apply the restricted envelope to a configured or derived size: on a
++ * pre-1.2 daemon every non-power-of-two size rounds to the nearest power
++ * of two, and the adjustment is logged (pipeasio-daemon-version). */
++static LONG
++restricted_buffer_size(IPipeASIOImpl *This, LONG frames, const char *what)
++{
++    if (frames <= 0 || !daemon_restricted(This) || (frames & (frames - 1)) == 0)
++        return frames;
++    LONG rounded = nearest_pow2_buffer(frames);
++    WARN("%s %ld rounded to %ld: the PipeWire daemon is older than 1.2 and keeps "
++         "the power-of-two contract (pipeasio-daemon-version)\n",
++         what, (long)frames, (long)rounded);
++    return rounded;
++}
++
+ /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
+  * Returns 0 on error, 1 on success. */
+ 
+@@ -1429,6 +1479,8 @@ Init(LPPIPEASIO iface, void *sysRef)
+         if (gq)
+             This->host_current_buffersize = gq;
+     }
++    This->host_current_buffersize = restricted_buffer_size(This, This->host_current_buffersize,
++                                                           "configured buffer size");
+ 
+     This->input_channel = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                     (size_t)total * sizeof(*This->input_channel));
+@@ -1880,7 +1932,9 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
+      * would reject is never advertised. */
+     {
+         LONG pin = effective_global_quantum(This);
+-        if (pin)
++        /* Under the restricted envelope, only a power-of-two pin may be
++         * advertised: CreateBuffers keeps the pow2 contract there. */
++        if (pin && advertisable_buffer_size(This, pin))
+         {
+             *minSize = *maxSize = *preferredSize = pin;
+             *granularity                         = 0;
+@@ -1897,12 +1951,13 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
+          * first (it survives the host's Stop/DisposeBuffers), then the
+          * converged session's quantum.  Validated before use. */
+         LONG use = adopt ? adopt : ((adopted && quantum) ? quantum : 0);
+-        if (use && !pipeasio_buffer_size_supported(use))
++        if (use && !advertisable_buffer_size(This, use))
+             use = 0;
+         if (fixed || follow)
+         {
+-            *minSize = *maxSize = *preferredSize
+-                    = use ? use : ((follow && quantum) ? quantum : pref);
++            *minSize = *maxSize = *preferredSize = restricted_buffer_size(
++                    This, use ? use : ((follow && quantum) ? quantum : pref),
++                    "fixed/follower buffer size");
+             *granularity = 0;
+         }
+         else
+@@ -1913,12 +1968,15 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
+              * that honours kAsioResetRequest re-reads GetBufferSize and
+              * rebuilds at the preferred size, and only the adopted value
+              * converges (issue #49). */
+-            *preferredSize = use ? use : pref;
++            *preferredSize = restricted_buffer_size(This, use ? use : pref,
++                                                    "preferred buffer size");
+             /* Positive granularity means arithmetic steps of that many frames
+              * (ASIO SDK); -1 would promise power-of-two steps, which no longer
+              * matches CreateBuffers' range-only contract.  Any frame count in
+-             * [minSize, maxSize] is accepted. */
+-            *granularity   = 1;
++             * [minSize, maxSize] is accepted.  Under the restricted envelope
++             * (daemon older than 1.2) the power-of-two contract, and with it
++             * granularity -1, still applies (pipeasio-daemon-version). */
++            *granularity   = daemon_restricted(This) ? -1 : 1;
+         }
+     }
+     method_end(&token);
+@@ -2205,7 +2263,7 @@ apply_pending_config(IPipeASIOImpl *This)
+         LONG adopt   = atomic_load_explicit(&This->adopt_pending_quantum, memory_order_relaxed);
+         BOOL adopted = atomic_load_explicit(&This->quantum_adopted, memory_order_relaxed) != 0;
+         LONG use     = adopt ? adopt : ((adopted && q) ? q : 0);
+-        if (use && !pipeasio_buffer_size_supported(use))
++        if (use && !advertisable_buffer_size(This, use))
+             use = 0;
+         This->host_current_buffersize
+                 = use ? use
+@@ -2218,6 +2276,11 @@ apply_pending_config(IPipeASIOImpl *This)
+         if (gq)
+             This->host_current_buffersize = gq;
+     }
++    /* Restricted envelope: a host-set size is already power-of-two-gated by
++     * CreateBuffers, so rounding here only ever moves configured or derived
++     * values (pipeasio-daemon-version). */
++    This->host_current_buffersize = restricted_buffer_size(This, This->host_current_buffersize,
++                                                           "configured buffer size");
+ }
+ 
+ /* bufferSize must be one returned by GetBufferSize(). Returns -994 if memory
+@@ -2334,8 +2397,11 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+         /* Any size inside the range is accepted, power of two or not: Live
+          * requests 882- and 960-sample buffers in host-controlled mode
+          * (issue #49), and GetBufferSize advertises granularity 1 for
+-         * exactly that contract (pipeasio-any-buffer-size). */
+-        if (!pipeasio_buffer_size_supported(bufferSize))
++         * exactly that contract (pipeasio-any-buffer-size).  Under the
++         * restricted envelope (daemon older than 1.2) the power-of-two
++         * contract still applies, matching the granularity -1 GetBufferSize
++         * advertises there (pipeasio-daemon-version). */
++        if (!advertisable_buffer_size(This, bufferSize))
+         {
+             set_last_error(This, "unsupported buffer size %ld", (long)bufferSize);
+             goto fail;
+diff --git a/src/audio.c b/src/audio.c
+index 073b137..6623931 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -303,6 +303,8 @@ struct audio_client
+     uint64_t           mute_accum;             /* graph frames banked while muted */
+     _Atomic uint32_t   global_force_quantum;   /* settings clock.force-quantum, 0 = none */
+     _Atomic uint32_t   foreign_forcers;        /* cached nodes with node.force-quantum */
++    _Atomic bool       daemon_restricted;      /* daemon < 1.2: pow2 contract only */
++    bool               daemon_version_logged;  /* one version line per connection */
+     bool               rate_announced; /* process announced a rate this activation */
+     uint64_t           cycle_count;
+     struct spa_source *diagnostic_event;
+@@ -442,8 +444,11 @@ static void audio_on_registry_global(void *userdata, uint32_t id, uint32_t permi
+                                      const struct spa_dict *props);
+ static void audio_on_registry_global_remove(void *userdata, uint32_t id);
+ 
++static void audio_on_core_info(void *userdata, const struct pw_core_info *info);
++
+ static const struct pw_core_events audio_core_events = {
+     PW_VERSION_CORE_EVENTS,
++    .info = audio_on_core_info,
+     .done = audio_on_core_done,
+ };
+ 
+@@ -488,6 +493,7 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     atomic_init(&c->quantum_muted, false);
+     atomic_init(&c->global_force_quantum, 0);
+     atomic_init(&c->foreign_forcers, 0);
++    atomic_init(&c->daemon_restricted, false);
+     atomic_init(&c->graph_rate, 0);
+     atomic_init(&c->graph_force_rate, 0);
+     atomic_init(&c->default_changed, false);
+@@ -1926,6 +1932,49 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+     }
+ }
+ 
++/* Daemon identification.  The info event lands during audio_open's first
++ * core sync, so the version is known before Init returns.  Everything the
++ * client library can do locally still depends on the daemon it talks to:
++ * async scheduling and 1.2+ graph semantics do not exist on a 1.0-era
++ * daemon (Ubuntu 24.04 / Mint 22.x ship 1.0.5), so the driver falls back
++ * to the power-of-two buffer contract there instead of advertising sizes
++ * the graph cannot schedule.  No refusal: the driver runs either way
++ * (pipeasio-daemon-version). */
++static void
++audio_on_core_info(void *userdata, const struct pw_core_info *info)
++{
++    audio_client_t *c = userdata;
++    if (!info || !info->version)
++        return;
++    int  major  = 0;
++    int  minor  = 0;
++    bool parsed = sscanf(info->version, "%d.%d", &major, &minor) == 2;
++    bool restricted = parsed && (major < 1 || (major == 1 && minor < 2));
++    atomic_store_explicit(&c->daemon_restricted, restricted, memory_order_release);
++    if (c->daemon_version_logged)
++        return;
++    c->daemon_version_logged = true;
++    TRACE("PipeWire daemon %s, client library %s, headers %s "
++          "(pipeasio-daemon-version)\n",
++          info->version, pw_get_library_version(), pw_get_headers_version());
++    if (restricted)
++        WARN("PipeWire daemon %s is older than 1.2: async scheduling and current "
++             "graph semantics are unavailable, so ASIO buffer sizes are restricted "
++             "to powers of two in [%d, %d] and non-power-of-two configured sizes "
++             "round to the nearest power of two (pipeasio-daemon-version)\n",
++             info->version, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE);
++    else if (!parsed)
++        WARN("PipeWire daemon version \"%s\" did not parse as major.minor; "
++             "assuming a current daemon (pipeasio-daemon-version)\n",
++             info->version);
++}
++
++bool
++audio_daemon_restricted(audio_client_t *c)
++{
++    return c ? atomic_load_explicit(&c->daemon_restricted, memory_order_acquire) : false;
++}
++
+ /* Core sync completion. */
+ 
+ static void
+diff --git a/src/wow64/audio_proxy.c b/src/wow64/audio_proxy.c
+index c1fcb9b..84c7fc5 100644
+--- a/src/wow64/audio_proxy.c
++++ b/src/wow64/audio_proxy.c
+@@ -369,6 +369,12 @@ audio_drop_force_quantum(audio_client_t *client)
+     simple_u32((proxy_ctx *)client, PAU_DROP_FORCE_QUANTUM);
+ }
+ 
++bool
++audio_daemon_restricted(audio_client_t *client)
++{
++    return simple_u32((proxy_ctx *)client, PAU_DAEMON_RESTRICTED) != 0;
++}
++
+ uint64_t
+ audio_get_time_nsec(audio_client_t *client)
+ {
+diff --git a/src/wow64/audio_unix.c b/src/wow64/audio_unix.c
+index f3b0a09..eb7d2e1 100644
+--- a/src/wow64/audio_unix.c
++++ b/src/wow64/audio_unix.c
+@@ -621,6 +621,20 @@ wow64_drop_force_quantum(void *args)
+     return STATUS_SUCCESS;
+ }
+ 
++static NTSTATUS
++wow64_daemon_restricted(void *args)
++{
++    pa_simple_params *p = args;
++    client_ctx       *cc;
++
++    PAU_CHECK(p);
++    cc = cc_get(p->client);
++    if (!cc)
++        return STATUS_INVALID_HANDLE;
++    p->result = audio_daemon_restricted(cc->client) ? 1 : 0;
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ wow64_get_time_nsec(void *args)
+ {
+@@ -1046,6 +1060,7 @@ const unixlib_entry_t __wine_unix_call_funcs[] = {
+     wow64_quantum_muted,
+     wow64_forcer_present,
+     wow64_drop_force_quantum,
++    wow64_daemon_restricted,
+ };
+ 
+ #ifdef _WIN64
+@@ -1084,6 +1099,7 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
+     wow64_quantum_muted,
+     wow64_forcer_present,
+     wow64_drop_force_quantum,
++    wow64_daemon_restricted,
+ };
+ _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0])
+                        == PAU_CALL_COUNT,
+diff --git a/tests/wow64/unix_abi_layout.c b/tests/wow64/unix_abi_layout.c
+index 815afb3..16d184a 100644
+--- a/tests/wow64/unix_abi_layout.c
++++ b/tests/wow64/unix_abi_layout.c
+@@ -46,7 +46,8 @@ CHECK(PAU_GLOBAL_FORCE_QUANTUM == 29, "call enum drift - append only");
+ CHECK(PAU_QUANTUM_MUTED == 30, "call enum drift - append only");
+ CHECK(PAU_FORCER_PRESENT == 31, "call enum drift - append only");
+ CHECK(PAU_DROP_FORCE_QUANTUM == 32, "call enum drift - append only");
+-CHECK(PAU_CALL_COUNT == 33, "call count drift - update both unix call tables");
++CHECK(PAU_DAEMON_RESTRICTED == 33, "call enum drift - append only");
++CHECK(PAU_CALL_COUNT == 34, "call count drift - update both unix call tables");
+ CHECK(PAU_CB_BUFFER_SWITCH == 0, "callback kind drift");
+ CHECK(PAU_CB_RESERVED_3 == 3, "callback kind drift");
+ 
+-- 
+2.55.0
+

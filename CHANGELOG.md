@@ -2,7 +2,29 @@
 
 ## Unreleased
 
-- Link setup records its version marker only when the service step
+<!-- DRAFT: PipeASIO 1.5 (branch moonshot-pipeasio-15-v2). The bullets below
+     are unreleased and their verification matrix has not run. -->
+- The audio driver now runs PipeASIO 1.5. On PipeWire 1.4.2 or newer, the
+  round trip through the driver drops to half of earlier releases: 5.3 ms
+  in place of 10.7 ms at the default 256-frame buffer and 48 kHz.
+- The driver accepts any buffer size in its range, so Live no longer needs
+  a power of two.
+- When another audio application forces a buffer size, Live no longer plays
+  too fast or too slow. Playback mutes for a moment, then returns at the new
+  size.
+- PipeASIO Settings, the driver's own settings program, now ships with the
+  runtime. Live's Hardware Setup button opens it, and after install it also
+  sits on PATH and in the application menu (issue 60).
+- Opening the driver's control panel while Live plays no longer crashes
+  Live.
+- Ubuntu 24.04 and Linux Mint 22 (PipeWire 1.0.5) stay supported. Live runs
+  with the standard buffer sizes there, and setup says so instead of
+  refusing. Crackle that remains on those releases is a PipeWire fault that
+  newer PipeWire fixes, so upgrading the distribution removes it.
+- The installer points out the one-time realtime audio setup step when the
+  machine grants no realtime permission yet.
+<!-- end PipeASIO 1.5 draft -->
+- Link setup confirms its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.
 - The session power-profile hold now covers launches through ableton://

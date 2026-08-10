@@ -1,0 +1,259 @@
+From f5fee4f080222b62242a1f94e2bc82a5c20a38a9 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Mon, 10 Aug 2026 18:28:35 +0200
+Subject: [PATCH 7/7] make realtime=false real: demote inherited scheduling,
+ add PIPEASIO_REALTIME
+
+audio_rt_acquire with realtime=false logged "left SCHED_OTHER" and
+returned without touching policy. Under a launcher that starts the
+whole process realtime (chrt -r 10 wine), glibc's default
+PTHREAD_INHERIT_SCHED hands every created thread SCHED_RR, the PipeWire
+data loop included, so the shipped realtime=false default never took
+effect there and its log line was false.
+
+acquire now reads the thread's actual policy first and, with realtime
+off, explicitly demotes to SCHED_OTHER priority 0; the before and after
+policies are logged either way. audio_rt_drop is symmetric: it demotes
+whenever the thread is not SCHED_OTHER, even when the raise was never
+ours. The WoW64 pump gets the same treatment.
+
+PIPEASIO_REALTIME=on/off is a new per-launch override, parsed with the
+shared case-insensitive helper on both halves; the existing
+PIPEASIO_RT_PRIORITY spellings keep the last word. The shipped default
+stays realtime=false; the scheduling A/B decides any flip separately.
+---
+ include/pipeasio_rt_priority.h | 38 +++++++++++++++++++++
+ src/asio.c                     | 21 ++++++++++++
+ src/audio.c                    | 61 ++++++++++++++++++++++++++++++++--
+ src/wow64/audio_unix.c         | 17 ++++++++--
+ 4 files changed, 132 insertions(+), 5 deletions(-)
+
+diff --git a/include/pipeasio_rt_priority.h b/include/pipeasio_rt_priority.h
+index 996ca36..fd0a4b9 100644
+--- a/include/pipeasio_rt_priority.h
++++ b/include/pipeasio_rt_priority.h
+@@ -20,10 +20,13 @@
+ /* Scheduling policy shared by the native and WoW64 callback threads. */
+ #pragma once
+ 
++#include <sched.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#include "pipeasio_parse.h"
++
+ /* Range accepted by PipeWire's thread-utils interface. */
+ #define PIPEASIO_RT_PRIO_MIN 1
+ #define PIPEASIO_RT_PRIO_MAX 80
+@@ -47,3 +50,38 @@ pipeasio_rt_env_override(void)
+ 
+     return PIPEASIO_RT_ENV_UNSET;
+ }
++
++/* PIPEASIO_REALTIME=on/off: the plain toggle for the data-loop scheduling
++ * class, parsed with the shared case-insensitive helper so every consumer
++ * agrees (pipeasio-honest-realtime).  Returns 1/0/-1 (unset or other).
++ * PIPEASIO_RT_PRIORITY above keeps the last word for compatibility. */
++static inline int
++pipeasio_realtime_env_override(void)
++{
++    return pipeasio_env_on_off(getenv("PIPEASIO_REALTIME"));
++}
++
++/* Scheduling policy name for before/after logging. */
++static inline const char *
++pipeasio_sched_policy_name(int policy)
++{
++    switch (policy)
++    {
++    case SCHED_OTHER:
++        return "SCHED_OTHER";
++    case SCHED_FIFO:
++        return "SCHED_FIFO";
++    case SCHED_RR:
++        return "SCHED_RR";
++#ifdef SCHED_BATCH
++    case SCHED_BATCH:
++        return "SCHED_BATCH";
++#endif
++#ifdef SCHED_IDLE
++    case SCHED_IDLE:
++        return "SCHED_IDLE";
++#endif
++    default:
++        return "SCHED_?";
++    }
++}
+diff --git a/src/asio.c b/src/asio.c
+index a8ce732..ec0a0e3 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -3050,6 +3050,27 @@ configure_driver(IPipeASIOImpl *This)
+                          sizeof(environment_variable)))
+         This->pipeasio_allow_quantum_mismatch
+                 = pipeasio_env_on_off(environment_variable) == 1 ? TRUE : FALSE;
++    /* PIPEASIO_REALTIME=on/off toggles the data-loop scheduling class for
++     * one launch.  The backend reads the same variable at acquire time
++     * through the same parser, so the two halves cannot disagree
++     * (pipeasio-honest-realtime).  The shipped default stays realtime=off. */
++    if (read_environment("PIPEASIO_REALTIME", environment_variable,
++                         sizeof(environment_variable)))
++    {
++        switch (pipeasio_env_on_off(environment_variable))
++        {
++        case 0:
++            This->pipeasio_realtime = FALSE;
++            break;
++        case 1:
++            This->pipeasio_realtime = TRUE;
++            break;
++        default:
++            WARN("PIPEASIO_REALTIME \"%s\" is neither on nor off; keeping %s\n",
++                 environment_variable, This->pipeasio_realtime ? "on" : "off");
++            break;
++        }
++    }
+     if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
+                          sizeof(environment_variable)))
+     {
+diff --git a/src/audio.c b/src/audio.c
+index 6623931..ceebf75 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -180,6 +180,17 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+     (void)thread;
+ 
+     bool realtime = s->want_realtime;
++    switch (pipeasio_realtime_env_override())
++    {
++    case 0:
++        realtime = false;
++        break;
++    case 1:
++        realtime = true;
++        break;
++    default:
++        break;
++    }
+     switch (pipeasio_rt_env_override())
+     {
+     case 0:
+@@ -192,9 +203,41 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+         break;
+     }
+ 
++    /* What the thread actually runs right now: under a launcher that starts
++     * the whole process realtime (chrt -r 10 wine), glibc's default
++     * PTHREAD_INHERIT_SCHED hands every created thread that class, so
++     * "realtime disabled" must actively demote, never just skip the raise
++     * (pipeasio-honest-realtime).  Both the before and after policies are
++     * logged. */
++    int                before_policy = -1;
++    struct sched_param before        = { 0 };
++    if (pthread_getschedparam(s->ptid, &before_policy, &before) != 0)
++        before_policy = -1;
++
+     if (!realtime)
+     {
+-        TRACE("rt thread left SCHED_OTHER (realtime disabled)\n");
++        if (before_policy == SCHED_OTHER || before_policy < 0)
++        {
++            TRACE("rt thread stays %s (realtime disabled, pipeasio-honest-realtime)\n",
++                  before_policy < 0 ? "at an unreadable policy"
++                                    : pipeasio_sched_policy_name(before_policy));
++            s->rt_priority = 0;
++            return 0;
++        }
++        int err = pthread_setschedparam(s->ptid, SCHED_OTHER,
++                                        &(struct sched_param){ .sched_priority = 0 });
++        if (err)
++        {
++            WARN("realtime disabled, but the thread inherited %s %d and the demotion "
++                 "failed: %s (pipeasio-honest-realtime)\n",
++                 pipeasio_sched_policy_name(before_policy), before.sched_priority,
++                 strerror(err));
++            return -1;
++        }
++        TRACE("rt thread demoted %s %d -> SCHED_OTHER 0 (realtime disabled, "
++              "pipeasio-honest-realtime)\n",
++              pipeasio_sched_policy_name(before_policy), before.sched_priority);
++        s->rt_priority = 0;
+         return 0;
+     }
+ 
+@@ -225,7 +268,9 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+         return -1;
+     }
+     s->rt_priority = priority;
+-    TRACE("rt thread acquired SCHED_FIFO %d\n", priority);
++    TRACE("rt thread acquired SCHED_FIFO %d (was %s %d)\n", priority,
++          before_policy < 0 ? "unreadable" : pipeasio_sched_policy_name(before_policy),
++          before.sched_priority);
+     return 0;
+ }
+ 
+@@ -235,8 +280,16 @@ audio_rt_drop(void *data, struct spa_thread *thread)
+     struct audio_rt_state *s = data;
+     (void)thread;
+ 
+-    if (!s->rt_priority)
++    /* Symmetric with acquire: read what the thread actually runs and demote
++     * whenever it is not SCHED_OTHER, even when the raise was never ours
++     * (launcher inheritance, pipeasio-honest-realtime). */
++    int                policy  = -1;
++    struct sched_param current = { 0 };
++    if (pthread_getschedparam(s->ptid, &policy, &current) != 0 || policy == SCHED_OTHER)
++    {
++        s->rt_priority = 0;
+         return 0;
++    }
+ 
+     int err = pthread_setschedparam(s->ptid, SCHED_OTHER,
+                                     &(struct sched_param){ .sched_priority = 0 });
+@@ -245,6 +298,8 @@ audio_rt_drop(void *data, struct spa_thread *thread)
+         WARN("pthread_setschedparam(SCHED_OTHER) failed: %s\n", strerror(err));
+         return -1;
+     }
++    TRACE("rt thread dropped %s %d -> SCHED_OTHER 0 (pipeasio-honest-realtime)\n",
++          pipeasio_sched_policy_name(policy), current.sched_priority);
+     s->rt_priority = 0;
+     return 0;
+ }
+diff --git a/src/wow64/audio_unix.c b/src/wow64/audio_unix.c
+index eb7d2e1..d83ca38 100644
+--- a/src/wow64/audio_unix.c
++++ b/src/wow64/audio_unix.c
+@@ -959,14 +959,27 @@ wow64_wait_callback(void *args)
+     {
+         cc->rt_raised      = true; /* one attempt per pump-thread lifetime */
+         bool      realtime = cc->want_realtime;
+-        const int env      = pipeasio_rt_env_override();
++        const int rt_env   = pipeasio_realtime_env_override();
++        if (rt_env != -1)
++            realtime = (rt_env != 0);
++        const int env = pipeasio_rt_env_override();
+         if (env != PIPEASIO_RT_ENV_UNSET)
+             realtime = (env != 0);
++        int                policy  = -1;
++        struct sched_param current = { 0 };
++        if (pthread_getschedparam(pthread_self(), &policy, &current) != 0)
++            policy = -1;
+         if (realtime)
+             pthread_setschedparam(pthread_self(), SCHED_FIFO,
+                                   &(struct sched_param){ .sched_priority = PAU_PUMP_RT_PRIORITY });
++        else if (policy >= 0 && policy != SCHED_OTHER)
++            /* The pump inherited a realtime class from the launcher
++             * (PTHREAD_INHERIT_SCHED); realtime off must actively demote,
++             * not just skip the raise (pipeasio-honest-realtime). */
++            pthread_setschedparam(pthread_self(), SCHED_OTHER,
++                                  &(struct sched_param){ .sched_priority = 0 });
+         /* best-effort: EPERM (no RLIMIT_RTPRIO / not in audio group) leaves
+-         * the pump at SCHED_OTHER, still functional. */
++         * the pump at its inherited class, still functional. */
+     }
+ 
+     pthread_mutex_lock(&cc->mutex);
+-- 
+2.55.0
+
