@@ -15,7 +15,13 @@ tracker. The middle drag always has raw pixel deltas, so a drag
 released while moving throws in any scrolling mode.
 
 While a sequence runs, the tracker keeps the raw fractional deltas of
-the trailing 100 ms, with the events' own timestamps. The tracker
+the trailing 100 ms, with the events' own timestamps. Each delta is
+measured against the last observed report, never the delivery baseline:
+while held-button delivery quantizes, that baseline deliberately lags
+by the undelivered remainder, and measuring against it would inflate
+every sample by the accumulated lag. A held button feeds the tracker
+nothing at all; it cancels tracking and coasting, so a quantized stream
+can never become a fling that coasts into the control the user holds. The tracker
 never polls: each sample re-arms a one-shot 100 ms release deadline,
 and a positive end evaluates the fling immediately. On the scroll path
 the positive end is the finger lift marker: a report whose present
@@ -50,10 +56,12 @@ instead of cutting off; only slow custom InertiaRate settings ever
 reach that point.
 
 The nudger waits on CLOCK_MONOTONIC, so wall-clock steps cannot stall
-a deadline or freeze a coast. It arms once per sequence rather than
-per input sample: the deadline tick re-arms itself with the remaining
-quiet time, which keeps the nudger asleep through the device's ~250
-reports a second.
+a deadline or freeze a coast. Its schedule keeps one slot per window
+under a mutex: trackers on different GUI threads never overwrite each
+other's deadlines, and no field is read outside the lock. The nudger
+only wakes when a schedule moves earlier than what it already sleeps
+toward, so the device's ~250 reports a second update a slot without
+waking anything.
 
 Coasting integrates the decay analytically over each measured
 interval: v1 = v0 e^(-k dt) and dx = v0 (1 - e^(-k dt)) / k. The
@@ -91,10 +99,10 @@ has not run.
 ---
  dlls/winex11.drv/event.c    |    2 
  dlls/winex11.drv/keyboard.c |    4 
- dlls/winex11.drv/mouse.c    |  527 +++++++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/mouse.c    |  601 ++++++++++++++++++++++++++++++++++++++++++-
  dlls/winex11.drv/window.c   |    3 
- dlls/winex11.drv/x11drv.h   |   33 +++
- 5 files changed, 563 insertions(+), 6 deletions(-)
+ dlls/winex11.drv/x11drv.h   |   32 ++
+ 5 files changed, 634 insertions(+), 8 deletions(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 106b110..abf9cff 100644
@@ -125,7 +133,7 @@ index 668a25b..123927a 100644
      {
          window_set_user_time( data, event->time, FALSE );
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 491e36d..7dcfcf6 100644
+index e22ad83..363f1cc 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,8 +30,10 @@
@@ -139,8 +147,8 @@ index 491e36d..7dcfcf6 100644
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
  #include <X11/extensions/XInput2.h>
  #endif
-@@ -433,6 +435,14 @@ static void prescan_scroll_devices( Display *display )
- void pointer_scroll_invalidate_baselines(void)
+@@ -488,6 +490,14 @@ void pointer_scroll_invalidate_baselines(void)
+ void pointer_scroll_discard_remainders(void)
  {
  }
 +
@@ -154,7 +162,7 @@ index 491e36d..7dcfcf6 100644
  #endif /* XIScrollClass */
  
  
-@@ -567,6 +577,8 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+@@ -622,6 +632,8 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
  #ifdef XIScrollClass
      xinput2_smooth_scroll = pointer_config.smooth_scrolling != POINTER_SCROLL_DISABLED &&
                              (major > 2 || minor >= 1);
@@ -163,7 +171,7 @@ index 491e36d..7dcfcf6 100644
  #endif
  
      mask.mask     = mask_bits;
-@@ -629,6 +641,14 @@ void pointer_scroll_invalidate_baselines(void)
+@@ -688,6 +700,14 @@ void pointer_scroll_discard_remainders(void)
  {
  }
  
@@ -178,7 +186,7 @@ index 491e36d..7dcfcf6 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
  /***********************************************************************
-@@ -699,6 +719,7 @@ static BOOL grab_clipping_window( const RECT *clip )
+@@ -758,6 +778,7 @@ static BOOL grab_clipping_window( const RECT *clip )
      /* the grab redirects pointer events; whatever the valuators report next
       * is not continuous with what was observed before it */
      pointer_scroll_invalidate_baselines();
@@ -186,7 +194,7 @@ index 491e36d..7dcfcf6 100644
      return TRUE;
  #else
      WARN( "XInput2 was not available at compile time\n" );
-@@ -843,6 +864,17 @@ static void send_wheel_control_input( HWND hwnd, int delta, UINT time )
+@@ -902,6 +923,17 @@ static void send_wheel_control_input( HWND hwnd, int delta, UINT time )
  /* movement one wheel notch stands for, in raw virtual screen pixels */
  #define MIDDLE_DRAG_STEP 24
  
@@ -204,7 +212,7 @@ index 491e36d..7dcfcf6 100644
  /***********************************************************************
   *           middle_drag_enabled
   *
-@@ -903,6 +935,7 @@ static void middle_drag_abort( POINT pt, UINT time )
+@@ -962,6 +994,7 @@ static void middle_drag_abort( POINT pt, UINT time )
      if (drag->moved)
          send_mouse_input( drag->hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
      drag->active = FALSE;
@@ -212,7 +220,7 @@ index 491e36d..7dcfcf6 100644
  }
  
  /***********************************************************************
-@@ -993,6 +1026,7 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1052,6 +1085,7 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
  {
      struct x11drv_middle_drag *drag = &x11drv_thread_data()->middle_drag;
      BOOL notched = middle_drag_notched();
@@ -220,7 +228,7 @@ index 491e36d..7dcfcf6 100644
      int delta;
  
      if (!drag->active) return FALSE;
-@@ -1003,8 +1037,10 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1062,8 +1096,10 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
          return FALSE;
      }
  
@@ -233,7 +241,7 @@ index 491e36d..7dcfcf6 100644
      drag->last = pt;
      if (!drag->moved)
      {
-@@ -1013,6 +1049,15 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1072,6 +1108,15 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
          drag->moved = TRUE;
      }
  
@@ -249,7 +257,7 @@ index 491e36d..7dcfcf6 100644
      if ((delta = middle_drag_delta( &drag->accum_y, notched )))  /* up scrolls up */
      {
          TRACE( "hwnd %p wheel delta %d\n", drag->hwnd, -delta );
-@@ -1047,6 +1092,22 @@ static BOOL middle_drag_end( XButtonEvent *event, POINT pt, UINT time )
+@@ -1106,6 +1151,22 @@ static BOOL middle_drag_end( XButtonEvent *event, POINT pt, UINT time )
      if (drag->moved)
          send_mouse_input( drag->hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
      drag->active = FALSE;
@@ -272,7 +280,7 @@ index 491e36d..7dcfcf6 100644
      return TRUE;
  }
  
-@@ -2019,6 +2080,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -2078,6 +2139,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -280,17 +288,17 @@ index 491e36d..7dcfcf6 100644
      if (middle_drag_begin( hwnd, event, pt, time )) return TRUE;
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
-@@ -2039,7 +2101,9 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
-     TRACE( "hwnd %p/%lx button %u pos %s\n", hwnd, event->window, button, wine_dbgstr_point( &pt ) );
- 
-     pt = map_event_coords( hwnd, event->window, event->root, root, pt );
+@@ -2101,7 +2163,9 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+     /* the remainder a quantized held-button stream left behind must not
+      * replay into the next unheld scroll */
+     pointer_scroll_discard_remainders();
 +    /* a middle release decides between throwing and cancelling itself */
      if (middle_drag_end( event, pt, time )) return TRUE;
 +    pointer_inertia_cancel();
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
      return TRUE;
  }
-@@ -2064,7 +2128,10 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+@@ -2126,7 +2190,10 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -301,7 +309,7 @@ index 491e36d..7dcfcf6 100644
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
      return TRUE;
  }
-@@ -2087,6 +2154,7 @@ BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
+@@ -2149,6 +2216,7 @@ BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
       * valuators did elsewhere in the meantime was not observed here, so the
       * cached baselines no longer mean anything */
      pointer_scroll_invalidate_baselines();
@@ -309,7 +317,7 @@ index 491e36d..7dcfcf6 100644
  
      if (hwnd == NtUserGetAncestor( get_capture_window(), GA_ROOT )) return FALSE;
  
-@@ -2120,6 +2188,7 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+@@ -2182,6 +2250,7 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
  #endif
      /* the device set changed under any gesture in progress */
      pinch_gestures_reset();
@@ -317,7 +325,7 @@ index 491e36d..7dcfcf6 100644
      return TRUE;
  }
  
-@@ -2346,6 +2415,423 @@ static void scan_scroll_valuators( XIDeviceEvent *event, struct x11drv_scroll_so
+@@ -2408,6 +2477,488 @@ static void scan_scroll_valuators( XIDeviceEvent *event, struct x11drv_scroll_so
      }
  }
  
@@ -343,54 +351,101 @@ index 491e36d..7dcfcf6 100644
 +#define INERTIA_STOP_SPEED   60.0
 +#define INERTIA_MAX_SPEED    19200.0
 +
++#define INERTIA_NUDGE_SLOTS 8
++
 +static pthread_mutex_t inertia_nudge_mutex = PTHREAD_MUTEX_INITIALIZER;
 +static pthread_cond_t inertia_nudge_cond = PTHREAD_COND_INITIALIZER;
 +static struct
 +{
-+    HWND  hwnd;        /* post target, 0 = disarmed */
-+    UINT  interval;    /* milliseconds until the next post */
-+    BOOL  repeating;   /* deadline posts once, coasting ticks repeat */
-+    ULONG generation;  /* re-arm marker, restarts a wait in progress */
-+    BOOL  running;
-+    BOOL  failed;
++    struct
++    {
++        HWND   hwnd;      /* post target, 0 = free slot */
++        UINT64 fire_at;   /* CLOCK_MONOTONIC milliseconds */
++        UINT   interval;
++        BOOL   repeating; /* deadlines post once, coasting ticks repeat */
++    } slots[INERTIA_NUDGE_SLOTS];
++    BOOL running;
++    BOOL failed;
 +} inertia_nudge;
++
++static UINT64 inertia_nudge_now(void)
++{
++    struct timespec ts;
++
++    clock_gettime( CLOCK_MONOTONIC, &ts );
++    return (UINT64)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
++}
 +
 +static void CALLBACK inertia_nudge_thread( void *arg )
 +{
 +    pthread_mutex_lock( &inertia_nudge_mutex );
 +    for (;;)
 +    {
-+        struct timespec deadline;
-+        ULONG generation;
-+        HWND hwnd;
-+        BOOL ok;
++        UINT64 now, min_fire = 0;
++        int i;
 +
-+        if (!inertia_nudge.hwnd)
++        for (i = 0; i < INERTIA_NUDGE_SLOTS; i++)
++            if (inertia_nudge.slots[i].hwnd &&
++                (!min_fire || inertia_nudge.slots[i].fire_at < min_fire))
++                min_fire = inertia_nudge.slots[i].fire_at;
++
++        if (!min_fire)
 +        {
 +            pthread_cond_wait( &inertia_nudge_cond, &inertia_nudge_mutex );
 +            continue;
 +        }
-+        generation = inertia_nudge.generation;
-+        clock_gettime( CLOCK_MONOTONIC, &deadline );
-+        deadline.tv_nsec += (long)inertia_nudge.interval * 1000000;
-+        deadline.tv_sec += deadline.tv_nsec / 1000000000;
-+        deadline.tv_nsec %= 1000000000;
-+        if (pthread_cond_timedwait( &inertia_nudge_cond, &inertia_nudge_mutex, &deadline ) != ETIMEDOUT)
-+            continue;  /* re-armed or stopped, restart with the new target */
-+        if (inertia_nudge.generation != generation || !inertia_nudge.hwnd) continue;
 +
-+        hwnd = inertia_nudge.hwnd;
-+        if (!inertia_nudge.repeating) inertia_nudge.hwnd = 0;  /* one shot */
-+        pthread_mutex_unlock( &inertia_nudge_mutex );
-+        ok = NtUserPostMessage( hwnd, WM_X11DRV_POINTER_TICK, 0, 0 );
-+        pthread_mutex_lock( &inertia_nudge_mutex );
-+        if (!ok && inertia_nudge.hwnd == hwnd) inertia_nudge.hwnd = 0;  /* window gone */
++        now = inertia_nudge_now();
++        if (now < min_fire)
++        {
++            struct timespec deadline;
++
++            deadline.tv_sec = min_fire / 1000;
++            deadline.tv_nsec = (min_fire % 1000) * 1000000;
++            pthread_cond_timedwait( &inertia_nudge_cond, &inertia_nudge_mutex, &deadline );
++            continue;  /* recompute: the slots may have changed either way */
++        }
++
++        for (i = 0; i < INERTIA_NUDGE_SLOTS; i++)
++        {
++            HWND hwnd = inertia_nudge.slots[i].hwnd;
++            BOOL ok;
++
++            if (!hwnd || inertia_nudge.slots[i].fire_at > now) continue;
++            if (inertia_nudge.slots[i].repeating)
++                inertia_nudge.slots[i].fire_at = now + inertia_nudge.slots[i].interval;
++            else
++                inertia_nudge.slots[i].hwnd = 0;  /* one shot */
++            pthread_mutex_unlock( &inertia_nudge_mutex );
++            ok = NtUserPostMessage( hwnd, WM_X11DRV_POINTER_TICK, 0, 0 );
++            pthread_mutex_lock( &inertia_nudge_mutex );
++            if (!ok)  /* window gone: drop every schedule it holds */
++            {
++                int j;
++
++                for (j = 0; j < INERTIA_NUDGE_SLOTS; j++)
++                    if (inertia_nudge.slots[j].hwnd == hwnd) inertia_nudge.slots[j].hwnd = 0;
++            }
++        }
 +    }
 +}
 +
-+/* arm the nudger from the owning thread; a wait in progress restarts */
++/***********************************************************************
++ *           inertia_nudge_arm
++ *
++ * Register or move one window's next tick. Slots are keyed by window, so
++ * trackers on different GUI threads schedule independently, and every
++ * access runs under the mutex. The nudger only wakes when a schedule
++ * moves earlier than the slot held before; a deadline re-armed later
++ * needs no wake, because the sleep target was already sooner.
++ */
 +static void inertia_nudge_arm( HWND hwnd, UINT interval, BOOL repeating )
 +{
++    UINT64 fire_at;
++    int i, slot = -1, latest = -1;
++    BOOL wake;
++
++    if (!hwnd) return;
 +    pthread_mutex_lock( &inertia_nudge_mutex );
 +    if (!inertia_nudge.running && !inertia_nudge.failed)
 +    {
@@ -422,26 +477,48 @@ index 491e36d..7dcfcf6 100644
 +            inertia_nudge.running = TRUE;
 +        }
 +    }
-+    if (!inertia_nudge.failed)
++    if (inertia_nudge.failed)
 +    {
-+        inertia_nudge.hwnd = hwnd;
-+        inertia_nudge.interval = interval;
-+        inertia_nudge.repeating = repeating;
-+        inertia_nudge.generation++;
-+        pthread_cond_signal( &inertia_nudge_cond );
++        pthread_mutex_unlock( &inertia_nudge_mutex );
++        return;
 +    }
++
++    for (i = 0; i < INERTIA_NUDGE_SLOTS; i++)
++    {
++        if (inertia_nudge.slots[i].hwnd == hwnd) { slot = i; break; }
++        if (slot == -1 && !inertia_nudge.slots[i].hwnd) slot = i;
++        if (latest == -1 || inertia_nudge.slots[i].fire_at > inertia_nudge.slots[latest].fire_at)
++            latest = i;
++    }
++    if (slot == -1)
++    {
++        /* every slot belongs to another window: take over the schedule
++         * firing last; its tracker recovers on that thread's next input */
++        TRACE( "nudge slots full, dropping the schedule of %p\n", inertia_nudge.slots[latest].hwnd );
++        slot = latest;
++        inertia_nudge.slots[slot].hwnd = 0;
++    }
++
++    fire_at = inertia_nudge_now() + interval;
++    wake = !inertia_nudge.slots[slot].hwnd || fire_at < inertia_nudge.slots[slot].fire_at;
++    inertia_nudge.slots[slot].hwnd = hwnd;
++    inertia_nudge.slots[slot].fire_at = fire_at;
++    inertia_nudge.slots[slot].interval = interval;
++    inertia_nudge.slots[slot].repeating = repeating;
++    if (wake) pthread_cond_signal( &inertia_nudge_cond );
 +    pthread_mutex_unlock( &inertia_nudge_mutex );
 +}
 +
-+static void inertia_nudge_stop(void)
++/* drop one window's schedule; the nudger wakes at the stale time and
++ * finds nothing due, so no signal is needed */
++static void inertia_nudge_stop( HWND hwnd )
 +{
++    int i;
++
++    if (!hwnd) return;
 +    pthread_mutex_lock( &inertia_nudge_mutex );
-+    if (inertia_nudge.hwnd)
-+    {
-+        inertia_nudge.hwnd = 0;
-+        inertia_nudge.generation++;
-+        pthread_cond_signal( &inertia_nudge_cond );
-+    }
++    for (i = 0; i < INERTIA_NUDGE_SLOTS; i++)
++        if (inertia_nudge.slots[i].hwnd == hwnd) inertia_nudge.slots[i].hwnd = 0;
 +    pthread_mutex_unlock( &inertia_nudge_mutex );
 +}
 +
@@ -472,7 +549,7 @@ index 491e36d..7dcfcf6 100644
 +    TRACE( "state %u cancelled\n", data->scroll_inertia.state );
 +    data->scroll_inertia.state = INERTIA_IDLE;
 +    data->scroll_inertia.count = 0;
-+    inertia_nudge_stop();
++    inertia_nudge_stop( data->scroll_inertia.hwnd );
 +}
 +
 +/***********************************************************************
@@ -488,7 +565,6 @@ index 491e36d..7dcfcf6 100644
 +                                    double dx, double dy, UINT time )
 +{
 +    struct x11drv_scroll_inertia *si = &data->scroll_inertia;
-+    BOOL was_tracking;
 +    unsigned int i;
 +
 +    if (!pointer_inertia_enabled()) return;
@@ -498,7 +574,6 @@ index 491e36d..7dcfcf6 100644
 +        si->state = INERTIA_IDLE;
 +        si->count = 0;
 +    }
-+    was_tracking = si->state == INERTIA_TRACKING;
 +    si->state = INERTIA_TRACKING;
 +    si->sourceid = sourceid;
 +    si->hwnd = hwnd;
@@ -513,12 +588,10 @@ index 491e36d..7dcfcf6 100644
 +    si->history[i].dy = dy;
 +    si->history[i].time = time;
 +
-+    /* arm once per sequence, not per sample: the deadline tick re-arms
-+     * itself with the remaining quiet time, so waking the nudger for each
-+     * of the device's ~250 reports a second would buy nothing. the
-+     * unlocked hwnd peek recovers from a failed-post disarm. */
-+    if (!was_tracking || !inertia_nudge.hwnd)
-+        inertia_nudge_arm( hwnd, INERTIA_DEADLINE_MS, FALSE );
++    /* an upsert per sample is a plain mutexed write; the nudger itself
++     * only wakes when a schedule moves earlier, and a deadline pushed
++     * later never does */
++    inertia_nudge_arm( hwnd, INERTIA_DEADLINE_MS, FALSE );
 +}
 +
 +/***********************************************************************
@@ -608,7 +681,7 @@ index 491e36d..7dcfcf6 100644
 +               sourceid, time - si->last_time );
 +        si->state = INERTIA_IDLE;
 +        si->count = 0;
-+        inertia_nudge_stop();
++        inertia_nudge_stop( si->hwnd );
 +        return;
 +    }
 +    TRACE( "release from source %d\n", sourceid );
@@ -670,7 +743,7 @@ index 491e36d..7dcfcf6 100644
 +            {
 +                si->state = INERTIA_IDLE;
 +                si->count = 0;
-+                inertia_nudge_stop();
++                inertia_nudge_stop( si->hwnd );
 +            }
 +            else pointer_inertia_evaluate( data, now, TRUE );
 +        }
@@ -734,14 +807,14 @@ index 491e36d..7dcfcf6 100644
 +    {
 +        TRACE( "fling ends at %f,%f units/s\n", si->vx, si->vy );
 +        si->state = INERTIA_IDLE;
-+        inertia_nudge_stop();
++        inertia_nudge_stop( si->hwnd );
 +    }
 +}
 +
  /***********************************************************************
   *           X11DRV_SmoothScrollEvent
   *
-@@ -2367,8 +2853,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2429,8 +2980,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      struct x11drv_win_data *win_data;
      UINT time = EVENT_x11_time_to_win32_time( event->time );
      BOOL emulated = event->flags & XIPointerEmulated;
@@ -749,10 +822,10 @@ index 491e36d..7dcfcf6 100644
 -    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE;
 +    double value_x = 0, value_y = 0, units_x = 0.0, units_y = 0.0;
 +    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE, stop_marker = FALSE;
-     BOOL quantize;
+     BOOL quantize, buttons_down;
      int delta_x = 0, delta_y = 0;
      HWND hwnd;
-@@ -2384,7 +2870,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2446,7 +2997,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
          if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
  
          /* a native XI wheel button: a device without scroll axes reporting a
@@ -762,34 +835,50 @@ index 491e36d..7dcfcf6 100644
          if ((win_data = get_win_data( hwnd )))
          {
              /* user-time feeds focus-stealing arbitration only; pushing the
-@@ -2429,6 +2916,22 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
-     quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED ||
-                xinput2_any_button_down( event );
+@@ -2475,8 +3027,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+ 
+     if (emulated)
+     {
+-        /* the emulated report only refreshes the baseline; the same movement
+-         * arrives as core wheel buttons */
++        /* the emulated report only refreshes the baselines; the same
++         * movement arrives as core wheel buttons */
+         if (have_x) smooth_scroll_delta( &src->scroll_x, value_x, TRUE, FALSE );
+         if (have_y) smooth_scroll_delta( &src->scroll_y, value_y, TRUE, FALSE );
+         if (have_x) { src->scroll_x.last_value = value_x; src->scroll_x.last_value_valid = TRUE; }
+@@ -2493,6 +3045,20 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+     buttons_down = xinput2_any_button_down( event );
+     quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED || buttons_down;
  
 +    /* the raw fractional units for the inertia tracker, and the finger lift
 +     * marker: a report whose present scroll axes did not move since the
 +     * previous report is how XWayland forwards the compositor's axis stop.
-+     * the comparison is against the last observed value, not the reporting
-+     * baseline: the baseline lags by the sub-notch remainder, so a true
-+     * stop would never compare equal against it */
-+    if (have_x && src->scroll_x.value_valid)
-+        units_x = WHEEL_DELTA * (value_x - src->scroll_x.value) / src->scroll_x.increment;
-+    if (have_y && src->scroll_y.value_valid)
-+        units_y = WHEEL_DELTA * (value_y - src->scroll_y.value) / src->scroll_y.increment;
++     * both compare against the last observed report, never the delivery
++     * baseline: the baseline lags by the sub-notch remainder (deliberately,
++     * while quantizing), and measuring against it inflates the deltas by
++     * the accumulated remainder */
++    if (have_x && src->scroll_x.last_value_valid)
++        units_x = WHEEL_DELTA * (value_x - src->scroll_x.last_value) / src->scroll_x.increment;
++    if (have_y && src->scroll_y.last_value_valid)
++        units_y = WHEEL_DELTA * (value_y - src->scroll_y.last_value) / src->scroll_y.increment;
 +    stop_marker = (have_x || have_y) &&
-+                  (!have_x || (src->scroll_x.value_valid && value_x == src->scroll_x.last_value)) &&
-+                  (!have_y || (src->scroll_y.value_valid && value_y == src->scroll_y.last_value));
-+    if (have_x) src->scroll_x.last_value = value_x;
-+    if (have_y) src->scroll_y.last_value = value_y;
-+
-     if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE, quantize );
-     if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE, quantize );
++                  (!have_x || (src->scroll_x.last_value_valid && value_x == src->scroll_x.last_value)) &&
++                  (!have_y || (src->scroll_y.last_value_valid && value_y == src->scroll_y.last_value));
+     if (have_x) { src->scroll_x.last_value = value_x; src->scroll_x.last_value_valid = TRUE; }
+     if (have_y) { src->scroll_y.last_value = value_y; src->scroll_y.last_value_valid = TRUE; }
  
-@@ -2449,6 +2952,13 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2516,6 +3082,20 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
          if (delta_x) send_wheel_only_input( hwnd, MOUSEEVENTF_HWHEEL, delta_x, time );
      }
  
-+    if (pointer_config.smooth_scrolling == POINTER_SCROLL_PRECISE)
++    if (buttons_down)
++    {
++        /* a held button means the user is manipulating something; the
++         * quantized stream must not feed a fling that would coast into
++         * the held control after the deadline */
++        pointer_inertia_cancel();
++    }
++    else if (pointer_config.smooth_scrolling == POINTER_SCROLL_PRECISE)
 +    {
 +        if (stop_marker) pointer_inertia_stop_marker( data, event->sourceid, time );
 +        else if (units_x || units_y)
@@ -799,7 +888,7 @@ index 491e36d..7dcfcf6 100644
      /* a report can carry pointer motion next to the scroll axes */
      if (saw_motion) forward_xinput2_core_event( hwnd, event );
      return TRUE;
-@@ -2573,6 +3083,9 @@ static void set_control_key_state( BOOL down )
+@@ -2640,6 +3220,9 @@ static void set_control_key_state( BOOL down )
          wine_server_call( req );
      }
      SERVER_END_REQ;
@@ -809,7 +898,7 @@ index 491e36d..7dcfcf6 100644
  }
  
  /***********************************************************************
-@@ -2708,6 +3221,9 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+@@ -2775,6 +3358,9 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
      if (event->evtype == XI_GesturePinchBegin)
      {
          if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
@@ -819,7 +908,7 @@ index 491e36d..7dcfcf6 100644
          gesture = find_pinch_gesture( data, event->sourceid, TRUE );
          gesture->hwnd = hwnd;
          gesture->scale = 1.0;  /* the protocol defines Begin as scale 1.0 */
-@@ -2746,6 +3262,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+@@ -2813,6 +3399,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
          /* the begin went somewhere else: start from the current scale rather
           * than dropping the rest of the gesture */
          if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
@@ -842,20 +931,12 @@ index 987893c..342c6db 100644
          FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp );
          return 0;
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index ca0e5f1..796947e 100644
+index 489ad64..5f33166 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -493,6 +493,7 @@ struct x11drv_scroll_axis
-     int    number;      /* valuator number, -1 when the device has none */
-     double increment;   /* valuator units one wheel notch stands for */
-     double value;       /* cumulative valuator position already reported */
-+    double last_value;  /* cumulative position of the last observed report */
-     BOOL   value_valid; /* value seeds from the next report when clear */
- };
- 
-@@ -508,6 +509,34 @@ struct x11drv_scroll_source
- 
+@@ -513,6 +513,34 @@ struct x11drv_scroll_source
  extern void pointer_scroll_invalidate_baselines(void);
+ extern void pointer_scroll_discard_remainders(void);
  
 +enum pointer_inertia_state
 +{
@@ -888,7 +969,7 @@ index ca0e5f1..796947e 100644
  struct x11drv_thread_data
  {
      Display *display;
-@@ -532,6 +561,7 @@ struct x11drv_thread_data
+@@ -537,6 +565,7 @@ struct x11drv_thread_data
      int      root_window_users;    /* counter for root window XISelectEvents */
      struct x11drv_pinch_gesture pinch_gestures[POINTER_PINCH_SLOTS];
      struct x11drv_scroll_source scroll_sources[SCROLL_SOURCE_CACHE_SIZE];
@@ -896,7 +977,7 @@ index ca0e5f1..796947e 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
-@@ -736,7 +766,8 @@ enum x11drv_window_messages
+@@ -741,7 +770,8 @@ enum x11drv_window_messages
      WM_X11DRV_UPDATE_CLIPBOARD = WM_WINE_FIRST_DRIVER_MSG,
      WM_X11DRV_SET_WIN_REGION,
      WM_X11DRV_DELETE_TAB,

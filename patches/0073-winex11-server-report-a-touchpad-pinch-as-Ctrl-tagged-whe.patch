@@ -32,7 +32,7 @@ modifier reaches the application through both of its observable reads:
   this: with the wparam override alone, the wheel arrived and nothing
   zoomed. This half serves that read without creating any input. The
   driver releases the key on gesture end, cancellation, focus loss,
-  device change and slot eviction. It checks the X keymap for a Ctrl the
+  device change, slot eviction and thread detach. It checks the X keymap for a Ctrl the
   user physically holds and never releases that key. And if every
   release path misses, a stale state byte self-heals through the
   KeymapNotify modifier resync.
@@ -84,10 +84,11 @@ pinch zoom working in Live 12 with this design.
  dlls/winex11.drv/event.c       |    3 
  dlls/winex11.drv/mouse.c       |  305 ++++++++++++++++++++++++++++++++++++++++
  dlls/winex11.drv/x11drv.h      |   15 ++
+ dlls/winex11.drv/x11drv_main.c |    3 
  include/wine/server_protocol.h |    1 
  server/protocol.def            |    1 
  server/queue.c                 |   21 ++-
- 6 files changed, 343 insertions(+), 3 deletions(-)
+ 7 files changed, 346 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index a524761..ee5a274 100644
@@ -510,6 +511,20 @@ index 340aca7..dab7296 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+index 2a5613c..710605a 100644
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -831,6 +831,9 @@ void X11DRV_ThreadDetach(void)
+ 
+     if (data)
+     {
++        /* a pinch still holding synthetic Ctrl must release it before the
++         * thread's state disappears */
++        pinch_gestures_reset();
+         if (data->xim) XCloseIM( data->xim );
+         if (data->font_set) XFreeFontSet( data->display, data->font_set );
+         if (data->net_supported) XFree( data->net_supported );
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
 index efc1cbe..41283f9 100644
 --- a/include/wine/server_protocol.h

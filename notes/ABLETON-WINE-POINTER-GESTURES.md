@@ -110,7 +110,19 @@ What changed against PR 157:
   gate lost high-resolution wheel input during drags. The clickpad fader
   report reproduced on 2026-08-10, so the agreed fallback is in: while a
   button is down the decoder delivers whole notches and carries the
-  remainder. It never drops.
+  remainder. It never drops. A release snaps the baselines to the last
+  observed report, so the held-back remainder never replays elsewhere,
+  and a held button cancels inertia tracking outright (a second review
+  caught the quantized stream inflating fling velocity through the
+  lagging baseline; deltas now measure against the last raw report).
+- The pointer axes come from the device's valuator class labels, with
+  0/1 as the unlabeled fallback; the nudger keeps one schedule slot per
+  window under its mutex, so multi-thread trackers cannot clobber each
+  other. Still open from that review: the pinch Ctrl write replaces the
+  full key-state array (a concurrent physical modifier transition can be
+  overwritten), and overlapping pinches share one synthetic Ctrl without
+  ownership. Both are edge cases on a one-user setup; a bit-targeted
+  server operation is the clean fix if they ever bite.
 - The driver pre-queries slave scroll classes once at thread init
   instead of a first-event round trip, and the XI selection follows
   Wine's own WS_EX_TRANSPARENT policy instead of calling
