@@ -1,0 +1,762 @@
+Subject: winex11: preserve precision scrolling from XInput2 scroll valuators
+
+XInput2 2.1 reports touchpad and high-resolution wheel scrolling as
+cumulative valuator positions. One increment stands for one wheel
+notch. Wine consumes only the legacy button events the X server
+synthesizes from those valuators, so every update collapses to a whole
+WHEEL_DELTA and two-finger navigation is visibly stepped.
+
+The driver selects XI_Motion, XI_ButtonPress and XI_ButtonRelease on
+each top-level window whose Wine window policy takes pointer events. A
+WS_EX_TRANSPARENT window lets clicks fall through (see
+get_window_attributes), and an XI selection would make it a delivery
+target again, so the selection follows the same style bit instead of
+asking the X server with a synchronous XGetWindowAttributes call. The
+driver registers the window context before the selection, so the
+selection can read the policy at creation. SmoothScrolling=disabled
+keeps Wine's core button path. SmoothScrolling=notched floors each
+report to whole notches and carries the remainder, for an application
+that ignores fractional wheel units.
+
+Scroll-valuator changes become fractional vertical and horizontal
+wheel input, and the driver carries the sub-unit remainder.
+WHEEL_DELTA is a unit, not a minimum: an application that follows the
+amount rather than counting messages scrolls continuously. The wheel
+input carries no position. The server stamps each message at the
+current cursor, which is where X delivered the event, so wheel
+delivery never moves the cursor. Both wheel paths update the window
+user time, at most once per 100 ms: the property write wakes the X
+server and the window manager, and a scroll stream reports hundreds of
+times a second. Focus-stealing prevention still tracks scrolling as
+user activity.
+
+The driver delivers scrolling whether or not a button is held.
+WM_MOUSEWHEEL defines MK_LBUTTON and friends as ordinary states of a
+wheel message, and dropping input while a button is down would lose
+high-resolution wheel movement during drags and pointing-stick
+scrolling.
+
+The valuators are cumulative and advance whenever the device scrolls
+anywhere, including in other applications and other Wine threads'
+windows, so a cached baseline stays meaningful only while this thread
+observes the stream continuously. The driver invalidates and reseeds
+the baselines, reporting no movement, on window enter, focus in and
+out, cursor-clip grabs, device change, and device removal. XInput2
+reuses device IDs after removal, so a removed device also loses its
+cache entry; the driver selects hierarchy events for exactly that. A
+report past the 16-notch cap advances the baseline all the way and
+discards the excess, so no debt survives to burst into a later report.
+A jump beyond any plausible single report reseeds instead of
+scrolling: the server may legally reset a cumulative valuator.
+
+The driver pre-queries each slave device's scroll axes once at thread
+init, so the first scroll of a session pays no XIQueryDevice round
+trip. It queries a late-arriving device on that device's first report.
+A full cache evicts the device that reported longest ago.
+
+The driver ignores the emulated XI scroll button duplicates; their
+reports only refresh the baselines. Native XI wheel buttons from
+devices without scroll axes still deliver whole notches. The driver
+leaves core wheel button events alone: during a core grab (popup menu
+tracking, interactive move/size, ClipCursor) the server delivers only
+core events, and dropping them would kill wheel scrolling entirely.
+
+Selecting a master-device XI event stops the X server from delivering
+its core equivalent. Non-scroll XI motion and button events forward
+through Wine's existing core handlers, including button state
+reconstruction, so the smooth path preserves ordinary pointer motion,
+clicks, activation timestamps and middle-drag handling. A report that
+carries pointer motion next to the scroll axes forwards the motion
+too.
+
+Builds without XInput2 2.1 scroll definitions compile this path out.
+---
+ dlls/winex11.drv/event.c  |    6 +
+ dlls/winex11.drv/mouse.c  |  511 +++++++++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/window.c |    4 
+ dlls/winex11.drv/x11drv.h |   21 ++
+ 4 files changed, 541 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+index ee5a274..106b110 100644
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -724,6 +724,10 @@ static BOOL X11DRV_FocusIn( HWND hwnd, XEvent *xev )
+ 
+     x11drv_thread_data()->keymapnotify_hwnd = hwnd;
+ 
++    /* focus was elsewhere; the cumulative scroll valuators may have advanced
++     * unobserved there */
++    pointer_scroll_invalidate_baselines();
++
+     /* when keyboard grab is released, re-apply the cursor clipping rect */
+     was_grabbed = keyboard_grabbed;
+     keyboard_grabbed = event->mode == NotifyGrab || event->mode == NotifyWhileGrabbed;
+@@ -755,6 +759,8 @@ static void focus_out( Display *display , HWND hwnd )
+  {
+     /* a pinch in progress does not survive losing the input focus */
+     pinch_gestures_reset();
++    /* scrolling elsewhere advances the cumulative valuators unobserved */
++    pointer_scroll_invalidate_baselines();
+ 
+     if (xim_in_compose_mode()) return;
+ 
+diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
+index 083cc07..8e08ac4 100644
+--- a/dlls/winex11.drv/mouse.c
++++ b/dlls/winex11.drv/mouse.c
+@@ -281,6 +281,160 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
+     thread_data->y_valuator.value = 0;
+ }
+ 
++#ifdef XIScrollClass
++static BOOL xinput2_smooth_scroll;
++
++/***********************************************************************
++ *              find_scroll_source
++ *
++ * Look up the scroll axes of a slave device. Each device keeps its own
++ * axis metadata and cumulative baselines, so alternating between a mouse
++ * and a touchpad neither re-queries the device nor discards the first
++ * movement after the switch. A full cache evicts the device that reported
++ * longest ago, never a fixed slot.
++ */
++static struct x11drv_scroll_source *find_scroll_source( struct x11drv_thread_data *data,
++                                                        int sourceid, BOOL create )
++{
++    struct x11drv_scroll_source *src, *free_slot = NULL, *oldest = NULL;
++    int i;
++
++    for (i = 0; i < SCROLL_SOURCE_CACHE_SIZE; i++)
++    {
++        src = &data->scroll_sources[i];
++        if (src->sourceid == sourceid) return src;
++        if (!src->sourceid) { if (!free_slot) free_slot = src; }
++        else if (!oldest || src->time < oldest->time) oldest = src;
++    }
++    if (!create) return NULL;
++    if (!free_slot)
++    {
++        TRACE( "evicting scroll source %d\n", oldest->sourceid );
++        free_slot = oldest;
++    }
++    memset( free_slot, 0, sizeof(*free_slot) );
++    free_slot->sourceid = sourceid;
++    free_slot->scroll_x.number = free_slot->scroll_y.number = -1;
++    return free_slot;
++}
++
++/***********************************************************************
++ *              pointer_scroll_invalidate_baselines
++ *
++ * Drop every cached cumulative baseline. XInput2 scroll valuators advance
++ * whenever the device scrolls anywhere: another application, another Wine
++ * thread's window, a grab. After any discontinuity in what this thread
++ * observed, the next report reseeds each baseline and reports no movement,
++ * instead of delivering the whole missed distance as one burst.
++ */
++void pointer_scroll_invalidate_baselines(void)
++{
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    int i;
++
++    if (!data) return;
++    for (i = 0; i < SCROLL_SOURCE_CACHE_SIZE; i++)
++    {
++        data->scroll_sources[i].scroll_x.value_valid = FALSE;
++        data->scroll_sources[i].scroll_y.value_valid = FALSE;
++    }
++}
++
++/***********************************************************************
++ *              update_scroll_valuators
++ */
++static void update_scroll_valuators( XIAnyClassInfo **classes, int num_classes, int sourceid )
++{
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    struct x11drv_scroll_source *src;
++    struct x11drv_scroll_axis *axis;
++    int i;
++
++    if (!sourceid)  /* caller does not know the source, take it from the class */
++    {
++        for (i = 0; i < num_classes; i++)
++            if (classes[i]->type == XIScrollClass)
++            {
++                sourceid = ((XIScrollClassInfo *)classes[i])->sourceid;
++                break;
++            }
++    }
++    if (!sourceid) return;
++    if (!(src = find_scroll_source( data, sourceid, TRUE ))) return;
++
++    /* the device changed: its axes and their cumulative baselines restart */
++    src->scroll_x.number = src->scroll_y.number = -1;
++    src->scroll_x.value_valid = src->scroll_y.value_valid = FALSE;
++
++    for (i = 0; i < num_classes; i++)
++    {
++        XIScrollClassInfo *scroll;
++
++        if (classes[i]->type != XIScrollClass) continue;
++        scroll = (XIScrollClassInfo *)classes[i];
++        if (!scroll->increment) continue;
++        if (scroll->sourceid != sourceid) continue;
++
++        if (scroll->scroll_type == XIScrollTypeVertical) axis = &src->scroll_y;
++        else if (scroll->scroll_type == XIScrollTypeHorizontal) axis = &src->scroll_x;
++        else continue;
++        if (axis->number >= 0 && !(scroll->flags & XIScrollFlagPreferred)) continue;
++        axis->number = scroll->number;
++        axis->increment = scroll->increment;
++    }
++
++    TRACE( "source %d scroll x %d/%f, y %d/%f\n", src->sourceid,
++           src->scroll_x.number, src->scroll_x.increment,
++           src->scroll_y.number, src->scroll_y.increment );
++}
++
++static void query_scroll_valuators( Display *display, int sourceid )
++{
++    XIDeviceInfo *info;
++    int count;
++
++    if ((info = pXIQueryDevice( display, sourceid, &count )))
++    {
++        update_scroll_valuators( info->classes, info->num_classes, sourceid );
++        pXIFreeDeviceInfo( info );
++    }
++    else update_scroll_valuators( NULL, 0, sourceid );
++}
++
++/***********************************************************************
++ *              prescan_scroll_devices
++ *
++ * Query every slave device's scroll classes once at thread init, so the
++ * first scroll report of a session pays no XIQueryDevice round trip.
++ * Devices that appear later are queried on their first report.
++ */
++static void prescan_scroll_devices( Display *display )
++{
++    XIDeviceInfo *info;
++    int i, count;
++
++    if (!(info = pXIQueryDevice( display, XIAllDevices, &count ))) return;
++    for (i = 0; i < count; i++)
++    {
++        int j;
++
++        if (info[i].use != XISlavePointer && info[i].use != XIFloatingSlave) continue;
++        for (j = 0; j < info[i].num_classes; j++)
++            if (info[i].classes[j]->type == XIScrollClass)
++            {
++                update_scroll_valuators( info[i].classes, info[i].num_classes, info[i].deviceid );
++                break;
++            }
++    }
++    pXIFreeDeviceInfo( info );
++}
++#else
++
++void pointer_scroll_invalidate_baselines(void)
++{
++}
++#endif /* XIScrollClass */
++
+ 
+ /***********************************************************************
+  *              x11drv_xinput2_enable
+@@ -309,6 +463,34 @@ void x11drv_xinput2_enable( Display *display, Window window )
+         XISetMask( mask_bits, XI_TouchBegin );
+         XISetMask( mask_bits, XI_TouchUpdate );
+         XISetMask( mask_bits, XI_TouchEnd );
++#ifdef XIScrollClass
++        if (xinput2_smooth_scroll)
++        {
++            HWND hwnd = 0;
++            int ctx_missing;
++            DWORD ex_style = 0;
++
++            /* a window without core pointer events (WS_EX_TRANSPARENT, see
++             * get_window_attributes) lets clicks fall through to the window
++             * below, and an XI selection would make it a delivery target
++             * again, so the selection follows the same policy. The style
++             * comes from Wine's own window data rather than a synchronous
++             * XGetWindowAttributes round trip; windows without a Wine handle
++             * (the clip window, the desktop) get no scroll selection. */
++            ctx_missing = XFindContext( display, window, winContext, (char **)&hwnd );
++            if (!ctx_missing) ex_style = NtUserGetWindowLongW( hwnd, GWL_EXSTYLE );
++            if (!ctx_missing && !(ex_style & WS_EX_TRANSPARENT))
++            {
++                XISetMask( mask_bits, XI_Motion );
++                XISetMask( mask_bits, XI_ButtonPress );
++                XISetMask( mask_bits, XI_ButtonRelease );
++                TRACE( "window %lx hwnd %p exstyle %08x: scroll selected\n",
++                       window, hwnd, (UINT)ex_style );
++            }
++            else TRACE( "window %lx hwnd %p ctx_missing %d exstyle %08x: scroll NOT selected\n",
++                        window, hwnd, ctx_missing, (UINT)ex_style );
++        }
++#endif
+ #ifdef XI_GesturePinchBegin
+         if (xinput2_gestures)
+         {
+@@ -382,6 +564,11 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+         WARN( "XInput2 %d.%d has no gesture events, pinch zoom unavailable\n", major, minor );
+ #endif
+ 
++#ifdef XIScrollClass
++    xinput2_smooth_scroll = pointer_config.smooth_scrolling != POINTER_SCROLL_DISABLED &&
++                            (major > 2 || minor >= 1);
++#endif
++
+     mask.mask     = mask_bits;
+     mask.mask_len = sizeof(mask_bits);
+     mask.deviceid = XIAllMasterDevices;
+@@ -389,6 +576,25 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+     XISetMask( mask_bits, XI_DeviceChanged );
+     pXISelectEvents( data->display, DefaultRootWindow( data->display ), &mask, 1 );
+ 
++#ifdef XIScrollClass
++    {
++        unsigned char hier_bits[XIMaskLen(XI_LASTEVENT)];
++        XIEventMask hier_mask;
++
++        /* device IDs are reused after removal; the hierarchy events keep the
++         * scroll source cache from describing a different device. The
++         * protocol only allows this mask for XIAllDevices, and per-device
++         * selections are independent, so the root enable/disable dance for
++         * the master-device mask never touches this one. */
++        hier_mask.mask     = hier_bits;
++        hier_mask.mask_len = sizeof(hier_bits);
++        hier_mask.deviceid = XIAllDevices;
++        memset( hier_bits, 0, sizeof(hier_bits) );
++        XISetMask( hier_bits, XI_HierarchyChanged );
++        pXISelectEvents( data->display, DefaultRootWindow( data->display ), &hier_mask, 1 );
++    }
++#endif
++
+     if (!pXIGetClientPointer( data->display, None, &data->xinput2_pointer ))
+         WARN( "Failed to get xinput2 master pointer device\n" );
+     else
+@@ -398,6 +604,10 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+         pXIFreeDeviceInfo( pointer_info );
+     }
+ 
++#ifdef XIScrollClass
++    if (xinput2_smooth_scroll) prescan_scroll_devices( data->display );
++#endif
++
+     TRACE( "XInput2 %d.%d available\n", major, minor );
+ }
+ 
+@@ -415,6 +625,10 @@ void x11drv_xinput2_init( struct x11drv_thread_data *data )
+ {
+ }
+ 
++void pointer_scroll_invalidate_baselines(void)
++{
++}
++
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+ 
+ /***********************************************************************
+@@ -482,6 +696,9 @@ static BOOL grab_clipping_window( const RECT *clip )
+     if (!clipping_cursor) return FALSE;
+     clip_rect = *clip;
+     data->clipping_cursor = TRUE;
++    /* the grab redirects pointer events; whatever the valuators report next
++     * is not continuous with what was observed before it */
++    pointer_scroll_invalidate_baselines();
+     return TRUE;
+ #else
+     WARN( "XInput2 was not available at compile time\n" );
+@@ -506,6 +723,7 @@ void ungrab_clipping_window(void)
+     if (clipping_cursor) XUngrabPointer( data->display, CurrentTime );
+     clipping_cursor = FALSE;
+     data->clipping_cursor = FALSE;
++    pointer_scroll_invalidate_baselines();
+ }
+ 
+ /***********************************************************************
+@@ -1865,6 +2083,11 @@ BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
+ 
+     x11drv_thread_data()->keymapnotify_hwnd = hwnd;
+ 
++    /* entering one of our windows again: whatever the pointer's scroll
++     * valuators did elsewhere in the meantime was not observed here, so the
++     * cached baselines no longer mean anything */
++    pointer_scroll_invalidate_baselines();
++
+     if (hwnd == NtUserGetAncestor( get_capture_window(), GA_ROOT )) return FALSE;
+ 
+     if (is_old_motion_event( event->serial ))
+@@ -1890,6 +2113,11 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+ 
+     if (event->deviceid != data->xinput2_pointer) return FALSE;
+     update_relative_valuators( event->classes, event->num_classes );
++#ifdef XIScrollClass
++    /* the event carries the complete replacement class list; rebuild the
++     * source's axis metadata and restart its baselines */
++    if (xinput2_smooth_scroll) update_scroll_valuators( event->classes, event->num_classes, event->sourceid );
++#endif
+     /* the device set changed under any gesture in progress */
+     pinch_gestures_reset();
+     return TRUE;
+@@ -1978,6 +2206,277 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+     return TRUE;
+ }
+ 
++#ifdef XIScrollClass
++
++/***********************************************************************
++ *           smooth_scroll_delta
++ *
++ * Convert a cumulative scroll valuator report into wheel units. The
++ * baseline advances by exactly what was reported, so the sub-unit rest
++ * carries into the next report. A report beyond the per-report cap
++ * advances the baseline all the way and discards the excess: no debt
++ * survives to burst into a later report. A jump beyond any plausible
++ * single report is a discontinuity the invalidation hooks missed (the
++ * server may also legally reset a cumulative valuator), and reseeds
++ * instead of scrolling.
++ */
++static int smooth_scroll_delta( struct x11drv_scroll_axis *axis, double value, BOOL emulated )
++{
++    static const int max_delta = 16 * WHEEL_DELTA;
++    double units;
++    int delta;
++
++    if (!axis->value_valid || emulated)
++    {
++        axis->value = value;
++        axis->value_valid = TRUE;
++        return 0;
++    }
++
++    units = WHEEL_DELTA * (value - axis->value) / axis->increment;
++
++    if (fabs( units ) > 2.0 * max_delta)
++    {
++        axis->value = value;
++        return 0;
++    }
++
++    if ((delta = round( units )) > max_delta || delta < -max_delta)
++    {
++        axis->value = value;
++        return delta > 0 ? max_delta : -max_delta;
++    }
++
++    if (pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED)
++        delta = (delta / WHEEL_DELTA) * WHEEL_DELTA;
++    axis->value += (double)delta * axis->increment / WHEEL_DELTA;
++    return delta;
++}
++
++static unsigned int xinput2_core_state( const XIDeviceEvent *event )
++{
++    unsigned int state = event->mods.effective;
++    int button;
++
++    /* XIButtonState uses button numbers as bit indices.  Core X state only
++     * has masks for the first five buttons, which is all the existing core
++     * handlers inspect. */
++    for (button = 1; button <= 5; button++)
++        if (button / 8 < event->buttons.mask_len && XIMaskIsSet( event->buttons.mask, button ))
++            state |= Button1Mask << (button - 1);
++    return state;
++}
++
++/***********************************************************************
++ *           forward_xinput2_core_event
++ *
++ * Selecting a master-device XI event prevents the X server from delivering
++ * its core equivalent.  Feed non-scroll button events and motion through
++ * Wine's existing core handlers so smooth scrolling does not replace normal
++ * pointer input.
++ */
++static BOOL forward_xinput2_core_event( HWND hwnd, XIDeviceEvent *event )
++{
++    XEvent core = {0};
++
++    if (event->evtype == XI_ButtonPress || event->evtype == XI_ButtonRelease)
++    {
++        core.xbutton.type = event->evtype == XI_ButtonPress ? ButtonPress : ButtonRelease;
++        core.xbutton.serial = event->serial;
++        core.xbutton.send_event = event->send_event;
++        core.xbutton.display = event->display;
++        core.xbutton.window = event->event;
++        core.xbutton.root = event->root;
++        core.xbutton.subwindow = event->child;
++        core.xbutton.time = event->time;
++        core.xbutton.x = event->event_x;
++        core.xbutton.y = event->event_y;
++        core.xbutton.x_root = event->root_x;
++        core.xbutton.y_root = event->root_y;
++        core.xbutton.state = xinput2_core_state( event );
++        core.xbutton.button = event->detail;
++        core.xbutton.same_screen = True;
++        if (event->evtype == XI_ButtonPress) return X11DRV_ButtonPress( hwnd, &core );
++        return X11DRV_ButtonRelease( hwnd, &core );
++    }
++
++    core.xmotion.type = MotionNotify;
++    core.xmotion.serial = event->serial;
++    core.xmotion.send_event = event->send_event;
++    core.xmotion.display = event->display;
++    core.xmotion.window = event->event;
++    core.xmotion.root = event->root;
++    core.xmotion.subwindow = event->child;
++    core.xmotion.time = event->time;
++    core.xmotion.x = event->event_x;
++    core.xmotion.y = event->event_y;
++    core.xmotion.x_root = event->root_x;
++    core.xmotion.y_root = event->root_y;
++    core.xmotion.state = xinput2_core_state( event );
++    core.xmotion.is_hint = NotifyNormal;
++    core.xmotion.same_screen = True;
++    return X11DRV_MotionNotify( hwnd, &core );
++}
++
++/* latest value of each scroll axis in one event, and whether it carries motion */
++static void scan_scroll_valuators( XIDeviceEvent *event, struct x11drv_scroll_source *src,
++                                   double *value_x, double *value_y, BOOL *have_x, BOOL *have_y,
++                                   BOOL *saw_motion )
++{
++    const double *values = event->valuators.values;
++    int i;
++
++    for (i = 0; i < event->valuators.mask_len * 8; i++)
++    {
++        if (!XIMaskIsSet( event->valuators.mask, i )) continue;
++        if (i == src->scroll_x.number) { *value_x = *values; *have_x = TRUE; }
++        else if (i == src->scroll_y.number) { *value_y = *values; *have_y = TRUE; }
++        else if (i < 2) *saw_motion = TRUE;  /* valuators 0 and 1 are the pointer */
++        values++;
++    }
++}
++
++/***********************************************************************
++ *           X11DRV_SmoothScrollEvent
++ *
++ * XInput2 reports touchpad and high-resolution wheel scrolling as cumulative
++ * valuator positions. Turn the change into fractional Win32 wheel units and
++ * ignore the legacy button events the X server emulates from the same input.
++ *
++ * The wheel input carries no position: the server stamps each message at
++ * the current cursor, which is where X delivered the event. Scrolling is
++ * delivered whether or not a button is held; WM_MOUSEWHEEL defines
++ * MK_LBUTTON and friends as ordinary message states, and dropping input
++ * because of them would lose high-resolution wheel movement during drags.
++ */
++static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
++{
++    XIDeviceEvent *event = xev->data;
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    struct x11drv_scroll_source *src;
++    struct x11drv_win_data *win_data;
++    UINT time = EVENT_x11_time_to_win32_time( event->time );
++    BOOL emulated = event->flags & XIPointerEmulated;
++    double value_x = 0, value_y = 0;
++    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE;
++    int delta_x = 0, delta_y = 0;
++    HWND hwnd;
++
++    if (!xinput2_smooth_scroll) return FALSE;
++    if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
++
++    if (event->evtype == XI_ButtonPress || event->evtype == XI_ButtonRelease)
++    {
++        int button = event->detail - 1;
++
++        if (button < 3 || button > 6) return forward_xinput2_core_event( hwnd, event );
++        if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
++
++        /* a native XI wheel button: a device without scroll axes reporting a
++         * whole notch per press */
++        if ((win_data = get_win_data( hwnd )))
++        {
++            /* user-time feeds focus-stealing arbitration only; pushing the
++             * property for every report of a scroll stream wakes the X
++             * server hundreds of times a second for nothing */
++            if ((Time)(event->time - win_data->user_time) >= 100)
++                window_set_user_time( win_data, event->time, FALSE );
++            release_win_data( win_data );
++        }
++        send_wheel_only_input( hwnd, button_down_flags[button], (int)button_down_data[button], time );
++        return TRUE;
++    }
++
++    if (!(src = find_scroll_source( data, event->sourceid, FALSE )))
++    {
++        /* a device that appeared after the init-time pre-scan is queried
++         * once, when first seen; its axes and baselines stay cached */
++        query_scroll_valuators( event->display, event->sourceid );
++        if (!(src = find_scroll_source( data, event->sourceid, FALSE )))
++            return forward_xinput2_core_event( hwnd, event );
++    }
++    src->time = event->time;
++
++    scan_scroll_valuators( event, src, &value_x, &value_y, &have_x, &have_y, &saw_motion );
++    if (!have_x && !have_y) return forward_xinput2_core_event( hwnd, event );
++
++    if (emulated)
++    {
++        /* the emulated report only refreshes the baseline; the same movement
++         * arrives as core wheel buttons */
++        if (have_x) smooth_scroll_delta( &src->scroll_x, value_x, TRUE );
++        if (have_y) smooth_scroll_delta( &src->scroll_y, value_y, TRUE );
++        return TRUE;
++    }
++
++    if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE );
++    if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE );
++
++    TRACE( "hwnd %p/%lx smooth scroll delta %d,%d\n", hwnd, event->event, delta_x, delta_y );
++
++    if (delta_x || delta_y)
++    {
++        if ((win_data = get_win_data( hwnd )))
++        {
++            /* throttled: the property write wakes the X server and the
++             * window manager, and a scroll stream reports ~250 times a
++             * second. once per 100 ms keeps user activity current */
++            if ((Time)(event->time - win_data->user_time) >= 100)
++                window_set_user_time( win_data, event->time, FALSE );
++            release_win_data( win_data );
++        }
++        if (delta_y) send_wheel_only_input( hwnd, MOUSEEVENTF_WHEEL, -delta_y, time );
++        if (delta_x) send_wheel_only_input( hwnd, MOUSEEVENTF_HWHEEL, delta_x, time );
++    }
++
++    /* a report can carry pointer motion next to the scroll axes */
++    if (saw_motion) forward_xinput2_core_event( hwnd, event );
++    return TRUE;
++}
++
++/***********************************************************************
++ *           X11DRV_HierarchyChanged
++ *
++ * XInput2 reuses device IDs after removal. Dropping the cache entry of a
++ * removed device keeps a stale entry from describing whatever device is
++ * assigned the ID next.
++ */
++static BOOL X11DRV_HierarchyChanged( XGenericEventCookie *xev )
++{
++    XIHierarchyEvent *event = xev->data;
++    struct x11drv_thread_data *data = x11drv_thread_data();
++    struct x11drv_scroll_source *src;
++    int i;
++
++    if (!(event->flags & (XISlaveRemoved | XIDeviceDisabled))) return TRUE;
++    for (i = 0; i < event->num_info; i++)
++    {
++        if (!(event->info[i].flags & (XISlaveRemoved | XIDeviceDisabled))) continue;
++        if ((src = find_scroll_source( data, event->info[i].deviceid, FALSE )))
++        {
++            TRACE( "scroll source %d removed\n", src->sourceid );
++            src->sourceid = 0;
++        }
++#ifdef XI_GesturePinchBegin
++        {
++            struct x11drv_pinch_gesture *gesture;
++            int j;
++
++            for (j = 0; j < POINTER_PINCH_SLOTS; j++)
++            {
++                gesture = &data->pinch_gestures[j];
++                if (gesture->sourceid != event->info[i].deviceid) continue;
++                pinch_release_control( gesture, data->display );
++                gesture->sourceid = 0;
++            }
++        }
++#endif
++    }
++    return TRUE;
++}
++
++#endif /* XIScrollClass */
++
+ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+ {
+     RECT virtual = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
+@@ -2325,6 +2824,18 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+         ret = X11DRV_RawMotion( event );
+         break;
+ 
++#ifdef XIScrollClass
++    case XI_Motion:
++    case XI_ButtonPress:
++    case XI_ButtonRelease:
++        ret = X11DRV_SmoothScrollEvent( event );
++        break;
++
++    case XI_HierarchyChanged:
++        ret = X11DRV_HierarchyChanged( event );
++        break;
++#endif
++
+     case XI_TouchBegin:
+     case XI_TouchUpdate:
+     case XI_TouchEnd:
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+index 9208df5..987893c 100644
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -3129,11 +3129,13 @@ static void create_whole_window( struct x11drv_win_data *data )
+     data->pending_state.rect = data->current_state.rect;
+     data->desired_state.rect = data->current_state.rect;
+ 
++    /* register the context first: the XInput2 selection reads the window's
++     * Wine handle to follow its event policy */
++    XSaveContext( data->display, data->whole_window, winContext, (char *)data->hwnd );
+     x11drv_xinput2_enable( data->display, data->whole_window );
+     set_initial_wm_hints( data->display, data->whole_window );
+     set_wm_hints( data );
+ 
+-    XSaveContext( data->display, data->whole_window, winContext, (char *)data->hwnd );
+     NtUserSetProp( data->hwnd, whole_window_prop, (HANDLE)data->whole_window );
+ 
+     /* set the window text */
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+index dab7296..ca0e5f1 100644
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -488,6 +488,26 @@ struct x11drv_pinch_gesture
+ 
+ extern void pinch_gestures_reset(void);
+ 
++struct x11drv_scroll_axis
++{
++    int    number;      /* valuator number, -1 when the device has none */
++    double increment;   /* valuator units one wheel notch stands for */
++    double value;       /* cumulative valuator position already reported */
++    BOOL   value_valid; /* value seeds from the next report when clear */
++};
++
++#define SCROLL_SOURCE_CACHE_SIZE 8
++
++struct x11drv_scroll_source
++{
++    int    sourceid;    /* slave device the axes belong to, 0 is a free slot */
++    Time   time;        /* last event time, oldest slot is evicted first */
++    struct x11drv_scroll_axis scroll_x;
++    struct x11drv_scroll_axis scroll_y;
++};
++
++extern void pointer_scroll_invalidate_baselines(void);
++
+ struct x11drv_thread_data
+ {
+     Display *display;
+@@ -511,6 +531,7 @@ struct x11drv_thread_data
+     int      xinput2_pointer;      /* XInput2 master pointer device id */
+     int      root_window_users;    /* counter for root window XISelectEvents */
+     struct x11drv_pinch_gesture pinch_gestures[POINTER_PINCH_SLOTS];
++    struct x11drv_scroll_source scroll_sources[SCROLL_SOURCE_CACHE_SIZE];
+ #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
+ 
+     struct display_state desired_state;       /* display state tracking the desired / win32 state */
+-- 
+2.55.0

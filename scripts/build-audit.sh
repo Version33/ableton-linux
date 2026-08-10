@@ -74,9 +74,6 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
-    [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
-    [0073]="reserved for PR 152"
-    [0074]="reserved for PR 152"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -148,11 +145,15 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
+0072|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDrag
+0073|ascii|lib/wine/x86_64-unix/winex11.so|pinch begin on
+0074|ascii|lib/wine/x86_64-unix/winex11.so|smooth scroll delta
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
+0090|ascii|lib/wine/x86_64-unix/winex11.so|fling start velocity
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
