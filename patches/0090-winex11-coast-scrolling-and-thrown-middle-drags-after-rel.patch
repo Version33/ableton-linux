@@ -29,9 +29,9 @@ scroll axes did not move since the previous report, which is how
 XWayland forwards the compositor's axis stop. The tracker compares
 against the last observed value, not the reporting baseline. The
 baseline lags by the sub-notch remainder, so a true stop never
-compares equal against it; an early version that compared baselines
-made every fling wait out the full deadline as a visible hitch
-(measured in Live 2026-08-10). On the middle drag the positive end is
+compares equal against it; comparing against the baseline makes
+every fling wait out the full deadline as a visible hitch (measured
+in Live 2026-08-10). On the middle drag the positive end is
 the button release itself. An aborted drag cancels instead, and so
 does a press that stayed a click.
 
@@ -133,7 +133,7 @@ index 668a25b..123927a 100644
      {
          window_set_user_time( data, event->time, FALSE );
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index e22ad83..363f1cc 100644
+index e22ad83..1fdfc7f 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,8 +30,10 @@
@@ -200,7 +200,7 @@ index e22ad83..363f1cc 100644
  
 +#ifdef XIScrollClass
 +/* the middle drag feeds the scroll inertia tracker so a fast drag can be
-+ * thrown: released while moving, the pan coasts on (default off, with the
++ * thrown: released while moving, the pan coasts on (on by default, with the
 + * rest of TouchpadInertia). the drag has no XInput2 source, so it tracks
 + * under a reserved id */
 +#define INERTIA_SOURCE_MIDDLE_DRAG (-1)
@@ -329,7 +329,7 @@ index e22ad83..363f1cc 100644
      }
  }
  
-+/* scroll inertia: coast after a fast touchpad sequence ends (default off)
++/* scroll inertia: coast after a fast touchpad sequence ends (on by default)
 + *
 + * All state lives in the owning GUI thread's data and every wheel event is
 + * emitted from that thread. The only foreign thread is a nudger whose sole

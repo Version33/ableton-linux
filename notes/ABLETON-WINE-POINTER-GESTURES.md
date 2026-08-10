@@ -1,6 +1,6 @@
 # Pointer gestures: middle drag, pinch zoom, precision scrolling, inertia
 
-Patches 0072, 0073 and 0074, plus the separate default-off patch 0090, add
+Patches 0072, 0073 and 0074, plus the separate inertia patch 0090, add
 middle-button drag navigation (issue 50), touchpad pinch zoom (issue 64),
 precision scrolling from XInput2 scroll valuators, and optional scroll
 inertia. They rebuild PR 157 after its review: the same verified input
@@ -74,14 +74,11 @@ The driver tracks gestures per physical device (sourceid, not master
 deviceid). Begin seeds the protocol-defined scale 1.0. Update-without-
 begin adopts the event's scale. The driver ignores an unmatched end, and
 undoes a cancelled gesture (XIGesturePinchEventCancelled) with one
-compensating wheel event, as the XI2 protocol asks. Focus loss and device
-changes free the slots; no other cleanup exists. The path keeps no cursor
+compensating wheel event, as the XI2 protocol asks. Focus loss, device
+changes and thread exit free the slots; no other cleanup exists. The path keeps no cursor
 anchor and never calls XQueryPointer: wheel-only output cannot move the
 cursor.
 
-A runtime check settled the wparam-or-GetKeyState question on 2026-08-10:
-Live reads the key state, so the set_key_state half makes Live zoom, and
-the wparam override stays correct for applications that read the message.
 tools/pinchgen.c creates a virtual uinput touchpad that drives this path
 without hardware.
 
@@ -108,17 +105,16 @@ What changed against PR 157:
 - The decoder drops no input while a button is down. WM_MOUSEWHEEL
   defines MK_LBUTTON and friends as ordinary message states, and the old
   gate lost high-resolution wheel input during drags. The clickpad fader
-  report reproduced on 2026-08-10, so the agreed fallback is in: while a
-  button is down the decoder delivers whole notches and carries the
-  remainder. It never drops. A release snaps the baselines to the last
+  report reproduced on 2026-08-10: while a button is down the decoder
+  delivers whole notches and carries the remainder. It never drops. A release snaps the baselines to the last
   observed report, so the held-back remainder never replays elsewhere,
-  and a held button cancels inertia tracking outright (a second review
-  caught the quantized stream inflating fling velocity through the
-  lagging baseline; deltas now measure against the last raw report).
+  and a held button cancels inertia tracking outright (the quantized
+  stream inflates fling velocity when measured against the lagging
+  baseline; tracker deltas measure against the last raw report).
 - The pointer axes come from the device's valuator class labels, with
   0/1 as the unlabeled fallback; the nudger keeps one schedule slot per
   window under its mutex, so multi-thread trackers cannot clobber each
-  other. Still open from that review: the pinch Ctrl write replaces the
+  other. Still open: the pinch Ctrl write replaces the
   full key-state array (a concurrent physical modifier transition can be
   overwritten), and overlapping pinches share one synthetic Ctrl without
   ownership. Both are edge cases on a one-user setup; a bit-targeted
@@ -132,9 +128,8 @@ What changed against PR 157:
 ## Patch 0090: scroll inertia and thrown drags
 
 When a fast touchpad sequence or middle-button drag ends, its velocity
-can decay into further wheel input. Inertia ships on by default
-(Theo's call, 2026-08-10, after the runtime session);
-TouchpadInertia=disabled turns it off. XInput2 cannot classify scroll
+can decay into further wheel input. Inertia ships on by default (decided
+2026-08-10); TouchpadInertia=disabled turns it off. XInput2 cannot classify scroll
 sources: ScrollClass has no finger/wheel field and XWayland discards
 the Wayland axis_source, so the default also makes free-spin and
 high-resolution wheels coast. TouchpadInertia=auto resolves to
@@ -167,8 +162,9 @@ Mechanics, all on the owning GUI thread:
   while moving throws. Past 3 s of coasting the tracker forces the decay
   steep, so the fling exhales within ~300 ms instead of stopping dead
   (reachable only with slow custom InertiaRate values).
-- The nudger waits on CLOCK_MONOTONIC (immune to wall-clock steps) and
-  arms once per sequence, not per input sample. The wheel paths throttle
+- The nudger waits on CLOCK_MONOTONIC (immune to wall-clock steps); a
+  per-sample re-arm is a plain mutexed write that only wakes it when a
+  deadline moves earlier. The wheel paths throttle
   the _NET_WM_USER_TIME property to once per 100 ms. The server now
   coalesces WM_MOUSEHWHEEL like WM_MOUSEWHEEL, never across a modifier
   change, so a stalled UI drains one accumulated message per axis.
@@ -253,14 +249,13 @@ wineserver binaries on the 2026.08.04.1 preview runtime:
 - Timestamped traces showed the driver delivering from the first
   attempt; the first-load delay was Live's own startup consuming input
   late. Resolved as app behavior, not a driver defect.
-- A four-lens review with adversarial verification then found four seam
-  bugs the interactive session could not see, all fixed the same day: a
-  pinch over a running fling zoomed with leftover momentum; a paused
-  middle drag could self-fling with an unkillable coast; fingers resting
-  on the pad could launch phantom deadline flings (fixed with a 70 ms
-  positive-end gate; the gate suppresses some launches the earlier
-  session produced, so it needs a feel re-pass); and the 3 s cap stopped
-  slow coasts dead (now an exhale).
+- Four seam bugs, found and fixed 2026-08-10, did not show in the
+  interactive run: a pinch over a running fling zoomed with leftover
+  momentum; a paused middle drag could self-fling with an unkillable
+  coast; fingers resting on the pad could launch phantom deadline flings
+  (fixed with the 70 ms positive-end gate, which may also suppress
+  genuine flings and needs a feel re-pass); and the 3 s cap stopped slow
+  coasts dead (now an exhale).
 
 That is one environment; every other row of the gate below is unrun.
 
@@ -270,7 +265,7 @@ in a release. Empty cells are unrun:
 | Check | Xorg | XWayland GNOME | XWayland KDE | Wayland other |
 | --- | --- | --- | --- | --- |
 | Touchpad two-finger scroll in Live (all scroll regions) | | | | |
-| Fader/knob drag with clickpad thumb-hold (regression, K2) | | | | |
+| Fader/knob drag with clickpad thumb-hold (regression) | | | | |
 | High-resolution wheel, free-spin wheel | | | | |
 | Coarse wheel notches | | | | |
 | Wheel during drag (MK state, no loss) | | | | |

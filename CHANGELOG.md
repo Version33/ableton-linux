@@ -5,12 +5,12 @@
 - Touchpad and high-resolution wheel scrolling reaches Live in fine
   steps instead of whole notches. The `SmoothScrolling` setting restores
   whole steps (`notched`) or the previous behavior (`disabled`). Live
-  now receives wheel input while you hold a mouse button, in whole
-  steps, so scrolling no longer nudges the control you are dragging.
+  receives wheel input in whole steps while you hold a mouse button,
+  so scrolling cannot nudge the control you are dragging.
 - A touchpad pinch zooms the way Ctrl+wheel does, on X servers with
   XInput2 2.4. Wine creates no Ctrl key event anywhere: the modifier
   rides the wheel message and the key state for the gesture's duration.
-  A pinch can no longer press keys, trigger shortcuts, or leave a stuck
+  A pinch cannot press keys, trigger shortcuts, or leave a stuck
   modifier. The `PinchZoom` setting turns it off.
 - Holding the middle mouse button and moving the pointer scrolls and
   pans once you enable the `MiddleDrag` setting. The default leaves the
@@ -19,8 +19,6 @@
   middle-button drag. Inertia is on by default; `TouchpadInertia`
   (`disabled`) turns it off. High-resolution and free-spinning wheels
   coast too, because the input stack cannot tell them from a touchpad.
-  A verification run covered one GNOME Wayland setup; the full release
-  gate has not run.
 
 - These four items rebuild the PR 157 pointer work after review as
   patches 0072 to 0074 and 0090. A verification run on 2026-08-10
