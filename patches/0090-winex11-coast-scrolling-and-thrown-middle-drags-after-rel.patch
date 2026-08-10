@@ -133,7 +133,7 @@ index 668a25b..123927a 100644
      {
          window_set_user_time( data, event->time, FALSE );
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index e22ad83..1fdfc7f 100644
+index ebb2cd1..25a8574 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,8 +30,10 @@

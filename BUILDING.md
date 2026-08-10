@@ -153,6 +153,7 @@ compatibility defaults.
   for one launch (registry value `PinchZoom`).
 - `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` overrides
   middle-button drag navigation for one launch (registry value `MiddleDrag`).
+  Navigation is on by default.
 - `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` overrides scroll inertia
   for one launch (registry value `TouchpadInertia`). Inertia defaults to on;
   `auto` currently resolves to disabled.

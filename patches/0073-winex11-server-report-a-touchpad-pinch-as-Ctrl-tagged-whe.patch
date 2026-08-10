@@ -105,7 +105,7 @@ index a524761..ee5a274 100644
  
      x11drv_thread_data()->last_focus = hwnd;
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 1ca99cc..083cc07 100644
+index 0c3f273..d410454 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -29,6 +29,7 @@
@@ -512,7 +512,7 @@ index 340aca7..dab7296 100644
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 2a5613c..710605a 100644
+index 5356e18..b966797 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
 @@ -831,6 +831,9 @@ void X11DRV_ThreadDetach(void)

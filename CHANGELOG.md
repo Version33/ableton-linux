@@ -13,8 +13,9 @@
   A pinch cannot press keys, trigger shortcuts, or leave a stuck
   modifier. The `PinchZoom` setting turns it off.
 - Holding the middle mouse button and moving the pointer scrolls and
-  pans once you enable the `MiddleDrag` setting. The default leaves the
-  middle button unchanged.
+  pans, on by default. A plain middle click still clicks: only a press
+  that moves becomes a drag. The `MiddleDrag` setting (`disabled`)
+  restores the old behavior.
 - Scrolling coasts after a fast release, and you can throw a fast
   middle-button drag. Inertia is on by default; `TouchpadInertia`
   (`disabled`) turns it off. High-resolution and free-spinning wheels

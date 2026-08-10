@@ -347,7 +347,7 @@ env WINE_X11_MIDDLE_DRAG=disabled ableton-live
 env WINE_X11_TOUCHPAD_INERTIA=disabled ableton-live
 ```
 
-Releases after 2026.08.08.1 scroll Live in fine steps instead of whole notches when you use a touchpad or a high-resolution mouse wheel. They also zoom on a touchpad pinch. Middle-button panning stays off unless you turned it on.
+Releases after 2026.08.08.1 scroll Live in fine steps instead of whole notches when you use a touchpad or a high-resolution mouse wheel. They also zoom on a touchpad pinch and pan when you drag with the middle mouse button held.
 
 If scrolling only feels too fine, keep whole steps:
 

@@ -116,7 +116,7 @@ index ee5a274..106b110 100644
      if (xim_in_compose_mode()) return;
  
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 083cc07..e22ad83 100644
+index d410454..ebb2cd1 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -281,6 +281,215 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes

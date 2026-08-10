@@ -14,7 +14,7 @@ at process attach into one configuration block: SmoothScrolling
 (disabled/precise/notched, default precise), TouchpadInertia
 (disabled/auto/enabled, default enabled), PinchZoom
 (disabled/legacy-wheel, default legacy-wheel), MiddleDrag
-(disabled/navigate/navigate-notched, default disabled), InertiaCurve
+(disabled/navigate/navigate-notched, default navigate), InertiaCurve
 (exponential/linear, default exponential) and InertiaRate (a decimal in
 [0.5, 16.0], the exponential decay rate coefficient in 1/s, default
 4.0). The parser matches each value against an allow-list, so a setting
@@ -76,7 +76,7 @@ so concurrent drags on windows of different threads cannot share state.
  3 files changed, 429 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2c394b6..1ca99cc 100644
+index 2c394b6..0c3f273 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,6 +30,7 @@
@@ -113,9 +113,9 @@ index 2c394b6..1ca99cc 100644
 + *
 + * MiddleDrag=navigate turns a middle-button drag into navigation input:
 + * vertical movement becomes wheel notches, horizontal movement becomes
-+ * horizontal wheel notches, and no modifier is added. The default is
-+ * disabled, where the middle button reports WM_MBUTTONDOWN and
-+ * WM_MBUTTONUP exactly as before.
++ * horizontal wheel notches, and no modifier is added. This is the
++ * default; MiddleDrag=disabled restores plain WM_MBUTTONDOWN and
++ * WM_MBUTTONUP reporting.
 + */
 +static BOOL middle_drag_enabled(void)
 +{
@@ -425,7 +425,7 @@ index 34b53ce..340aca7 100644
      XIValuatorClassInfo x_valuator;
      XIValuatorClassInfo y_valuator;
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 500a013..2a5613c 100644
+index 500a013..5356e18 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
 @@ -26,6 +26,7 @@
@@ -447,7 +447,7 @@ index 500a013..2a5613c 100644
 +    .smooth_scrolling = POINTER_SCROLL_PRECISE,
 +    .touchpad_inertia = POINTER_INERTIA_ENABLED,
 +    .pinch_zoom       = POINTER_PINCH_LEGACY_WHEEL,
-+    .middle_drag      = POINTER_MIDDLE_DRAG_DISABLED,
++    .middle_drag      = POINTER_MIDDLE_DRAG_NAVIGATE,
 +    .inertia_curve    = POINTER_INERTIA_CURVE_EXPONENTIAL,
 +    .inertia_rate     = 4.0,
 +};

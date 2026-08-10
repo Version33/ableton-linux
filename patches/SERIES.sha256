@@ -64,9 +64,9 @@ a07f7ecb2c3a568d8eeae9a42df558cea4d8e279e5bdeb0af67a6649086973f7  0062-winex11-k
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 466fc384e186ef54fb6dce6a6eb8f8d400f5ab039ccfc91d57c982ae564eb74d  0070-win32u-break-alt-f10-menu-arming-on-consumed-keys.patch
 f45f017f21733461ddcc11ab443526ad999d43d3a220e191ce05e973a790148c  0071-wined3d-count-and-report-sustained-present-size-fall.patch
-ed78ee8ecc3325ada1be95eb51a52a02356751cc0c246916cbe9512b5bc74b44  0072-winex11-registry-pointer-settings-and-middle-button-dra.patch
-5571b8d8facdb164a2b40e34d0f17bb5b14ad325d86d7eb6e9f67ea8e97c74ac  0073-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch
-f489653de841129fb48136741217ed87b91e18b14dcdd72d55b25c503fc46fbb  0074-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch
+ee7eb67d13a36406805ee3c9b41c0db50875eba61637d634c0d2f7b5179f5c92  0072-winex11-registry-pointer-settings-and-middle-button-dra.patch
+5f633c0f02283b9c2dffebeaa3e43191686a676f21f7e5e6122e1e49a93c3e00  0073-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch
+758b4371a5e29a88caa8358f1f82cc28c9d9afc6f8243f54f3f89449e8106bca  0074-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch
 8520b205e8b38440ed942c1b88ee4f48c6dd6e38f93c758104d85b4dcca931ec  0075-kernel32-add-UnregisterApplicationRecoveryCallback.patch
 da2bf5c70a4fe1276637b383bb849d5c02df0829bb7a00aa9a5be3a7b16b6271  0076-userenv-implement-DeriveAppContainerSidFromAppContai.patch
 4358788143a886085e54911e0cceccf59f5afb6b58a83029eff0dcc22cacd390  0077-winex11-advertise-the-minimize-and-maximize-motif-fu.patch
@@ -82,6 +82,6 @@ ca9c10db2c1d77d48c206aaca598f3583758eccbdbdbb3096e98b7417a7b4b62  0079-dxgi-skip
 ee36bbf26e5ea22b8d6ecd5344cb72fc7883ac59ed733661dfb4e73f773fc18f  0087-win32u-resolve-font-smoothing-by-source-precedence.patch
 efec6729f1663efe78c7efa941b826b2a28d219bf6faa974294a3bfa854b84f5  0088-win32u-allow-a-semantic-desktop-UI-stock-font.patch
 10d34c085b2a1b554457524978e8a380d3c15aaafd290657e5ef8ca9874221c2  0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch
-2b5cd6858c7281aa74618e7aa468c3fc75a88a30b64f1d5d1e5901a63c69a7fa  0090-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch
+99dda68a4533cd588e9470c50e19a884edbf4dcf7d918bac46607064884774c5  0090-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

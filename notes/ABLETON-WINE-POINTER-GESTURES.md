@@ -201,7 +201,7 @@ with per-application overrides in
 | `SmoothScrolling` | `disabled`, `precise`, `notched` | `precise` |
 | `TouchpadInertia` | `disabled`, `auto`, `enabled` | `enabled` |
 | `PinchZoom` | `disabled`, `legacy-wheel` | `legacy-wheel` |
-| `MiddleDrag` | `disabled`, `navigate`, `navigate-notched` | `disabled` |
+| `MiddleDrag` | `disabled`, `navigate`, `navigate-notched` | `navigate` |
 | `InertiaCurve` | `exponential`, `linear` | `exponential` |
 | `InertiaRate` | decimal in [0.5, 16.0] | `4.0` |
 
