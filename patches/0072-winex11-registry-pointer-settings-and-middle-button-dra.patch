@@ -12,7 +12,7 @@ per application inside get_config_key(), and a WINE_X11_* environment
 variable outranks both for one launch. The driver parses six values once
 at process attach into one configuration block: SmoothScrolling
 (disabled/precise/notched, default precise), TouchpadInertia
-(disabled/auto/enabled, default disabled), PinchZoom
+(disabled/auto/enabled, default enabled), PinchZoom
 (disabled/legacy-wheel, default legacy-wheel), MiddleDrag
 (disabled/navigate/navigate-notched, default disabled), InertiaCurve
 (exponential/linear, default exponential) and InertiaRate (a decimal in
@@ -425,7 +425,7 @@ index 34b53ce..340aca7 100644
      XIValuatorClassInfo x_valuator;
      XIValuatorClassInfo y_valuator;
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 500a013..f0223ad 100644
+index 500a013..2a5613c 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
 @@ -26,6 +26,7 @@
@@ -445,7 +445,7 @@ index 500a013..f0223ad 100644
 +struct x11drv_pointer_config pointer_config =
 +{
 +    .smooth_scrolling = POINTER_SCROLL_PRECISE,
-+    .touchpad_inertia = POINTER_INERTIA_DISABLED,
++    .touchpad_inertia = POINTER_INERTIA_ENABLED,
 +    .pinch_zoom       = POINTER_PINCH_LEGACY_WHEEL,
 +    .middle_drag      = POINTER_MIDDLE_DRAG_DISABLED,
 +    .inertia_curve    = POINTER_INERTIA_CURVE_EXPONENTIAL,

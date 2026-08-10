@@ -404,10 +404,10 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
-- `0090`: coast scrolling and thrown middle drags after release, off by
-  default (`TouchpadInertia`). The patch stays separate from 0074
-  because XInput2 cannot classify scroll sources: generic inertia
-  would also make free-spin and high-resolution wheels coast. `auto`
+- `0090`: coast scrolling and thrown middle drags after release, on by
+  default (`TouchpadInertia`, `disabled` turns it off). The patch stays
+  separate from 0074. XInput2 cannot classify scroll sources, so the
+  default also makes free-spin and high-resolution wheels coast; `auto`
   resolves to disabled on this backend. All state and every emitted
   wheel event live on the owning GUI thread; a nudger thread only
   posts driver-internal tick messages. The driver derives velocity
@@ -415,5 +415,5 @@ Apply them in sequence with the rest of the series.
   fling starts immediately on the finger lift marker or a middle
   release; coasting integrates the decay analytically. Any real input
   cancels. A 2026-08-10 run in Live 12 on GNOME Wayland exercised
-  flings, throws and cancellation. The patch ships disabled until the
-  full gate runs. See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+  flings, throws and cancellation; the full gate has not run. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.

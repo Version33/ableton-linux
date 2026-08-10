@@ -1,19 +1,18 @@
-Subject: winex11: coast scrolling and thrown middle drags after release, default off
+Subject: winex11: coast scrolling and thrown middle drags after release
 
 When a fast two-finger scroll sequence or a middle-button drag ends,
 its velocity can decay into further wheel input, the way macOS keeps
-scrolling after a flick. The feature ships off by default: XInput2
-cannot classify scroll sources (ScrollClass has no finger/wheel field,
-and XWayland discards the Wayland axis_source), so generic inertia
-would also make free-spinning and high-resolution wheels coast.
-TouchpadInertia=auto therefore resolves to disabled on this backend;
-it exists for a future backend that can classify.
-TouchpadInertia=enabled is the explicit opt-in. The scroll path also
+scrolling after a flick. The feature ships on by default;
+TouchpadInertia=disabled turns it off. XInput2 cannot classify scroll
+sources (ScrollClass has no finger/wheel field, and XWayland discards
+the Wayland axis_source), so the default also makes free-spinning and
+high-resolution wheels coast. TouchpadInertia=auto resolves to
+disabled on this backend; it exists for a future backend that can
+classify. The scroll path also
 requires the precise mode: the tracker measures a fling from its
 fractional stream, and whole-notch wheel buttons never feed the
 tracker. The middle drag always has raw pixel deltas, so a drag
-released while moving throws in any scrolling mode, under the same
-opt-in.
+released while moving throws in any scrolling mode.
 
 While a sequence runs, the tracker keeps the raw fractional deltas of
 the trailing 100 ms, with the events' own timestamps. The tracker
@@ -86,8 +85,9 @@ the middle release itself decides between throwing and cancelling.
 
 A verification run in Live 12 on GNOME Wayland (XWayland) on
 2026-08-10 exercised scroll coasting and thrown drags: flings start on
-the lift marker, coast, and cancel on new input. The feature still
-ships disabled until the full release gate runs.
+the lift marker, coast, and cancel on new input. The feature ships on
+by default from that one verified environment; the full release gate
+has not run.
 ---
  dlls/winex11.drv/event.c    |    2 
  dlls/winex11.drv/keyboard.c |    4 

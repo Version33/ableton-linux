@@ -344,6 +344,7 @@ Turn the feature you suspect off for one launch:
 env WINE_X11_SMOOTH_SCROLLING=disabled ableton-live
 env WINE_X11_PINCH_ZOOM=disabled ableton-live
 env WINE_X11_MIDDLE_DRAG=disabled ableton-live
+env WINE_X11_TOUCHPAD_INERTIA=disabled ableton-live
 ```
 
 Releases after 2026.08.08.1 scroll Live in fine steps instead of whole notches when you use a touchpad or a high-resolution mouse wheel. They can also pan the view on a middle-button drag and zoom on a touchpad pinch.

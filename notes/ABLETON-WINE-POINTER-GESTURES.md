@@ -117,18 +117,18 @@ What changed against PR 157:
   XGetWindowAttributes per window.
 - Scroll sources evict by age, not by overwriting a fixed slot.
 
-## Patch 0090: scroll inertia and thrown drags, default off
+## Patch 0090: scroll inertia and thrown drags
 
 When a fast touchpad sequence or middle-button drag ends, its velocity
-can decay into further wheel input. The patch stays separate and off by
-default because XInput2 cannot classify scroll sources: ScrollClass has
-no finger/wheel field and XWayland discards the Wayland axis_source, so
-generic inertia would also make free-spin and high-resolution wheels
-coast. TouchpadInertia=auto therefore resolves to disabled on this
-backend and exists for a future native-Wayland path; enabled is an
-explicit opt-in. The scroll path additionally requires precise mode. The
-middle drag has raw pixel deltas and throws in any mode, under the same
-opt-in.
+can decay into further wheel input. Inertia ships on by default
+(Theo's call, 2026-08-10, after the runtime session);
+TouchpadInertia=disabled turns it off. XInput2 cannot classify scroll
+sources: ScrollClass has no finger/wheel field and XWayland discards
+the Wayland axis_source, so the default also makes free-spin and
+high-resolution wheels coast. TouchpadInertia=auto resolves to
+disabled on this backend and exists for a future native-Wayland path.
+The scroll path additionally requires precise mode. The middle drag
+has raw pixel deltas and throws in any mode.
 
 Mechanics, all on the owning GUI thread:
 
@@ -191,7 +191,7 @@ with per-application overrides in
 | Value | Accepted | Default |
 | --- | --- | --- |
 | `SmoothScrolling` | `disabled`, `precise`, `notched` | `precise` |
-| `TouchpadInertia` | `disabled`, `auto`, `enabled` | `disabled` |
+| `TouchpadInertia` | `disabled`, `auto`, `enabled` | `enabled` |
 | `PinchZoom` | `disabled`, `legacy-wheel` | `legacy-wheel` |
 | `MiddleDrag` | `disabled`, `navigate`, `navigate-notched` | `disabled` |
 | `InertiaCurve` | `exponential`, `linear` | `exponential` |
@@ -269,7 +269,7 @@ in a release. Empty cells are unrun:
 | Middle drag: click, drag, abort, release sync | | | | |
 | Pinch begin/update/end, cancellation, Ctrl+wheel zoom responds | | | | |
 | Live wparam vs GetKeyState check (pinchgen) | | | | |
-| Inertia opt-in: glide starts/coasts/cancels; UI stall past 100 ms | | | | |
+| Inertia: glide starts/coasts/cancels; UI stall past 100 ms | | | | |
 | Alt-drag velocity edit (issue 163 observation only) | | | | |
 | Basic clicking unchanged: five buttons press/release paired | | | | |
 

@@ -15,10 +15,13 @@
 - Holding the middle mouse button and moving the pointer scrolls and
   pans once you enable the `MiddleDrag` setting. The default leaves the
   middle button unchanged.
-- A scroll inertia engine ships disabled (`TouchpadInertia`). Enable it
-  and scrolling coasts after a fast release; you can throw a fast
-  middle-button drag. It ran in Live on one GNOME Wayland setup. Treat
-  enabling it as a test opt-in, not a supported configuration yet.
+- Scrolling coasts after a fast release, and you can throw a fast
+  middle-button drag. Inertia is on by default; `TouchpadInertia`
+  (`disabled`) turns it off. High-resolution and free-spinning wheels
+  coast too, because the input stack cannot tell them from a touchpad.
+  A verification run covered one GNOME Wayland setup; the full release
+  gate has not run.
+
 - These four items rebuild the PR 157 pointer work after review as
   patches 0072 to 0074 and 0090. A verification run on 2026-08-10
   confirmed pinch zoom, precision scrolling, middle-drag panning and
