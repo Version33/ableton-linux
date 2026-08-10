@@ -5,7 +5,8 @@
 - Touchpad and high-resolution wheel scrolling reaches Live in fine
   steps instead of whole notches. The `SmoothScrolling` setting restores
   whole steps (`notched`) or the previous behavior (`disabled`). Live
-  now receives wheel input while you hold a mouse button.
+  now receives wheel input while you hold a mouse button, in whole
+  steps, so scrolling no longer nudges the control you are dragging.
 - A touchpad pinch zooms the way Ctrl+wheel does, on X servers with
   XInput2 2.4. Wine creates no Ctrl key event anywhere: the modifier
   rides the wheel message and the key state for the gesture's duration.

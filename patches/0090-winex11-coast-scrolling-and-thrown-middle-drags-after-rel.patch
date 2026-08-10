@@ -125,7 +125,7 @@ index 668a25b..123927a 100644
      {
          window_set_user_time( data, event->time, FALSE );
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 8e08ac4..6cd68d5 100644
+index 491e36d..7dcfcf6 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,8 +30,10 @@
@@ -317,7 +317,7 @@ index 8e08ac4..6cd68d5 100644
      return TRUE;
  }
  
-@@ -2336,6 +2405,423 @@ static void scan_scroll_valuators( XIDeviceEvent *event, struct x11drv_scroll_so
+@@ -2346,6 +2415,423 @@ static void scan_scroll_valuators( XIDeviceEvent *event, struct x11drv_scroll_so
      }
  }
  
@@ -741,7 +741,7 @@ index 8e08ac4..6cd68d5 100644
  /***********************************************************************
   *           X11DRV_SmoothScrollEvent
   *
-@@ -2357,8 +2843,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2367,8 +2853,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      struct x11drv_win_data *win_data;
      UINT time = EVENT_x11_time_to_win32_time( event->time );
      BOOL emulated = event->flags & XIPointerEmulated;
@@ -749,10 +749,10 @@ index 8e08ac4..6cd68d5 100644
 -    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE;
 +    double value_x = 0, value_y = 0, units_x = 0.0, units_y = 0.0;
 +    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE, stop_marker = FALSE;
+     BOOL quantize;
      int delta_x = 0, delta_y = 0;
      HWND hwnd;
- 
-@@ -2373,7 +2859,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2384,7 +2870,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
          if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
  
          /* a native XI wheel button: a device without scroll axes reporting a
@@ -762,9 +762,9 @@ index 8e08ac4..6cd68d5 100644
          if ((win_data = get_win_data( hwnd )))
          {
              /* user-time feeds focus-stealing arbitration only; pushing the
-@@ -2409,6 +2896,22 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
-         return TRUE;
-     }
+@@ -2429,6 +2916,22 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+     quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED ||
+                xinput2_any_button_down( event );
  
 +    /* the raw fractional units for the inertia tracker, and the finger lift
 +     * marker: a report whose present scroll axes did not move since the
@@ -782,10 +782,10 @@ index 8e08ac4..6cd68d5 100644
 +    if (have_x) src->scroll_x.last_value = value_x;
 +    if (have_y) src->scroll_y.last_value = value_y;
 +
-     if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE );
-     if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE );
+     if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE, quantize );
+     if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE, quantize );
  
-@@ -2429,6 +2932,13 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2449,6 +2952,13 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
          if (delta_x) send_wheel_only_input( hwnd, MOUSEEVENTF_HWHEEL, delta_x, time );
      }
  
@@ -799,7 +799,7 @@ index 8e08ac4..6cd68d5 100644
      /* a report can carry pointer motion next to the scroll axes */
      if (saw_motion) forward_xinput2_core_event( hwnd, event );
      return TRUE;
-@@ -2553,6 +3063,9 @@ static void set_control_key_state( BOOL down )
+@@ -2573,6 +3083,9 @@ static void set_control_key_state( BOOL down )
          wine_server_call( req );
      }
      SERVER_END_REQ;
@@ -809,7 +809,7 @@ index 8e08ac4..6cd68d5 100644
  }
  
  /***********************************************************************
-@@ -2688,6 +3201,9 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+@@ -2708,6 +3221,9 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
      if (event->evtype == XI_GesturePinchBegin)
      {
          if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
@@ -819,7 +819,7 @@ index 8e08ac4..6cd68d5 100644
          gesture = find_pinch_gesture( data, event->sourceid, TRUE );
          gesture->hwnd = hwnd;
          gesture->scale = 1.0;  /* the protocol defines Begin as scale 1.0 */
-@@ -2726,6 +3242,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+@@ -2746,6 +3262,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
          /* the begin went somewhere else: start from the current scale rather
           * than dropping the rest of the gesture */
          if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;

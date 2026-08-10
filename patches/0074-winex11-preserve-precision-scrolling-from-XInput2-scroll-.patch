@@ -34,7 +34,12 @@ The driver delivers scrolling whether or not a button is held.
 WM_MOUSEWHEEL defines MK_LBUTTON and friends as ordinary states of a
 wheel message, and dropping input while a button is down would lose
 high-resolution wheel movement during drags and pointing-stick
-scrolling.
+scrolling. While a button is down the driver delivers whole notches and
+carries the remainder: a clickpad thumb-hold with a moving finger
+classifies as two-finger scroll, and sub-notch wheel with MK_LBUTTON set
+steers the control under the drag (reproduced in Live faders,
+2026-08-10). Deliberate scrolling keeps working during drags. Nothing
+drops.
 
 The valuators are cumulative and advance whenever the device scrolls
 anywhere, including in other applications and other Wine threads'
@@ -72,10 +77,10 @@ too.
 Builds without XInput2 2.1 scroll definitions compile this path out.
 ---
  dlls/winex11.drv/event.c  |    6 +
- dlls/winex11.drv/mouse.c  |  511 +++++++++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/mouse.c  |  531 +++++++++++++++++++++++++++++++++++++++++++++
  dlls/winex11.drv/window.c |    4 
  dlls/winex11.drv/x11drv.h |   21 ++
- 4 files changed, 541 insertions(+), 1 deletion(-)
+ 4 files changed, 561 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index ee5a274..106b110 100644
@@ -102,7 +107,7 @@ index ee5a274..106b110 100644
      if (xim_in_compose_mode()) return;
  
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 083cc07..8e08ac4 100644
+index 083cc07..491e36d 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -281,6 +281,160 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
@@ -403,7 +408,7 @@ index 083cc07..8e08ac4 100644
      /* the device set changed under any gesture in progress */
      pinch_gestures_reset();
      return TRUE;
-@@ -1978,6 +2206,277 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+@@ -1978,6 +2206,297 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -421,7 +426,8 @@ index 083cc07..8e08ac4 100644
 + * server may also legally reset a cumulative valuator), and reseeds
 + * instead of scrolling.
 + */
-+static int smooth_scroll_delta( struct x11drv_scroll_axis *axis, double value, BOOL emulated )
++static int smooth_scroll_delta( struct x11drv_scroll_axis *axis, double value, BOOL emulated,
++                                BOOL notched )
 +{
 +    static const int max_delta = 16 * WHEEL_DELTA;
 +    double units;
@@ -448,10 +454,19 @@ index 083cc07..8e08ac4 100644
 +        return delta > 0 ? max_delta : -max_delta;
 +    }
 +
-+    if (pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED)
-+        delta = (delta / WHEEL_DELTA) * WHEEL_DELTA;
++    if (notched) delta = (delta / WHEEL_DELTA) * WHEEL_DELTA;
 +    axis->value += (double)delta * axis->increment / WHEEL_DELTA;
 +    return delta;
++}
++
++/* any button held in the event's button state */
++static BOOL xinput2_any_button_down( const XIDeviceEvent *event )
++{
++    int button;
++
++    for (button = 1; button < event->buttons.mask_len * 8; button++)
++        if (XIMaskIsSet( event->buttons.mask, button )) return TRUE;
++    return FALSE;
 +}
 +
 +static unsigned int xinput2_core_state( const XIDeviceEvent *event )
@@ -560,6 +575,7 @@ index 083cc07..8e08ac4 100644
 +    BOOL emulated = event->flags & XIPointerEmulated;
 +    double value_x = 0, value_y = 0;
 +    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE;
++    BOOL quantize;
 +    int delta_x = 0, delta_y = 0;
 +    HWND hwnd;
 +
@@ -605,13 +621,22 @@ index 083cc07..8e08ac4 100644
 +    {
 +        /* the emulated report only refreshes the baseline; the same movement
 +         * arrives as core wheel buttons */
-+        if (have_x) smooth_scroll_delta( &src->scroll_x, value_x, TRUE );
-+        if (have_y) smooth_scroll_delta( &src->scroll_y, value_y, TRUE );
++        if (have_x) smooth_scroll_delta( &src->scroll_x, value_x, TRUE, FALSE );
++        if (have_y) smooth_scroll_delta( &src->scroll_y, value_y, TRUE, FALSE );
 +        return TRUE;
 +    }
 +
-+    if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE );
-+    if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE );
++    /* while a button is held, deliver whole notches with the remainder
++     * carried: a clickpad thumb-hold with a moving finger classifies as
++     * two-finger scroll, and sub-notch wheel with MK_LBUTTON set steers
++     * whatever control the user is dragging (reproduced in Live faders,
++     * 2026-08-10). whole notches keep deliberate scrolling working during
++     * drags and lose no input */
++    quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED ||
++               xinput2_any_button_down( event );
++
++    if (have_x) delta_x = smooth_scroll_delta( &src->scroll_x, value_x, FALSE, quantize );
++    if (have_y) delta_y = smooth_scroll_delta( &src->scroll_y, value_y, FALSE, quantize );
 +
 +    TRACE( "hwnd %p/%lx smooth scroll delta %d,%d\n", hwnd, event->event, delta_x, delta_y );
 +
@@ -681,7 +706,7 @@ index 083cc07..8e08ac4 100644
  static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
  {
      RECT virtual = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
-@@ -2325,6 +2824,18 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -2325,6 +2844,18 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_RawMotion( event );
          break;
  

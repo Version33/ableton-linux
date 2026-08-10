@@ -107,10 +107,10 @@ What changed against PR 157:
   application or another Wine thread's window.
 - The decoder drops no input while a button is down. WM_MOUSEWHEEL
   defines MK_LBUTTON and friends as ordinary message states, and the old
-  gate lost high-resolution wheel input during drags. If the clickpad
-  fader hypersensitivity report reproduces in the release gate, the
-  agreed fallback quantizes to whole notches while a button is down; it
-  never drops.
+  gate lost high-resolution wheel input during drags. The clickpad fader
+  report reproduced on 2026-08-10, so the agreed fallback is in: while a
+  button is down the decoder delivers whole notches and carries the
+  remainder. It never drops.
 - The driver pre-queries slave scroll classes once at thread init
   instead of a first-event round trip, and the XI selection follows
   Wine's own WS_EX_TRANSPARENT policy instead of calling
