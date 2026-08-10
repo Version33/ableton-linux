@@ -291,6 +291,10 @@ test_prefix_configuration() {
         timeout --foreground 30 "$WINE_BIN" reg query 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\Ableton Live 12 Suite.exe' /v dpiAwareness 2>&1 || true
         printf '\n[File dialogue portal policy]\n'
         timeout --foreground 30 "$WINE_BIN" reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal 2>&1 || true
+        printf '\n[Pointer settings]\n'
+        for v in SmoothScrolling TouchpadInertia PinchZoom MiddleDrag InertiaCurve InertiaRate; do
+            timeout --foreground 30 "$WINE_BIN" reg query 'HKCU\Software\Wine\X11 Driver' /v "$v" 2>&1 || true
+        done
         printf '\n[Wine drivers]\n'
         timeout --foreground 30 "$WINE_BIN" reg query 'HKCU\Software\Wine\Drivers' 2>&1 || true
     } >"$registry_log"

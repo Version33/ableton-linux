@@ -336,6 +336,26 @@ workspace or open the logout dialog in another application while Live runs.
 The default `ABLETON_SHORTCUTS=preserve` leaves every desktop shortcut
 unchanged. For another desktop, change its shortcut settings when necessary.
 
+## Scrolling, middle-button panning, or pinch zoom misbehaves
+
+Turn the feature you suspect off for one launch:
+
+```bash
+env WINE_X11_SMOOTH_SCROLLING=disabled ableton-live
+env WINE_X11_PINCH_ZOOM=disabled ableton-live
+env WINE_X11_MIDDLE_DRAG=disabled ableton-live
+```
+
+Releases after 2026.08.08.1 scroll Live in fine steps instead of whole notches when you use a touchpad or a high-resolution mouse wheel. They can also pan the view on a middle-button drag and zoom on a touchpad pinch.
+
+If scrolling only feels too fine, keep whole steps:
+
+```bash
+env WINE_X11_SMOOTH_SCROLLING=notched ableton-live
+```
+
+If turning a feature off fixes the problem, report it and name the variable you used.
+
 ## Report a problem
 
 Use the [GitHub issue form](https://github.com/shibco/ableton-linux/issues/new/choose).

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Touchpad and high-resolution wheel scrolling reaches Live in fine
+  steps instead of whole notches. The `SmoothScrolling` setting restores
+  whole steps (`notched`) or the previous behavior (`disabled`). Live
+  now receives wheel input while you hold a mouse button.
+- A touchpad pinch zooms the way Ctrl+wheel does, on X servers with
+  XInput2 2.4. Wine creates no Ctrl key event anywhere: the modifier
+  rides the wheel message and the key state for the gesture's duration.
+  A pinch can no longer press keys, trigger shortcuts, or leave a stuck
+  modifier. The `PinchZoom` setting turns it off.
+- Holding the middle mouse button and moving the pointer scrolls and
+  pans once you enable the `MiddleDrag` setting. The default leaves the
+  middle button unchanged.
+- A scroll inertia engine ships disabled (`TouchpadInertia`). Enable it
+  and scrolling coasts after a fast release; you can throw a fast
+  middle-button drag. It ran in Live on one GNOME Wayland setup. Treat
+  enabling it as a test opt-in, not a supported configuration yet.
+- These four items rebuild the PR 157 pointer work after review as
+  patches 0072 to 0074 and 0090. A verification run on 2026-08-10
+  confirmed pinch zoom, precision scrolling, middle-drag panning and
+  inertia working in Live 12 on one GNOME Wayland setup. The full
+  release gate has not run. See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.

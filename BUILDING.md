@@ -145,6 +145,21 @@ compatibility defaults.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` overrides the scrolling
+  mode for one launch. The `SmoothScrolling` registry value holds the
+  persistent setting; see
+  [the pointer notes](notes/ABLETON-WINE-POINTER-GESTURES.md).
+- `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` overrides touchpad pinch zoom
+  for one launch (registry value `PinchZoom`).
+- `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` overrides
+  middle-button drag navigation for one launch (registry value `MiddleDrag`).
+- `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` overrides scroll inertia
+  for one launch (registry value `TouchpadInertia`). Inertia defaults to off;
+  `auto` currently resolves to disabled.
+- `WINE_X11_INERTIA_CURVE=exponential|linear` and
+  `WINE_X11_INERTIA_RATE=<0.5..16.0>` override the inertia decay for one
+  launch (registry values `InertiaCurve` and `InertiaRate`).
+
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
 - `ABLETON_POWER=off` keeps the computer's power mode unchanged for one
   launch.
