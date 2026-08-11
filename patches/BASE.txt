@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 85 files, numbered 0001 through 0090.
+The current Wine series contains 86 files, numbered 0001 through 0091.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 are reserved by open pull requests and will enter this branch as those
 merge.
@@ -281,9 +281,17 @@ Apply them in sequence with the rest of the series.
   after its review: per-thread state, release-coordinate cursor sync,
   allow-list option parsing. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0073`: report a touchpad pinch as wheel input applications read as
+- `0073`: preserve screen coordinates for vertical and horizontal wheel
+  messages. Wine converted WM_MOUSEHWHEEL coordinates to client space,
+  although WM_MOUSEHWHEEL uses the same screen-coordinate lParam contract
+  as WM_MOUSEWHEEL. In Live, the incorrect horizontal-wheel point appeared
+  as fixed horizontal bands across the device drawer. The server now also
+  skips non-client filter prediction for both messages because neither has
+  a non-client form. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0074`: report a touchpad pinch as wheel input applications read as
   Ctrl+wheel (issue 64), the input a Windows precision touchpad
-  produces. The driver never synthesizes a Ctrl key event: a
+  produces. The driver never synthesises a Ctrl key event: a
   server-side override (SEND_HWMSG_FORCE_MK_CONTROL) sets the modifier
   in the message wparam. Live reads GetKeyState() rather than the
   message state (measured 2026-08-10), so the gesture also holds Ctrl
@@ -293,14 +301,6 @@ Apply them in sequence with the rest of the series.
   begin/update/end/cancel lifecycle and compensates a cancelled
   gesture. Rebuilds the PR 157 pinch patch after its review. Zoom
   passed verification in Live 12 on GNOME Wayland 2026-08-10. See
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0074`: preserve fractional scrolling from XInput2 2.1 scroll
-  valuators instead of the whole-notch legacy button events. The
-  decoder invalidates its cumulative baselines on window enter, focus
-  changes, grabs, device changes and removals, and discards excess
-  beyond the per-report cap. While the user holds a button, it drops
-  no input. Rebuilds the PR 157 smooth-scrolling decoder after its
-  review, without the inertia worker. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
@@ -404,9 +404,19 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
-- `0090`: coast scrolling and thrown middle drags after release, on by
+- `0090`: preserve fractional scrolling from XInput2 2.1 scroll
+  valuators instead of the whole-notch legacy button events. The
+  decoder invalidates its cumulative baselines on window enter, focus
+  changes, grabs, device changes and removals, and discards excess
+  beyond the per-report cap. While the user holds a button, it drops
+  no input. Rebuilds the PR 157 smooth-scrolling decoder after its
+  review, without the inertia worker. Outside an active middle drag, direct
+  XInput2 wheel input includes the mapped desktop point from the event.
+  Active middle drags remain positionless. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0091`: coast scrolling and thrown middle drags after release, on by
   default (`TouchpadInertia`, `disabled` turns it off). The patch stays
-  separate from 0074. XInput2 cannot classify scroll sources, so the
+  separate from 0090. XInput2 cannot classify scroll sources, so the
   default also makes free-spin and high-resolution wheels coast; `auto`
   resolves to disabled on this backend. All state and every emitted
   wheel event live on the owning GUI thread; a nudger thread only

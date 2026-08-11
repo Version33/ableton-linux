@@ -4,9 +4,11 @@
 
 - Touchpad and high-resolution wheel scrolling reaches Live in fine
   steps instead of whole notches. The `SmoothScrolling` setting restores
-  whole steps (`notched`) or the previous behavior (`disabled`). Live
+  whole steps (`notched`) or the previous behaviour (`disabled`). Live
   receives wheel input in whole steps while you hold a mouse button,
-  so scrolling cannot nudge the control you are dragging.
+  so scrolling cannot nudge the control you are dragging. Horizontal
+  scrolling now uses the pointer's screen position, so Live scrolls the
+  device drawer under the pointer across its full height.
 - A touchpad pinch zooms the way Ctrl+wheel does, on X servers with
   XInput2 2.4. Wine creates no Ctrl key event anywhere: the modifier
   rides the wheel message and the key state for the gesture's duration.
@@ -15,17 +17,20 @@
 - Holding the middle mouse button and moving the pointer scrolls and
   pans, on by default. A plain middle click still clicks: only a press
   that moves becomes a drag. The `MiddleDrag` setting (`disabled`)
-  restores the old behavior.
+  restores the old behaviour.
 - Scrolling coasts after a fast release, and you can throw a fast
   middle-button drag. Inertia is on by default; `TouchpadInertia`
   (`disabled`) turns it off. High-resolution and free-spinning wheels
   coast too, because the input stack cannot tell them from a touchpad.
 
-- These four items rebuild the PR 157 pointer work after review as
-  patches 0072 to 0074 and 0090. A verification run on 2026-08-10
-  confirmed pinch zoom, precision scrolling, middle-drag panning and
-  inertia working in Live 12 on one GNOME Wayland setup. The full
-  release gate has not run. See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- The pointer work spans patches 0072 through 0074, 0090 and 0091. A
+  verification run on 2026-08-10 confirmed pinch zoom, precision
+  scrolling, middle-drag panning and inertia in Live 12 on one GNOME
+  Wayland setup. On 2026-08-11, the build passed all 114 artifact checks
+  and `tools/wheelcoords.c`. An interactive Live 12.4.3 run then
+  confirmed horizontal scrolling across the full height of the device
+  drawer. The full release gate remains open. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next

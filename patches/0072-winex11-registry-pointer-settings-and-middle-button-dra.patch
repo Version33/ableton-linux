@@ -19,11 +19,14 @@ at process attach into one configuration block: SmoothScrolling
 [0.5, 16.0], the exponential decay rate coefficient in 1/s, default
 4.0). The parser matches each value against an allow-list, so a setting
 that exists to disable a feature can never enable it through a near
-miss. On an unrecognized value it warns and keeps the default, and
+miss. On an unrecognised value it warns and keeps the default, and
 InertiaRate rejects non-finite values, out-of-range values and trailing
 characters. The parser traces each resolved value and its source once.
-This patch consumes MiddleDrag; the later patches in the series consume
-the rest.
+Earlier development builds of this work read different environment
+names, and nothing maps them to the current ones: the driver warns on
+winediag when it finds one set, and names the current variable, instead
+of ignoring the setting. This patch consumes MiddleDrag; the later
+patches in the series consume the rest.
 
 MiddleDrag=navigate holds a middle-button press back from the
 application and reports the movement that follows as wheel input.
@@ -59,7 +62,7 @@ A press of another button during a drag ends it. A drag that reported
 wheel movement syncs the cursor to the real pointer position; the driver
 replays a press that never moved as a click; and the new press and the
 movement that follow go through. Placing the cursor with the left button
-while panning with the middle one leaves no phantom click behind. A drag
+while panning with the middle one leaves no unwanted click behind. A drag
 that lost its release ends the same way on the next event.
 
 The drag adds no modifier. A Ctrl the user holds during the drag still
@@ -72,8 +75,8 @@ so concurrent drags on windows of different threads cannot share state.
 ---
  dlls/winex11.drv/mouse.c       |  228 ++++++++++++++++++++++++++++++++++++++++
  dlls/winex11.drv/x11drv.h      |   64 +++++++++++
- dlls/winex11.drv/x11drv_main.c |  137 ++++++++++++++++++++++++
- 3 files changed, 429 insertions(+)
+ dlls/winex11.drv/x11drv_main.c |  163 +++++++++++++++++++++++++++++
+ 3 files changed, 455 insertions(+)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 2c394b6..0c3f273 100644
@@ -436,7 +439,7 @@ index 500a013..5356e18 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <stdlib.h>
-@@ -412,6 +413,140 @@ static inline DWORD get_config_key( HKEY defkey, HKEY appkey, const char *name,
+@@ -412,6 +413,166 @@ static inline DWORD get_config_key( HKEY defkey, HKEY appkey, const char *name,
  }
  
  
@@ -451,6 +454,30 @@ index 500a013..5356e18 100644
 +    .inertia_curve    = POINTER_INERTIA_CURVE_EXPONENTIAL,
 +    .inertia_rate     = 4.0,
 +};
++
++/* Earlier development builds of these features read different names, and
++ * nothing maps them to the current ones. Warn where the launcher's
++ * default debug options keep the line visible instead of ignoring the
++ * setting */
++static const struct { const char *legacy, *current; } legacy_env_names[] =
++{
++    { "WINE_X11_SMOOTH_SCROLL",           "WINE_X11_SMOOTH_SCROLLING" },
++    { "WINE_X11_SCROLL_INERTIA",          "WINE_X11_TOUCHPAD_INERTIA" },
++    { "WINE_X11_SCROLL_INERTIA_FRICTION", "WINE_X11_INERTIA_RATE" },
++    { "WINE_X11_SCROLL_INERTIA_CURVE",    "WINE_X11_INERTIA_CURVE" },
++};
++
++static void warn_legacy_env_names(void)
++{
++    unsigned int i;
++
++    for (i = 0; i < ARRAY_SIZE( legacy_env_names ); i++)
++    {
++        if (!getenv( legacy_env_names[i].legacy )) continue;
++        WARN_(winediag)( "%s is set but this driver no longer reads it; use %s instead\n",
++                         legacy_env_names[i].legacy, legacy_env_names[i].current );
++    }
++}
 +
 +/***********************************************************************
 + *		pointer_option_string
@@ -532,6 +559,8 @@ index 500a013..5356e18 100644
 +    double parsed;
 +    int value;
 +
++    warn_legacy_env_names();
++
 +    value = pointer_config.smooth_scrolling;
 +    pointer_option_enum( defkey, appkey, "SmoothScrolling", "WINE_X11_SMOOTH_SCROLLING",
 +                         scroll_names, ARRAY_SIZE( scroll_names ), &value );
@@ -577,7 +606,7 @@ index 500a013..5356e18 100644
  /***********************************************************************
   *		setup_options
   *
-@@ -505,6 +640,8 @@ static void setup_options(void)
+@@ -505,6 +666,8 @@ static void setup_options(void)
  
      get_config_key( hkey, appkey, "InputStyle", input_style, sizeof(input_style) );
  

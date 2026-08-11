@@ -14,9 +14,9 @@ applications that zoom on Ctrl+wheel need no change. PinchZoom=disabled
 leaves gesture events with the X server and keeps the XInput2 version
 request at 2.2.
 
-The patch synthesizes no Ctrl key event anywhere: no key message exists,
-no keyboard hook sees a phantom key, and no accelerator can fire. The
-modifier reaches the application through both of its observable reads:
+The patch synthesises no Ctrl key event: it creates no key message and
+triggers no keyboard hook or accelerator. The modifier reaches the
+application through both of its observable reads:
 
 - A new SEND_HWMSG_FORCE_MK_CONTROL flag on the send_hardware_message
   request makes the server set MK_CONTROL in the generated message's
@@ -32,10 +32,9 @@ modifier reaches the application through both of its observable reads:
   this: with the wparam override alone, the wheel arrived and nothing
   zoomed. This half serves that read without creating any input. The
   driver releases the key on gesture end, cancellation, focus loss,
-  device change, slot eviction and thread detach. It checks the X keymap for a Ctrl the
-  user physically holds and never releases that key. And if every
-  release path misses, a stale state byte self-heals through the
-  KeymapNotify modifier resync.
+  device change, slot eviction and thread detach. It checks the X keymap
+  for a Ctrl that the user physically holds and does not release that key.
+  KeymapNotify resynchronises a stale state byte if a release path misses.
 
 A whole wheel notch stands for a 1.1x scale change, but a pinch reports
 its scale many times a second, so each report is worth a fraction of one
@@ -54,32 +53,30 @@ protocol's defined begin scale of 1.0. An update without a begin claims
 a slot and seeds from its own scale. The driver ignores an end without a
 begin.
 
-The driver undoes a cancelled gesture (XIGesturePinchEventCancelled) the
-way the protocol asks: it returns the net wheel movement the gesture
-reported in one compensating event. When the application clamped the
-zoom at a bound, the compensation can overshoot. For a transient
-misrecognized gesture that is the lesser wrong against leaving a phantom
-zoom applied.
+On XIGesturePinchEventCancelled, the driver returns the net wheel
+movement in one compensating event, capped at 16 notches. A larger
+cancelled gesture can retain some zoom. An application that clamps zoom
+at a bound can also finish at a different level after compensation.
 
-The wheel events carry no position: the server stamps them at the
-current cursor, which a touchpad pinch does not move. The path keeps no
-frozen anchor and makes no XQueryPointer round trip.
+The wheel events carry no position. The server stamps them at the
+current cursor, which a touchpad pinch does not move. The driver stores
+no pointer point and makes no XQueryPointer round trip.
 
-The server's wheel coalescing gains two guards this work depends on. The
-server never merges across a modifier change: summing an untagged scroll
-delta into a Ctrl-tagged zoom message would change what the combined
-delta means. And it coalesces WM_MOUSEHWHEEL the same way it has always
-coalesced WM_MOUSEWHEEL, so a stalled application drains one accumulated
-message per axis instead of hundreds of queued horizontal events.
+The server does not merge wheel messages across a modifier change.
+Summing an untagged scroll delta into a Ctrl-tagged zoom message would
+change what the combined delta means. The server also coalesces
+WM_MOUSEHWHEEL in the same way as WM_MOUSEWHEEL, so a stalled application
+drains one accumulated message per axis instead of hundreds of queued
+horizontal events.
 
 Gesture events need XInput2 2.4. The server refuses to select them for a
 client that asked for less, so the version request rises to 2.4 only
-when PinchZoom is on. On an X server without 2.4 the driver warns once
-and behaves as before; headers without the gesture definitions compile
-the path out.
+when PinchZoom is on. On an X server without 2.4, the driver logs a
+warning and continues without pinch input. Headers without the gesture
+definitions compile the path out.
 
-A verification run on GNOME Wayland (XWayland) on 2026-08-10 showed
-pinch zoom working in Live 12 with this design.
+A verification run on GNOME Wayland (XWayland) on 2026-08-10 confirmed
+pinch zoom in Live 12.
 ---
  dlls/winex11.drv/event.c       |    3 
  dlls/winex11.drv/mouse.c       |  305 ++++++++++++++++++++++++++++++++++++++++
@@ -180,11 +177,11 @@ index 0c3f273..d410454 100644
 +/***********************************************************************
 + *           send_wheel_control_input
 + *
-+ * Send a wheel-only event whose message reports MK_CONTROL without any key
-+ * input existing: SEND_HWMSG_FORCE_MK_CONTROL makes the server set the
-+ * modifier in this message's wparam only. No key event is synthesized, no
-+ * key state changes anywhere, and a Ctrl the user physically holds is
-+ * unaffected, so nothing can stick and nothing needs restoring.
++ * Send a wheel-only event whose message reports MK_CONTROL. No key input
++ * exists. SEND_HWMSG_FORCE_MK_CONTROL makes the server set the modifier in
++ * this message's wparam only. The helper changes no key state, and it does
++ * not affect a Ctrl that the user physically holds.
++ * The call therefore needs no key-state restoration.
 + */
 +static void send_wheel_control_input( HWND hwnd, int delta, UINT time )
 +{
@@ -352,24 +349,24 @@ index 0c3f273..d410454 100644
 + * produces for one: the scale change becomes wheel movement whose messages
 + * report MK_CONTROL, so an application that zooms on Ctrl+wheel zooms on a
 + * pinch. The modifier rides each wheel message as a server-side wparam
-+ * override; no Ctrl key event is synthesized, so no keyboard hook sees a
-+ * phantom key, no accelerator fires, and nothing is left stuck when a
-+ * gesture ends abnormally.
++ * override. The driver synthesises no Ctrl key event and triggers no
++ * keyboard hook or accelerator. Every exit path releases the held key
++ * state.
 + *
 + * A pinch reports its scale many times a second, so each report is worth a
 + * fraction of a notch and is sent as that fraction. WHEEL_DELTA is a unit,
 + * not a minimum: an application that follows the amount rather than
 + * counting messages zooms continuously.
 + *
-+ * The wheel events carry no position: the server stamps them at the current
-+ * cursor, which a touchpad pinch does not move. There is no anchor to
-+ * freeze and nothing that can drag the cursor across the screen.
++ * The wheel events carry no position. The server uses the current cursor,
++ * which a touchpad pinch does not move. The driver stores no pointer point
++ * and cannot move the cursor through this path.
 + *
-+ * A cancelled gesture (XIGesturePinchEventCancelled) is undone the way the
-+ * protocol asks: the net wheel movement the gesture reported is returned in
-+ * one compensating event. When the application clamped the zoom at a bound
-+ * the compensation can overshoot; for a transient misrecognized gesture
-+ * that is the lesser wrong against leaving a phantom zoom applied.
++ * On cancellation, the driver sends the net wheel movement in one event.
++ * The compensation has a 16-notch cap, so a larger gesture can retain some
++ * zoom. An application that clamps zoom at a bound can also finish at a
++ * different level after compensation.
++ * This limit keeps one event within the normal per-report cap.
 + */
 +static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
 +{
@@ -493,7 +490,7 @@ index 340aca7..dab7296 100644
 +    int    sourceid;   /* physical device of the gesture, 0 is a free slot */
 +    HWND   hwnd;       /* window the gesture reports to */
 +    double scale;      /* scale already reported as wheel movement */
-+    double net_units;  /* wheel units reported so far, to undo a cancelled gesture */
++    double net_units;  /* wheel units reported so far, for cancellation compensation */
 +    Time   time;       /* last event time, oldest slot is evicted first */
 +    BOOL   ctrl_held;  /* the gesture holds Ctrl in the key state (no key input exists) */
 +};

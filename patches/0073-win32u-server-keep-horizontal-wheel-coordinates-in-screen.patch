@@ -1,0 +1,46 @@
+Subject: win32u, server: preserve screen coordinates for WM_MOUSEHWHEEL
+
+WM_MOUSEWHEEL and WM_MOUSEHWHEEL both store screen coordinates in
+lParam, and neither message has a non-client counterpart. The mouse
+retrieval path exempted only WM_MOUSEWHEEL from client-coordinate
+conversion. Over a client area, WM_MOUSEHWHEEL therefore stored client
+coordinates in lParam. Over a non-client area, the path applied the
+non-client mouse-message offset to its message code.
+
+Exclude both wheel messages from client-coordinate conversion and
+non-client message translation. Make the server's message-filter
+prediction skip the non-client offset for both messages.
+---
+ dlls/win32u/message.c | 4 ++--
+ server/queue.c        | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index a0f0e58..f78a818 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2727,8 +2727,8 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+     pt = msg->pt;
+     message = msg->message;
+     wparam = msg->wParam;
+-    /* Note: windows has no concept of a non-client wheel message */
+-    if (message != WM_MOUSEWHEEL)
++    /* wheel messages use screen coordinates and have no non-client form */
++    if (message != WM_MOUSEWHEEL && message != WM_MOUSEHWHEEL)
+     {
+         if (hittest != HTCLIENT)
+         {
+diff --git a/server/queue.c b/server/queue.c
+index 437c4fa..465b4e1 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2708,7 +2708,7 @@ static int check_hw_message_filter( user_handle_t win, unsigned int msg_code,
+     case QS_MOUSEBUTTON:
+         /* we need to check all possible values that the message can have in the end */
+         if (check_msg_filter( msg_code, first, last )) return 1;
+-        if (msg_code == WM_MOUSEWHEEL) return 0;  /* no other possible value for this one */
+-
++        if (msg_code == WM_MOUSEWHEEL || msg_code == WM_MOUSEHWHEEL)
++            return 0;  /* wheel messages cannot become non-client messages */
+         /* all other messages can become non-client messages */
+         if (check_msg_filter( msg_code + (WM_NCMOUSEFIRST - WM_MOUSEFIRST), first, last )) return 1;

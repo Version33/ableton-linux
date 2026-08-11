@@ -3,7 +3,7 @@ Subject: winex11: preserve precision scrolling from XInput2 scroll valuators
 XInput2 2.1 reports touchpad and high-resolution wheel scrolling as
 cumulative valuator positions. One increment stands for one wheel
 notch. Wine consumes only the legacy button events the X server
-synthesizes from those valuators, so every update collapses to a whole
+synthesises from those valuators, so every update collapses to a whole
 WHEEL_DELTA and two-finger navigation is visibly stepped.
 
 The driver selects XI_Motion, XI_ButtonPress and XI_ButtonRelease on
@@ -21,34 +21,37 @@ that ignores fractional wheel units.
 Scroll-valuator changes become fractional vertical and horizontal
 wheel input, and the driver carries the sub-unit remainder.
 WHEEL_DELTA is a unit, not a minimum: an application that follows the
-amount rather than counting messages scrolls continuously. The wheel
-input carries no position. The server stamps each message at the
-current cursor, which is where X delivered the event, so wheel
-delivery never moves the cursor. Both wheel paths update the window
-user time, at most once per 100 ms: the property write wakes the X
-server and the window manager, and a scroll stream reports hundreds of
-times a second. Focus-stealing prevention still tracks scrolling as
-user activity.
+amount rather than counting messages scrolls continuously. Outside an
+active middle drag, direct XI wheel input includes the event's mapped
+desktop position. The driver sends the point as absolute mouse input, so
+the server updates its cursor before it queues the wheel message. During
+an active middle drag, the helper sends positionless wheel input. The
+later inertia patch also emits positionless wheel input.
 
-The driver delivers scrolling whether or not a button is held.
+The native XI wheel-button path and emitted scroll-valuator deltas update
+the window user time at most once per 100 ms. The property write wakes the
+X server and the window manager, and a scroll stream reports hundreds of
+times a second. Focus-stealing prevention still tracks scrolling as user
+activity.
+
+The driver processes scroll reports whether or not a button is held.
 WM_MOUSEWHEEL defines MK_LBUTTON and friends as ordinary states of a
 wheel message, and dropping input while a button is down would lose
 high-resolution wheel movement during drags and pointing-stick
-scrolling. While a button is down the driver delivers whole notches and
-carries the remainder: a clickpad thumb-hold with a moving finger
-classifies as two-finger scroll, and sub-notch wheel with MK_LBUTTON set
-steers the control under the drag (reproduced in Live faders,
-2026-08-10). Deliberate scrolling keeps working during drags. Nothing
-drops. A button release snaps each baseline to the last observed report,
-so the held-back remainder cannot replay into the next unheld scroll
-over a different target. Each source also records the last observed
-value of every axis, separately from the delivery baseline.
+scrolling. While a button is down, the driver delivers complete notches
+and carries the remaining fraction. A clickpad thumb-hold with a moving
+finger classifies as two-finger scroll, and sub-notch wheel with
+MK_LBUTTON set steers the control under the drag (reproduced in Live faders,
+2026-08-10). A button release snaps each baseline to the last observed
+report and discards any remaining fraction, so it cannot reach a
+different target after release. Each source also records the last
+observed value of every axis, separately from the delivery baseline.
 
 The pointer axes come from the device's own valuator class labels (Rel
 X, Abs X and their Y forms), not from an assumed 0/1 numbering: XI2
 leaves valuator numbers device-defined, and mistaking another axis for
-pointer motion would forward phantom motion from a combined report.
-Unlabeled devices fall back to 0 and 1.
+pointer motion would forward incorrect motion from a combined report.
+Unlabelled devices fall back to 0 and 1.
 
 The valuators are cumulative and advance whenever the device scrolls
 anywhere, including in other applications and other Wine threads'
@@ -59,21 +62,21 @@ out, cursor-clip grabs, device change, and device removal. XInput2
 reuses device IDs after removal, so a removed device also loses its
 cache entry; the driver selects hierarchy events for exactly that. A
 report past the 16-notch cap advances the baseline all the way and
-discards the excess, so no debt survives to burst into a later report.
+discards the excess, so it cannot appear in a later report.
 A jump beyond any plausible single report reseeds instead of
 scrolling: the server may legally reset a cumulative valuator.
 
-The driver pre-queries each slave device's scroll axes once at thread
-init, so the first scroll of a session pays no XIQueryDevice round
-trip. It queries a late-arriving device on that device's first report.
-A full cache evicts the device that reported longest ago.
+The driver queries each slave device's scroll axes once at thread
+initialisation, so the first scroll of a session needs no XIQueryDevice
+round trip. It queries a late-arriving device on that device's first report.
+A full cache evicts the device that reported least recently.
 
 The driver ignores the emulated XI scroll button duplicates; their
 reports only refresh the baselines. Native XI wheel buttons from
 devices without scroll axes still deliver whole notches. The driver
 leaves core wheel button events alone: during a core grab (popup menu
 tracking, interactive move/size, ClipCursor) the server delivers only
-core events, and dropping them would kill wheel scrolling entirely.
+core events, and dropping them would stop wheel scrolling entirely.
 
 Selecting a master-device XI event stops the X server from delivering
 its core equivalent. Non-scroll XI motion and button events forward
@@ -85,11 +88,11 @@ too.
 
 Builds without XInput2 2.1 scroll definitions compile this path out.
 ---
- dlls/winex11.drv/event.c  |    6 
- dlls/winex11.drv/mouse.c  |  598 +++++++++++++++++++++++++++++++++++++++++++++
- dlls/winex11.drv/window.c |    4 
- dlls/winex11.drv/x11drv.h |   26 ++
- 4 files changed, 633 insertions(+), 1 deletion(-)
+ dlls/winex11.drv/event.c  |   6 +
+ dlls/winex11.drv/mouse.c  | 615 ++++++++++++++++++++++++++++++++++++++
+ dlls/winex11.drv/window.c |   4 +-
+ dlls/winex11.drv/x11drv.h |  26 ++
+ 4 files changed, 650 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index ee5a274..106b110 100644
@@ -116,7 +119,7 @@ index ee5a274..106b110 100644
      if (xim_in_compose_mode()) return;
  
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index d410454..ebb2cd1 100644
+index d410454..4036e9a 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -281,6 +281,215 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
@@ -189,7 +192,7 @@ index d410454..ebb2cd1 100644
 + *
 + * Snap each delivery baseline to the last observed report, dropping the
 + * undelivered sub-notch remainder. A button release calls this: the
-+ * remainder accrued under quantized held-button delivery, and replaying
++ * remainder accrued under quantised held-button delivery, and replaying
 + * it into the next unheld scroll would nudge whatever sits under the
 + * pointer then.
 + */
@@ -260,7 +263,7 @@ index d410454..ebb2cd1 100644
 +
 +    /* the pointer axes come from the device's own valuator labels, not from
 +     * an assumed numbering: XI2 leaves valuator numbers device-defined, and
-+     * mistaking another axis for pointer motion forwards phantom motion */
++     * mistaking another axis for pointer motion forwards incorrect motion */
 +    rel_x = display ? XInternAtom( display, "Rel X", True ) : None;
 +    rel_y = display ? XInternAtom( display, "Rel Y", True ) : None;
 +    abs_x = display ? XInternAtom( display, "Abs X", True ) : None;
@@ -456,7 +459,7 @@ index d410454..ebb2cd1 100644
      TRACE( "hwnd %p/%lx button %u pos %s\n", hwnd, event->window, button, wine_dbgstr_point( &pt ) );
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
-+    /* the remainder a quantized held-button stream left behind must not
++    /* the remainder a quantised held-button stream left behind must not
 +     * replay into the next unheld scroll */
 +    pointer_scroll_discard_remainders();
      if (middle_drag_end( event, pt, time )) return TRUE;
@@ -486,7 +489,7 @@ index d410454..ebb2cd1 100644
      /* the device set changed under any gesture in progress */
      pinch_gestures_reset();
      return TRUE;
-@@ -1978,6 +2268,302 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
+@@ -1978,6 +2268,319 @@ static BOOL X11DRV_RawMotion( XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -630,6 +633,18 @@ index d410454..ebb2cd1 100644
 +    }
 +}
 +
++/* Send the mapped XI event position unless a middle drag is active.
++ * The server updates its cursor from positioned input before it routes the
++ * wheel. Positionless input leaves the cursor at the middle-drag
++ * target. */
++static void send_xinput2_wheel_input( HWND hwnd, POINT pt, UINT flags, int delta, UINT time )
++{
++    if (x11drv_thread_data()->middle_drag.active)
++        send_wheel_only_input( hwnd, flags, delta, time );
++    else
++        send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, delta, time, NULL );
++}
++
 +/***********************************************************************
 + *           X11DRV_SmoothScrollEvent
 + *
@@ -637,11 +652,11 @@ index d410454..ebb2cd1 100644
 + * valuator positions. Turn the change into fractional Win32 wheel units and
 + * ignore the legacy button events the X server emulates from the same input.
 + *
-+ * The wheel input carries no position: the server stamps each message at
-+ * the current cursor, which is where X delivered the event. Scrolling is
-+ * delivered whether or not a button is held; WM_MOUSEWHEEL defines
-+ * MK_LBUTTON and friends as ordinary message states, and dropping input
-+ * because of them would lose high-resolution wheel movement during drags.
++ * Outside an active middle drag, emitted wheel input carries the mapped
++ * XI event position. The server updates its cursor before routing the
++ * wheel. Scrolling is delivered whether or not a button is held;
++ * WM_MOUSEWHEEL defines MK_LBUTTON and friends as ordinary message states,
++ * and dropping input because of them would lose movement during drags.
 + */
 +static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
 +{
@@ -649,6 +664,7 @@ index d410454..ebb2cd1 100644
 +    struct x11drv_thread_data *data = x11drv_thread_data();
 +    struct x11drv_scroll_source *src;
 +    struct x11drv_win_data *win_data;
++    POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
 +    UINT time = EVENT_x11_time_to_win32_time( event->time );
 +    BOOL emulated = event->flags & XIPointerEmulated;
 +    double value_x = 0, value_y = 0;
@@ -659,6 +675,7 @@ index d410454..ebb2cd1 100644
 +
 +    if (!xinput2_smooth_scroll) return FALSE;
 +    if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
++    pt = map_event_coords( hwnd, event->event, event->root, root, pt );
 +
 +    if (event->evtype == XI_ButtonPress || event->evtype == XI_ButtonRelease)
 +    {
@@ -678,7 +695,8 @@ index d410454..ebb2cd1 100644
 +                window_set_user_time( win_data, event->time, FALSE );
 +            release_win_data( win_data );
 +        }
-+        send_wheel_only_input( hwnd, button_down_flags[button], (int)button_down_data[button], time );
++        send_xinput2_wheel_input( hwnd, pt, button_down_flags[button],
++                                 (int)button_down_data[button], time );
 +        return TRUE;
 +    }
 +
@@ -706,12 +724,17 @@ index d410454..ebb2cd1 100644
 +        return TRUE;
 +    }
 +
-+    /* while a button is held, deliver whole notches with the remainder
-+     * carried: a clickpad thumb-hold with a moving finger classifies as
-+     * two-finger scroll, and sub-notch wheel with MK_LBUTTON set steers
-+     * whatever control the user is dragging (reproduced in Live faders,
-+     * 2026-08-10). whole notches keep deliberate scrolling working during
-+     * drags and lose no input */
++    /* Forward co-reported pointer motion before wheel delivery. This updates
++     * the cursor or consumes the motion as part of an active
++     * middle drag. */
++    if (saw_motion) forward_xinput2_core_event( hwnd, event );
++
++    /* while a button is held, deliver complete notches and carry the
++     * remaining fraction: a clickpad thumb-hold with a moving finger
++     * classifies as two-finger scroll, and wheel input with MK_LBUTTON set
++     * reaches the control under the drag. pointer_scroll_discard_remainders()
++     * drops any remaining fraction on release so it cannot reach a later
++     * target */
 +    buttons_down = xinput2_any_button_down( event );
 +    quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED || buttons_down;
 +
@@ -734,12 +757,9 @@ index d410454..ebb2cd1 100644
 +                window_set_user_time( win_data, event->time, FALSE );
 +            release_win_data( win_data );
 +        }
-+        if (delta_y) send_wheel_only_input( hwnd, MOUSEEVENTF_WHEEL, -delta_y, time );
-+        if (delta_x) send_wheel_only_input( hwnd, MOUSEEVENTF_HWHEEL, delta_x, time );
++        if (delta_y) send_xinput2_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, -delta_y, time );
++        if (delta_x) send_xinput2_wheel_input( hwnd, pt, MOUSEEVENTF_HWHEEL, delta_x, time );
 +    }
-+
-+    /* a report can carry pointer motion next to the scroll axes */
-+    if (saw_motion) forward_xinput2_core_event( hwnd, event );
 +    return TRUE;
 +}
 +
@@ -789,7 +809,7 @@ index d410454..ebb2cd1 100644
  static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
  {
      RECT virtual = NtUserGetVirtualScreenRect( MDT_RAW_DPI );
-@@ -2325,6 +2911,18 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -2325,6 +2928,18 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_RawMotion( event );
          break;
  
@@ -809,10 +829,10 @@ index d410454..ebb2cd1 100644
      case XI_TouchUpdate:
      case XI_TouchEnd:
 diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
-index 9208df5..987893c 100644
+index c19a0ec..defaead 100644
 --- a/dlls/winex11.drv/window.c
 +++ b/dlls/winex11.drv/window.c
-@@ -3129,11 +3129,13 @@ static void create_whole_window( struct x11drv_win_data *data )
+@@ -3134,11 +3134,13 @@ static void create_whole_window( struct x11drv_win_data *data )
      data->pending_state.rect = data->current_state.rect;
      data->desired_state.rect = data->current_state.rect;
  
@@ -852,7 +872,7 @@ index dab7296..489ad64 100644
 +    int    sourceid;    /* slave device the axes belong to, 0 is a free slot */
 +    Time   time;        /* last event time, oldest slot is evicted first */
 +    int    motion_x;    /* valuator numbers of the pointer axes, from the */
-+    int    motion_y;    /* device's class labels; 0 and 1 when unlabeled */
++    int    motion_y;    /* device's class labels; 0 and 1 when unlabelled */
 +    struct x11drv_scroll_axis scroll_x;
 +    struct x11drv_scroll_axis scroll_y;
 +};
@@ -871,5 +891,3 @@ index dab7296..489ad64 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
--- 
-2.55.0
