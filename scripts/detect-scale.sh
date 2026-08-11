@@ -4,9 +4,17 @@
 # family), and ableton_dpi_block_for_scale / ableton_dpi_block_values map a detected scale to
 # the calibrated DPI block for that family (see the mapping comment at the bottom).
 
+_ads_run() {
+    if declare -F ableton_run_bounded >/dev/null 2>&1; then
+        ableton_run_bounded 5 "$@"
+    else
+        timeout --signal=TERM --kill-after=2s 5s "$@"
+    fi
+}
+
 _ads_gnome() {
     local state rows all prim
-    state="$(timeout 5 gdbus call --session \
+    state="$(_ads_run gdbus call --session \
         --dest org.gnome.Mutter.DisplayConfig \
         --object-path /org/gnome/Mutter/DisplayConfig \
         --method org.gnome.Mutter.DisplayConfig.GetCurrentState 2>/dev/null)" || return 1
@@ -26,7 +34,7 @@ _ads_gnome() {
 _ads_kde() {
     command -v kscreen-doctor >/dev/null 2>&1 || return 1
     local out prim
-    out="$(timeout 5 kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+    out="$(_ads_run kscreen-doctor -o 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
     [ -n "$out" ] || return 1
     # Plasma 5: one "Output: ..." line per screen with "primary"; Plasma 6 splits blocks, marks "priority 1".
     prim="$(printf '%s\n' "$out" | awk '
@@ -47,7 +55,7 @@ _ads_sway() {
     command -v swaymsg >/dev/null 2>&1 || return 1
     [ -n "${SWAYSOCK:-}" ] || return 1
     local s
-    s="$(timeout 5 swaymsg -t get_outputs 2>/dev/null \
+    s="$(_ads_run swaymsg -t get_outputs 2>/dev/null \
         | grep -oE '"scale": *[0-9.]+' | head -1 | grep -oE '[0-9.]+')"
     [ -n "$s" ] || return 1
     printf '%s\n' "$s"
@@ -57,7 +65,7 @@ _ads_hyprland() {
     command -v hyprctl >/dev/null 2>&1 || return 1
     [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || return 1
     local s
-    s="$(timeout 5 hyprctl monitors 2>/dev/null \
+    s="$(_ads_run hyprctl monitors 2>/dev/null \
         | grep -oE 'scale: [0-9.]+' | head -1 | grep -oE '[0-9.]+')"
     [ -n "$s" ] || return 1
     printf '%s\n' "$s"
@@ -67,7 +75,7 @@ _ads_cosmic() {
     command -v cosmic-randr >/dev/null 2>&1 || return 1
     [ "${XDG_CURRENT_DESKTOP:-}" = COSMIC ] || return 1
     local out prim
-    out="$(timeout 5 cosmic-randr list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
+    out="$(_ads_run cosmic-randr list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')"
     [ -n "$out" ] || return 1
     # One "<output> (enabled|disabled)" block per monitor. Disabled outputs (e.g. a
     # closed laptop lid) can still report a Scale, so they're excluded entirely -
@@ -90,7 +98,7 @@ _ads_xft() {
     [ -n "${DISPLAY:-}" ] || return 1
     command -v xrdb >/dev/null 2>&1 || return 1
     local dpi
-    dpi="$(timeout 5 xrdb -query 2>/dev/null | awk '$1=="Xft.dpi:"{print $2; exit}')"
+    dpi="$(_ads_run xrdb -query 2>/dev/null | awk '$1=="Xft.dpi:"{print $2; exit}')"
     [ -n "$dpi" ] || return 1
     awk -v d="$dpi" 'BEGIN{ printf "%g\n", d/96 }'
 }

@@ -6,9 +6,17 @@
 # ableton_ask_color and ableton_live_theme_file read Ableton Live's own theme
 # (.ask) files, for coloring the win32 chrome like Live's surface.
 
+_adt_run() {
+    if declare -F ableton_run_bounded >/dev/null 2>&1; then
+        ableton_run_bounded 5 "$@"
+    else
+        timeout --signal=TERM --kill-after=2s 5s "$@"
+    fi
+}
+
 _adt_portal() {
     local out val
-    out="$(timeout 5 gdbus call --session \
+    out="$(_adt_run gdbus call --session \
         --dest org.freedesktop.portal.Desktop \
         --object-path /org/freedesktop/portal/desktop \
         --method org.freedesktop.portal.Settings.Read \
@@ -25,7 +33,7 @@ _adt_portal() {
 _adt_gsettings() {
     command -v gsettings >/dev/null 2>&1 || return 1
     local scheme
-    scheme="$(timeout 5 gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" || return 1
+    scheme="$(_adt_run gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" || return 1
     case "$scheme" in
         *prefer-dark*)            echo dark ;;
         *prefer-light*|*default*) echo light ;;

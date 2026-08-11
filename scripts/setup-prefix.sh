@@ -10,6 +10,15 @@
 # ABLETON_LIVE_VERSION=11|12 selects the winetricks recipe (default 12).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+prefix_was_explicit=0
+[ -z "${ABLETON_WINEPREFIX+x}" ] || prefix_was_explicit=1
+for config_lib in "$here/lib/config.sh" "$here/config.sh" \
+                  "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
+    if [ -r "$config_lib" ]; then . "$config_lib"; break; fi
+done
+declare -F ableton_config_init >/dev/null 2>&1 || { echo "!! setup-prefix: config helper is missing" >&2; exit 1; }
+ableton_config_init
+. "$here/lib/manifest.sh"
 
 # The kit root holds vendor/. Layouts that must work:
 #   <kit>/scripts/setup-prefix.sh        -> vendor at $here/../vendor (repo, extracted .run kit)
@@ -32,7 +41,7 @@ kit_root_or_die() {
     kit_root && return 0
     echo "!! cannot locate vendor/winetricks (looked in $here/.. and $here)" >&2
     echo "!! prefix maintenance must run from the installer kit: either:" >&2
-    echo "!!     sh install-ableton-latest.run --update" >&2
+    echo "!!     sh install-ableton-latest.run update" >&2
     echo "!!   or extract the kit and run it from there:" >&2
     echo "!!     sh install-ableton-latest.run --extract /tmp/ableton-kit" >&2
     echo "!!     bash /tmp/ableton-kit/scripts/setup-prefix.sh" >&2
@@ -41,24 +50,102 @@ kit_root_or_die() {
 
 refresh=0
 post_first_run=0
-case "${1:-}" in
-    --refresh) refresh=1 ;;
-    --post-first-run) post_first_run=1 ;;
-    "") ;;
-    *) echo "!! unknown option: $1 (supported: --refresh, --post-first-run)" >&2; exit 2 ;;
-esac
+validate_only=0
+transaction_dir=""
+operation=setup
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --refresh) refresh=1 ;;
+        --post-first-run) post_first_run=1 ;;
+        --validate) validate_only=1 ;;
+        --transaction-dir)
+            [ $# -ge 2 ] || { echo "!! --transaction-dir needs a directory" >&2; exit 2; }
+            transaction_dir="$2"; shift ;;
+        --rollback)
+            [ $# -ge 2 ] || { echo "!! --rollback needs a transaction directory" >&2; exit 2; }
+            operation=rollback; transaction_dir="$2"; shift ;;
+        --commit)
+            [ $# -ge 2 ] || { echo "!! --commit needs a transaction directory" >&2; exit 2; }
+            operation=commit; transaction_dir="$2"; shift ;;
+        *) echo "!! unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
 
 case "${ABLETON_LIVE_VERSION:-12}" in
     11|12) ;;
     *) echo "!! ABLETON_LIVE_VERSION must be 11 or 12 (got '$ABLETON_LIVE_VERSION')" >&2; exit 2 ;;
 esac
 
+caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
-export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
+WINE_ROOT="$ABLETON_WINE_ROOT"
+export WINEPREFIX="$ABLETON_WINEPREFIX"
 export PATH="$WINE_ROOT/bin:$PATH"
 export WINEDEBUG=-all
 export WINESERVER="$WINE_ROOT/bin/wineserver"
+
+prefix_transaction_rollback()
+{
+    local txn="$1" target backup safe
+    if [ -r "$txn/prefix.tsv" ]; then
+        IFS=$'\t' read -r target backup < "$txn/prefix.tsv"
+        safe="$(ableton_path_is_safe_delete_target "$target")" || { echo "!! unsafe prefix rollback target: $target" >&2; return 1; }
+        if [ -e "$safe" ]; then
+            [ ! -L "$safe" ] || { echo "!! refusing symlink prefix rollback target: $safe" >&2; return 1; }
+            [ -f "$safe/.ableton-linux-prefix" ] || { echo "!! refusing to remove unmarked prefix during rollback: $safe" >&2; return 1; }
+            rm -rf -- "$safe"
+        fi
+        if [ "$backup" != absent ] && [ -e "$backup" ]; then mv -- "$backup" "$safe"; fi
+        rm -f -- "$txn/prefix.tsv"
+    fi
+    ableton_txn_rollback_files "$txn/prefix-host"
+    rm -f -- "$txn/prefix-host/active"
+    update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" >/dev/null 2>&1 || true
+}
+
+prefix_transaction_commit()
+{
+    local txn="$1" target backup safe
+    [ -r "$txn/prefix.tsv" ] || return 0
+    IFS=$'\t' read -r target backup < "$txn/prefix.tsv"
+    if [ "$backup" != absent ] && [ -e "$backup" ]; then
+        safe="$(ableton_path_is_safe_delete_target "$backup")" || { echo "!! unsafe prefix backup: $backup" >&2; return 1; }
+        [ ! -L "$safe" ] || { echo "!! refusing symlink prefix backup: $safe" >&2; return 1; }
+        rm -rf -- "$safe"
+    fi
+    rm -f -- "$txn/prefix.tsv"
+    rm -f -- "$txn/prefix-host/active"
+}
+
+case "$operation" in
+    rollback) prefix_transaction_rollback "$transaction_dir"; exit ;;
+    commit) prefix_transaction_commit "$transaction_dir"; exit ;;
+esac
+
+case "${ABLETON_THEME_MODE:-auto}" in auto|dark|light|preserve) ;;
+    *) echo "!! ABLETON_THEME_MODE must be auto, dark, light, or preserve" >&2; exit 2 ;;
+esac
+
+if [ "$validate_only" -eq 1 ]; then
+    . "$here/detect-scale.sh"
+    validate_dpi="${ABLETON_DPI_MODE:-auto}"
+    case "$validate_dpi" in
+        auto|preserve|100|fractional) ;;
+        dpi*|fractional*) ableton_dpi_block_values "$validate_dpi" >/dev/null || {
+            echo "!! invalid ABLETON_DPI_MODE '$validate_dpi'" >&2; exit 2; } ;;
+        *) echo "!! ABLETON_DPI_MODE must be auto, preserve, 100, fractional, dpi<N>, or fractional<N>" >&2; exit 2 ;;
+    esac
+    if [ "${ABLETON_RUNTIME_PENDING:-0}" != 1 ]; then
+        [ -x "$WINE_ROOT/bin/wine" ] || { echo "!! patched Wine not found at $WINE_ROOT" >&2; exit 1; }
+    fi
+    command -v cabextract >/dev/null || { echo "!! cabextract is required for prefix setup" >&2; exit 1; }
+    if [ "$refresh" -eq 1 ]; then
+        [ -f "$WINEPREFIX/system.reg" ] || { echo "!! --refresh needs an existing prefix at $WINEPREFIX" >&2; exit 2; }
+    fi
+    echo "OK: prefix configuration is valid"
+    exit 0
+fi
 
 # --post-first-run: Max for Live 8 (ships with Live 11) crashes on its SECOND start
 # with a stale preferences file. Move it aside: never delete: so Max regenerates
@@ -83,6 +170,7 @@ if [ "$post_first_run" -eq 1 ]; then
 fi
 
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "!! patched wine not at $WINE_ROOT: run ./scripts/install.sh first"; exit 1; }
+command -v cabextract >/dev/null || { echo "!! cabextract is required for prefix setup" >&2; exit 1; }
 for required in \
     lib/wine/x86_64-unix/comdlg32.so \
     lib/wine/x86_64-windows/libusb-1.0.dll \
@@ -94,10 +182,87 @@ for required in \
     [ -s "$WINE_ROOT/$required" ] || { echo "!! packaged runtime is missing $required"; exit 1; }
 done
 
-# Host tools winetricks needs to unpack the redistributables.
-for t in cabextract; do
-    command -v "$t" >/dev/null || echo "!! missing host tool '$t' (needed by winetricks): install it (e.g. 'pacman -S cabextract' / 'apt install cabextract')"
-done
+# Prefix changes are made against a sibling staging copy, then promoted in one
+# rename.  Existing prefixes use reflink cloning where the filesystem supports
+# it and a full copy otherwise.  The outer installer keeps the transaction open
+# through Live installation, so any later failure can restore the old prefix.
+. "$here/lib/lifecycle.sh"
+if ableton_prefix_busy; then
+    echo "!! Wine clients are running in $WINEPREFIX; close Live, Max, and other prefix programs first" >&2
+    exit 1
+fi
+final_prefix="$WINEPREFIX"
+final_parent="$(dirname "$final_prefix")"
+final_name="$(basename "$final_prefix")"
+safe_final="$(ableton_path_is_safe_delete_target "$final_prefix")" || {
+    echo "!! unsafe Wine prefix path: $final_prefix" >&2; exit 2; }
+[ ! -L "$final_prefix" ] || { echo "!! refusing symlink Wine prefix: $final_prefix" >&2; exit 2; }
+if [ -e "$final_prefix" ] && [ ! -f "$final_prefix/.ableton-linux-prefix" ] \
+   && [ "$safe_final" != "$(ableton_realpath_m "$HOME/.wine-ableton")" ] \
+   && [ "$prefix_was_explicit" -ne 1 ]; then
+    echo "!! refusing to transactionally replace unrecognised custom prefix: $final_prefix" >&2
+    echo "!! create it once with this installer so it carries .ableton-linux-prefix" >&2
+    exit 2
+fi
+mkdir -p -- "$final_parent"
+own_prefix_transaction=0
+if [ -z "$transaction_dir" ]; then
+    ableton_mark_state_home
+    mkdir -p -- "$ABLETON_STATE_HOME/transactions"
+    transaction_dir="$(mktemp -d "$ABLETON_STATE_HOME/transactions/prefix.XXXXXX")"
+    own_prefix_transaction=1
+else
+    mkdir -p -- "$transaction_dir"
+fi
+ABLETON_TRANSACTION_DIR="$transaction_dir/prefix-host"
+export ABLETON_TRANSACTION_DIR
+ableton_txn_init
+stage_prefix="$(mktemp -d "$final_parent/.${final_name}.prefix-stage.XXXXXX")"
+prefix_promoted=0
+prefix_cleanup()
+{
+    local rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ]; then
+        if [ "$prefix_promoted" -eq 1 ]; then
+            prefix_transaction_rollback "$transaction_dir" || true
+        else
+            [ ! -d "$stage_prefix" ] || rm -rf -- "$stage_prefix"
+            prefix_transaction_rollback "$transaction_dir" || true
+        fi
+        printf 'status=failed\nprefix=%s\nexit=%s\n' "$final_prefix" "$rc" > "$transaction_dir/prefix-failure"
+        echo "!! prefix setup failed; the prior prefix was preserved" >&2
+    fi
+    exit "$rc"
+}
+trap prefix_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ -f "$final_prefix/system.reg" ]; then
+    echo "== staging a transactional copy of the existing prefix =="
+    cp -a --reflink=auto -- "$final_prefix/." "$stage_prefix/"
+fi
+export WINEPREFIX="$stage_prefix"
+
+wine_command_timeout="$(ableton_timeout_value "${ABLETON_WINE_COMMAND_TIMEOUT:-300}" ABLETON_WINE_COMMAND_TIMEOUT 10 3600)"
+winetricks_timeout="$(ableton_timeout_value "${ABLETON_WINETRICKS_TIMEOUT:-1800}" ABLETON_WINETRICKS_TIMEOUT 60 7200)"
+wine()
+{
+    ableton_run_bounded "$wine_command_timeout" "$WINE_ROOT/bin/wine" "$@"
+}
+wineboot()
+{
+    ableton_run_bounded "$wine_command_timeout" "$WINE_ROOT/bin/wineboot" "$@"
+}
+ableton_wineserver_wait()
+{
+    ableton_run_bounded 60 "$WINESERVER" -w
+}
+ableton_wineserver_kill()
+{
+    ableton_run_bounded 20 "$WINESERVER" -k
+}
 
 # DPI blocks: a detected scale maps to a calibrated set by compositor family (see
 # detect-scale.sh): GNOME gets the upscaled-framebuffer matched set (LogPixels =
@@ -108,8 +273,10 @@ done
 # on a fresh prefix Live isn't installed yet: the launcher applies it on every start.
 ifeo_root='HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
 live_exe_names() {   # basenames of every Live exe installed in this prefix
-    ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe 2>/dev/null \
-        | while IFS= read -r f; do basename "$f"; done
+    local f
+    for f in "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe; do
+        [ -f "$f" ] && basename "$f"
+    done
 }
 
 # Shared display-scale detection and scale -> DPI block mapping (see detect-scale.sh).
@@ -275,7 +442,7 @@ echo "== [1/5] initialise prefix at $WINEPREFIX =="
 # Installer" prompt; nothing answers it in an unattended run and the wineserver -w below then
 # never returns. Live needs neither - ableton-live and max9 already disable both on every
 # launch - so disable them here and wineboot stops asking.
-WINEDLLOVERRIDES="mscoree,mshtml=" wineboot -u
+WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml=" wineboot -u
 # A prefix that got Ableton's USB audio driver carries the driver's tray agent, and
 # wineboot's startup pass relaunches it on every boot. The agent never exits by itself and
 # does not always have a window: Live 11's driver MSI (v5.57 File table) installs
@@ -311,11 +478,11 @@ done
 # the boot's registry writes are persisted when the server exits. The second wait stays
 # bounded too, in case a straggler survives even SIGKILL.
 boot_wait_rc=0
-timeout 30 "$WINESERVER" -w || boot_wait_rc=$?
-if [ "$boot_wait_rc" -eq 124 ]; then
+ableton_wineserver_wait || boot_wait_rc=$?
+if [ "$boot_wait_rc" -eq 124 ] || [ "$boot_wait_rc" -eq 137 ]; then
     echo "-- a leftover background program is holding the prefix open; stopping it"
-    "$WINESERVER" -k 2>/dev/null || true
-    timeout 30 "$WINESERVER" -w 2>/dev/null || true
+    ableton_wineserver_kill 2>/dev/null || true
+    ableton_wineserver_wait 2>/dev/null || true
 elif [ "$boot_wait_rc" -ne 0 ]; then
     exit "$boot_wait_rc"
 fi
@@ -328,11 +495,11 @@ else
     # payloads are not vendored yet: Live 11 setup downloads them on first run.
     live_major="${ABLETON_LIVE_VERSION:-12}"
     case "$live_major" in
-        11) verbs="corefonts vcrun2019 gdiplus" ;;
-        12) verbs="corefonts vcrun2022 mfc42" ;;
+        11) verbs=(corefonts vcrun2019 gdiplus) ;;
+        12) verbs=(corefonts vcrun2022 mfc42) ;;
         *)  echo "!! ABLETON_LIVE_VERSION must be 11 or 12 (got '$live_major')" >&2; exit 2 ;;
     esac
-    echo "== [2/5] winetricks (Live $live_major): $verbs =="
+    echo "== [2/5] winetricks (Live $live_major): ${verbs[*]} =="
     kit_root_or_die
     export W_CACHE_OVERRIDE=""            # unused
     export WINETRICKS_LATEST_VERSION_CHECK=disabled
@@ -340,22 +507,37 @@ else
     # winetricks error exits with no message at all (issue #28).
     # Use the bundled payload cache if present (mfc42 downloads if not vendored).
     tmpc=""
+    original_xdg_cache_set=0
+    original_xdg_cache=""
+    if [ -n "${XDG_CACHE_HOME+x}" ]; then
+        original_xdg_cache_set=1
+        original_xdg_cache="$XDG_CACHE_HOME"
+    fi
     if [ -d "$root/vendor/winetricks-cache" ]; then
         tmpc="$(mktemp -d)"
         ln -s "$root/vendor/winetricks-cache" "$tmpc/winetricks"
         export XDG_CACHE_HOME="$tmpc"
         echo "   using bundled winetricks cache ($root/vendor/winetricks-cache)"
     fi
-    WINE="$WINE_ROOT/bin/wine" bash "$root/vendor/winetricks" -q -f $verbs
+    ableton_run_bounded "$winetricks_timeout" env WINE="$WINE_ROOT/bin/wine" \
+        bash "$root/vendor/winetricks" -q -f "${verbs[@]}"
     if [ "$live_major" = 11 ]; then
         # Live 11 targets Windows 10 explicitly. Live 12 stays unpinned: nothing in
         # this script ever sets a Windows version, and a fresh wineboot prefix
         # already defaults to win10 (winetricks assumes the same), so the Live 12
         # recipe keeps its historical effective mode.
-        WINE="$WINE_ROOT/bin/wine" bash "$root/vendor/winetricks" -q win10
+        ableton_run_bounded "$winetricks_timeout" env WINE="$WINE_ROOT/bin/wine" \
+            bash "$root/vendor/winetricks" -q win10
     fi
-    [ -n "$tmpc" ] && rm -rf "$tmpc"
-    "$WINESERVER" -w
+    if [ -n "$tmpc" ]; then
+        rm -rf "$tmpc"
+        if [ "$original_xdg_cache_set" -eq 1 ]; then
+            export XDG_CACHE_HOME="$original_xdg_cache"
+        else
+            unset XDG_CACHE_HOME
+        fi
+    fi
+    ableton_wineserver_wait
 fi
 
 # Repair Max for Live's font fallback chain.
@@ -456,7 +638,7 @@ install_maxplug_fallback_fonts() {
         registered=0                  # import failed: nothing landed
     fi
     rm -f "$reg_file"
-    "$WINESERVER" -w || true
+    ableton_wineserver_wait || true
 
     if [ "$registered" -eq 0 ]; then
         echo "!! MaxPlug font fallback NOT registered ($copied file(s) copied)."
@@ -507,7 +689,7 @@ vc_runtime_ready() {
 install_live_redist() {
     local status=0
     wine "$1" /install /quiet /norestart || status=$?
-    "$WINESERVER" -w
+    ableton_wineserver_wait
     case "$status" in
         0|102|194) ;;
         *) echo "!! Live's bundled VC++ redist failed (exit $status)" >&2; return 1 ;;
@@ -604,21 +786,29 @@ case "$dpi_block" in
     check_mutter_knob "$dpi_block" "$dpi_family"
     ;;
 esac
-"$WINESERVER" -w
+ableton_wineserver_wait
 
-echo "== [3b/5] theme: mirror the host light/dark scheme =="
+echo "== [3b/5] theme policy (${ABLETON_THEME_MODE:-auto}) =="
 # Live's "Follow system" theme reads AppsUseLightTheme; without the key it always renders
 # light. Seed it from the host scheme (the launcher re-syncs on every start), plus the
 # EnableTransparency=0 the known-good prefixes carry.
-if host_scheme="$(ableton_detect_theme)"; then
-    case "$host_scheme" in dark) light_val=0 ;; *) light_val=1 ;; esac
-    echo "   host scheme: $host_scheme"
-    wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$light_val" /f
-else
-    echo "   host scheme not detectable: leaving the theme key as-is (the launcher retries on every start)"
+theme_mode="${ABLETON_THEME_MODE:-auto}"
+if [ "$theme_mode" = auto ]; then
+    theme_mode="$(ableton_detect_theme 2>/dev/null || true)"
 fi
-wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
-"$WINESERVER" -w
+case "$theme_mode" in
+    dark) light_val=0 ;;
+    light) light_val=1 ;;
+    preserve|'') light_val="" ;;
+esac
+if [ -n "$light_val" ]; then
+    echo "   applying $theme_mode theme"
+    wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme /t REG_DWORD /d "$light_val" /f
+    wine reg add 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v EnableTransparency /t REG_DWORD /d 0 /f
+    ableton_wineserver_wait
+else
+    echo "   preserving existing theme values"
+fi
 
 echo "== [3c/5] text: subpixel antialiasing =="
 # Wine takes the antialiasing mode from the host's Xft resources, so a desktop
@@ -639,7 +829,7 @@ case "$smoothing_order" in 0) echo "   subpixel order: BGR" ;; *) echo "   subpi
 wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothing /t REG_SZ /d 2 /f
 wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingType /t REG_DWORD /d 2 /f
 wine reg add 'HKCU\Control Panel\Desktop' /v FontSmoothingOrientation /t REG_DWORD /d "$smoothing_order" /f
-"$WINESERVER" -w
+ableton_wineserver_wait
 
 echo "== [4/5] register packaged PipeASIO =="
 ldconfig -p 2>/dev/null | grep -F 'libpipewire-0.3.so.0' >/dev/null || \
@@ -652,14 +842,14 @@ wine reg delete 'HKCR\CLSID\{48D0C522-BFCC-45CC-8B84-17F25F33E6E8}' /f >/dev/nul
 rm -f "$WINEPREFIX"/drive_c/windows/system32/wineasio64.dll \
       "$WINEPREFIX"/drive_c/windows/system32/wineasio.dll
 wine regsvr32 /s pipeasio64.dll
-"$WINESERVER" -w
+ableton_wineserver_wait
 
 # Seed the driver defaults once; the file is the config surface (PIPEASIO_*
 # environment variables override it per launch, see the README).
 pipeasio_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
-if [ ! -s "$pipeasio_cfg" ]; then
-    mkdir -p "$(dirname "$pipeasio_cfg")"
-    cat > "$pipeasio_cfg" <<'EOF'
+if [ ! -e "$pipeasio_cfg" ]; then
+    pipeasio_tmp="$(mktemp "$transaction_dir/pipeasio.XXXXXX")"
+    cat > "$pipeasio_tmp" <<'EOF'
 [pipeasio]
 inputs = 2
 outputs = 2
@@ -667,6 +857,9 @@ buffer_size = 256
 fixed_buffer_size = true
 auto_connect = true
 EOF
+    ableton_install_file 600 "$pipeasio_tmp" "$pipeasio_cfg" config
+    rm -f -- "$pipeasio_tmp"
+    ableton_write_ownership_manifest
     echo "   seeded $pipeasio_cfg (2 in / 2 out, fixed 256-frame buffer)"
 fi
 
@@ -690,10 +883,10 @@ wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /
 # Earlier revisions of this script registered a placeholder Ableton Push USB Audio Driver
 # product (version 99.0.0, invented ProductCode {B0B57A61-11E0-4A2E-9A11-AB1E70201126})
 # here, so Live 11's Burn bundle would plan its driver package out. That only works on the
-# WiX 4 generation of the bundle; the seed now lives in setup-run-header.sh, gated on the
-# bundle's generation. Remove any leftover registration: the ProductCode is ours, so only
-# the placeholder can be under it. This also clears the orphaned InstallProperties key a
-# WiX 3 bundle leaves behind when its RelatedPackage sweep removes the placeholder.
+# WiX 4 generation of the bundle; the seed now lives in installer.sh, gated on the bundle's
+# generation. Remove any leftover registration: the ProductCode is ours, so only the
+# placeholder can be under it. This also clears the orphaned InstallProperties key a WiX 3
+# bundle leaves behind when its RelatedPackage sweep removes the placeholder.
 wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
 wine reg delete 'HKLM\Software\Classes\Installer\UpgradeCodes\86C5CFEA462003E469588217A219FCE4' /v 16A75B0B0E11E2A4A911BAE107021162 /f >/dev/null 2>&1 || true
 wine reg delete 'HKLM\Software\Classes\Installer\Products\16A75B0B0E11E2A4A911BAE107021162' /f >/dev/null 2>&1 || true
@@ -702,17 +895,23 @@ wine reg delete 'HKLM\Software\Microsoft\Windows\CurrentVersion\Installer\UserDa
 # winemenubuilder's entries assume `wine` on PATH (never true here) and are dead buttons: disable
 # it and delete entries it already wrote for this prefix (matched by WINEPREFIX=; install.sh's entries can't match).
 wine reg add 'HKCU\Software\Wine\DllOverrides' /v winemenubuilder.exe /t REG_SZ /d '' /f
-for entry_dir in "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$HOME/Desktop"; do
+desktop_dir="${XDG_DESKTOP_DIR:-}"
+if [ -z "$desktop_dir" ] && command -v xdg-user-dir >/dev/null 2>&1; then
+    desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+fi
+for entry_dir in "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$desktop_dir"; do
+    [ -n "$entry_dir" ] || continue
     [ -d "$entry_dir" ] || continue
     find "$entry_dir" -maxdepth 3 -name '*.desktop' -type f 2>/dev/null | while IFS= read -r f; do
-        if grep -qF "WINEPREFIX=\"$WINEPREFIX\"" "$f" 2>/dev/null; then
+        if grep -qF "WINEPREFIX=\"$final_prefix\"" "$f" 2>/dev/null; then
             echo "   removing dead winemenubuilder entry: $f"
+            ableton_txn_snapshot "$f"
             rm -f "$f"
         fi
     done
 done
 update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" 2>/dev/null || true
-"$WINESERVER" -w
+ableton_wineserver_wait
 
 echo "== [5b/5] remove the 2026.07.18.1 Options.txt seed (issue #29) =="
 strip_options_txt "-DontCombineAPCs"
@@ -724,8 +923,27 @@ strip_options_txt "-DontCombineAPCs"
 echo "== [5c/5] remove -_ForceGdiBackend so Live uses its GPU renderer =="
 strip_options_txt "-_ForceGdiBackend"
 
+# Promote the fully prepared prefix only after every Wine command and gate has
+# succeeded.  The original remains beside it until the outer transaction commits.
+printf 'format=1\nprefix=%s\n' "$final_prefix" > "$WINEPREFIX/.ableton-linux-prefix"
+prefix_backup=absent
+if [ -e "$final_prefix" ]; then
+    prefix_backup="$final_prefix.transaction-${transaction_dir##*/}"
+    [ ! -e "$prefix_backup" ] || { echo "!! prefix transaction backup already exists: $prefix_backup" >&2; exit 1; }
+    mv -- "$final_prefix" "$prefix_backup"
+fi
+printf '%s\t%s\n' "$final_prefix" "$prefix_backup" > "$transaction_dir/prefix.tsv"
+mv -- "$WINEPREFIX" "$final_prefix"
+prefix_promoted=1
+export WINEPREFIX="$final_prefix"
+if [ "$own_prefix_transaction" -eq 1 ]; then
+    prefix_transaction_commit "$transaction_dir"
+    rm -rf -- "$transaction_dir"
+fi
+
 echo
 echo "OK: prefix ready at $WINEPREFIX"
+if [ "${ABLETON_PREFIX_MANAGED:-0}" != 1 ]; then
 cat <<EOF
 
 ────────────────────────────────────────────────────────────────────────
@@ -748,3 +966,6 @@ Remaining steps (you supply Ableton + your own license):
      PipeASIO is a native PipeWire client: no JACK layer involved.
 ────────────────────────────────────────────────────────────────────────
 EOF
+fi
+prefix_promoted=0
+trap - EXIT

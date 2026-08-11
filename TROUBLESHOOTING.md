@@ -12,7 +12,7 @@ Ctrl-C, then download
 and run:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 An update that stops at `== [1/5] initialise prefix ==` has the same fix.
@@ -35,7 +35,7 @@ Confirm that PipeWire and WirePlumber are running on the host. If audio
 crackles, try a larger PipeASIO buffer:
 
 ```bash
-PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
+env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 ```
 
 See the [PipeASIO implementation note](notes/ABLETON-WINE-PIPEASIO.md) for
@@ -71,7 +71,7 @@ and run the update. It keeps your Live installation, your license, and
 your projects:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 Start Live, open **Settings > Display & Input**, and turn on **Enable GPU
@@ -84,16 +84,15 @@ include your graphics card model.
 
 ## CPU spikes when moving your mouse
 
-Live keeps its current diagnostics in `~/.log/ableton-wine/live.log`,
+Live keeps its current diagnostics in
+`$XDG_STATE_HOME/ableton-wine/logs/live.log` (by default,
+`~/.local/state/ableton-wine/logs/live.log`),
 whether you start it from the desktop menu or a terminal. If Live's CPU
 use jumps while you move the mouse, run:
 
 ```bash
-grep -i "sustained present-size mismatch:" ~/.log/ableton-wine/live.log
+grep -i "sustained present-size mismatch:" ~/.local/state/ableton-wine/logs/live.log
 ```
-
-The beta launcher writes `live-beta.log` in the same directory; use that
-filename instead when testing Live 12 Beta.
 
 If that prints anything,
 [open an issue](https://github.com/shibco/ableton-linux/issues) and paste
@@ -130,7 +129,7 @@ When both Live 11 and Live 12 are installed, `ableton-live` starts the newest
 major version. Select Live 11 with:
 
 ```bash
-ABLETON_LIVE_VERSION=11 ableton-live
+env ABLETON_LIVE_VERSION=11 ableton-live
 ```
 
 When one prefix contains multiple editions of the same major version, the
@@ -157,24 +156,22 @@ USB diagnostics.
 
 ## Ableton Link does not find peers
 
-Link peers must share a local network that carries multicast. Many guest and
-public Wi-Fi networks block multicast. Multicast also stops at a VPN tunnel:
-peers on the far side of a VPN cannot be discovered, while peers on your own
-network remain reachable with the VPN connected.
+Check the current Link setting:
 
-Check these in order:
+```bash
+sh ~/Downloads/install-ableton-latest.run link status
+```
 
-1. If you run a firewall, allow UDP port 20808.
-2. If you installed with `--no-link`, run the installer again with `--link`.
-3. Otherwise, close Live and retry the setup:
+If the command reports `policy: off`, enable Link:
 
-   ```bash
-   ~/.local/share/ableton-wine/setup-link.sh
-   ```
+```bash
+sh ~/Downloads/install-ableton-latest.run link enable --mode=session
+```
 
-Start Live and enable **Show Link Toggle** and Link again. See
-[Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
-appear.
+Start Live. Enable Show Link Toggle, then enable Link. If no peers appear,
+allow UDP port 20808 in your firewall and confirm that every peer uses the same
+local network. Guest and public Wi-Fi often block Link. A VPN does not make
+Link peers on another network visible.
 
 ## Audio latency remains high
 
@@ -233,14 +230,14 @@ and run the update. It keeps your Live installation, your license, and
 your projects:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 Until you can update, drag Live's window once after leaving fullscreen to
 clear the stuck image.
 
 If fullscreen is still wrong after the update, launch once with
-`WINE_WIN32_FULLSCREEN_CLASS=off ableton-live`, then
+`env WINE_WIN32_FULLSCREEN_CLASS=off ableton-live`, then
 [open an issue](https://github.com/shibco/ableton-linux/issues) and include
 your desktop environment and whether that launch behaved differently.
 
@@ -254,7 +251,7 @@ Live 11.
 Start Live with this command:
 
 ```bash
-ABLETON_SHORTCUTS=take ableton-live
+env ABLETON_SHORTCUTS=take ableton-live
 ```
 
 The launcher turns off only the exact Ctrl+Alt entries in conflict. It keeps

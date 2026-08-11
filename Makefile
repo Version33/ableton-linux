@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup uninstall vendor-cache verify clean distclean
+.PHONY: all build install setup uninstall test vendor-cache verify clean distclean
 
 all: build
 
@@ -7,13 +7,17 @@ build:                        ## build runtime and Link helper with Podman -> di
 	./build.sh
 
 install:                      ## install the built Wine tree + launcher (end user)
-	./scripts/install.sh
+	./scripts/installer.sh install --skip-live-install
 
 setup:                        ## create/refresh the Wine prefix (end user)
 	./scripts/setup-prefix.sh
 
 uninstall:                    ## remove installed Wine tree + launcher
-	./scripts/uninstall.sh
+	./scripts/installer.sh uninstall --keep-prefix
+
+test:                         ## run installer and launcher lifecycle gates
+	./scripts/test-shortcut-hold.sh
+	./scripts/test-installer-lifecycle.sh
 
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup
 	./scripts/vendor-winetricks-cache.sh

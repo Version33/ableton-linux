@@ -1,15 +1,12 @@
-# Always-on Ableton Link anchor. Installed but NOT enabled by default: the
-# Live and Max launchers start a session-scoped ableton-linkd that exits on
-# its own once no peer is left. Enable this unit only if you want the anchor
-# running from login, e.g. a studio machine that other Link peers join while
-# Live is closed:
-#   systemctl --user enable --now ableton-linkd.service
+# Template only. setup-link.sh renders @ABLETON_LINKD@ to the one resolved
+# executable path and adds the ownership marker before installing this unit.
 [Unit]
 Description=Ableton Link session anchor (ableton-linkd)
 After=default.target
+X-AbletonLinuxOwned=true
 
 [Service]
-ExecStart=%h/.local/share/ableton-wine/ableton-linkd --linger 0
+ExecStart="@ABLETON_LINKD@" --linger 0
 Restart=on-failure
 RestartSec=5
 

@@ -1,117 +1,117 @@
-# Ableton Link support
+# Set up and verify Ableton Link
 
-The installer ships the native Link peer `ableton-linkd` and configures
-Link during installation. The installer flag `--no-link` skips the setup and
-is remembered on later runs; `--link` opts back in. The setup requests `sudo`
-to open UDP port 20808 when UFW or firewalld is active, and to remove the
-NetworkManager hook that earlier setup versions installed. If the step was
-skipped or could not complete, close Live and retry it as your normal user:
+The installer saves one Link mode. Installation, the Live and Max launchers,
+the user service, and the uninstaller use the same mode.
 
-```bash
-"$HOME/.local/share/ableton-wine/setup-link.sh"
-```
+## Choose when Link runs
 
-From a repository checkout, run:
+Run one of these commands:
 
 ```bash
-./scripts/setup-link.sh
+sh install-ableton-latest.run link enable --mode=session
+sh install-ableton-latest.run link enable --mode=always
+sh install-ableton-latest.run link disable
+sh install-ableton-latest.run link status
 ```
 
-## What the setup changes
+- `off` leaves Link disabled and removes only the Link files and settings that
+  this project created.
+- `session` starts the Link peer with Live or Max. The peer exits after the
+  session ends and its idle time expires.
+- `always` enables the user service and starts the Link peer after login.
 
-The script:
+The `install` and `update` commands also accept
+`--link=off|session|always`. An update keeps the saved mode unless you choose
+another one.
 
-1. Opens UDP port 20808 through `ufw` when UFW is enabled, or through
-   `firewall-cmd` when firewalld is running. Without an active firewall it
-   changes nothing and, if you run another firewall, tells you to allow
-   UDP 20808 manually.
-2. Removes the NetworkManager dispatcher hook that setup versions 1 and 2
-   installed, using `sudo`, and drops the old `224.0.0.0/4` route with it.
-   If the removal fails, the script prints the removal command and exits
-   without recording the setup as complete, so the next update retries. A
-   stale route without the hook is only reported: it is harmless to Link
-   and clears on reboot.
-3. Copies the user unit to
+From a repository checkout, run the same command through the source script:
+
+```bash
+./scripts/installer.sh link enable --mode=session
+```
+
+## Link files and host settings
+
+When you enable Link, the installer can make three host changes:
+
+1. It removes the NetworkManager dispatcher hook from setup versions 1 and 2.
+   It also removes that hook's obsolete `224.0.0.0/4` route.
+2. It opens UDP port 20808 when UFW or firewalld is active. The installer
+   records whether it added the rule. Disable and uninstall then remove only
+   that rule. They keep any rule that already existed.
+3. It writes a user unit with a project ownership marker to
    `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ableton-linkd.service`
-   without enabling it. The launchers start `ableton-linkd` when Live or Max
-   starts, and the daemon exits on its own after 15 minutes with no peers,
-   so nothing runs while Live is closed. Setup versions 1 to 3 enabled the
-   unit, which kept the daemon running from login; the version 5 setup
-   disables that once. Enable the unit yourself if you want an always-on
-   anchor:
+   with the `ABLETON_LINKD` path. Session mode keeps the unit disabled. Always
+   mode enables and starts it.
 
-   ```bash
-   systemctl --user enable --now ableton-linkd.service
-   ```
+The installer gives each change a time limit. A failed change returns a
+non-zero status. During an install or update, the installer saves the existing
+firewall rule, unit, service state, process, files, and Link mode. It restores
+that state if a later step fails.
 
-The script can be repeated and refuses to run while Live is open. If the
-daemon or unit file is missing, it keeps the firewall change and reports
-that the daemon setup was skipped. It records the setup version only when
-the service step completed, so a skipped or unchecked service step is
-retried on the next update.
+## Link settings from older releases
 
 Setup versions 1 and 2 added a `224.0.0.0/4` route on the LAN interface and
 a NetworkManager hook to maintain it. Version 3 removed both. The Link SDK
-sets `IP_MULTICAST_IF` on every discovery socket, which selects the outgoing
-interface directly instead of through a routing-table lookup, so the route
-was never consulted for Link traffic. Live under Wine and `ableton-linkd`
-both set that option per interface; see the recorded trace in
-[ABLETON-WINE-LINK-FIRSTCLASS.md](ABLETON-WINE-LINK-FIRSTCLASS.md).
-Version 4 stopped enabling the user unit and made the daemon exit on its
-own after a session ends, as described above.
+sets `IP_MULTICAST_IF` on every discovery socket. This option selects the
+outgoing interface without consulting the routing table. Live under Wine and
+`ableton-linkd` both set the option for each interface. The
+[implementation record](ABLETON-WINE-LINK-FIRSTCLASS.md) contains the trace.
+Version 4 stopped enabling the user unit. It also made the daemon exit after a
+session ends.
 
-## Components
+## Run `ableton-linkd`
 
-### `ableton-linkd`
-
-The installer ships `ableton-linkd`, built from the vendored Ableton Link 4.0
-SDK, and installs it at:
+The build uses the vendored Ableton Link 4.0 SDK to create `ableton-linkd`.
+The installer copies it to:
 
 ```text
 ~/.local/share/ableton-wine/ableton-linkd
 ```
 
-It joins the Link session as a native peer and holds the shared tempo and
-timeline while Live restarts, so a restarted Live rejoins the same beat. It
-enables Start Stop Sync but never calls the SDK methods that set tempo or
-beat position after construction.
+The daemon joins the Link session as a native peer. It holds the shared tempo
+and timeline while Live restarts, so Live rejoins the same beat. It enables
+Start Stop Sync. After startup, it does not call the SDK methods that set the
+tempo or beat position.
 
-The daemon runs only around a session. After 15 minutes with no peers it
-exits on its own. Live counts as a peer while Link is enabled in its
-preferences, so the daemon stays up through a Live restart or crash and
-stops soon after you finish working. `--linger` changes the wait.
+In session mode, the daemon exits after 15 minutes with no peers. Live counts
+as a peer after you enable Link in its settings. The daemon therefore stays
+open through a Live restart or crash and exits after the session ends. Use
+`--linger` to change the idle time.
 
 Its modes are:
 
-- No arguments: run in the foreground and log to stderr on peer count,
-  tempo, and transport changes. It writes its startup lines and one status
-  line, then a quiet session writes nothing more.
-- `--daemon`: run in the background and write
-  `~/.log/ableton-linkd/ableton-linkd.log`. The launchers use this mode.
-- `--probe [seconds]`: join, wait up to ten seconds by default, print
-  `peers: N` and `tempo: T.T`, and exit zero after seeing at least one other
-  peer.
-- `--tempo BPM`: set only the construction tempo used when this process
-  creates a new session.
-- `--linger SECONDS`: exit after this long with no peers. Whole seconds
-  only. The default is 900. `--linger 0` never exits; the systemd unit uses
-  it. The `ABLETON_LINKD_LINGER` environment variable sets the same value.
-- `--verbose` (or `ABLETON_LINKD_VERBOSE=1`): also write a status line
-  every ten seconds. Before 2026.08 this was unconditional. Under the
-  systemd unit it wrote 8640 identical journal lines a day. That read as a
-  stuck process and invited force quits.
+- With no arguments, it runs in the foreground. It writes startup information
+  and reports changes to the peer count, tempo, and transport state to stderr.
+- `--daemon` runs it in the background with its old log location. Current
+  launchers use `ableton-linkctl` instead. The controller runs the daemon in
+  the foreground and writes its output to
+  `$XDG_STATE_HOME/ableton-wine/logs/ableton-linkd.log`.
+- `--probe [seconds]` joins a session and waits for another peer. The default
+  limit is ten seconds. It prints `peers: N` and `tempo: T.T`, then exits with
+  status zero when it finds another peer.
+- `--tempo BPM` sets the starting tempo when this process creates a new
+  session. It does not change the tempo of an existing session.
+- `--linger SECONDS` sets the idle time before the daemon exits. The value
+  must use whole seconds. The default is 900. A value of `0` keeps it running,
+  which the user service requires. `ABLETON_LINKD_LINGER` sets the same value.
+- `--verbose` or `ABLETON_LINKD_VERBOSE=1` writes a status line every ten
+  seconds. Before 2026.08, the daemon always wrote these lines. The user
+  service then wrote 8,640 identical journal lines each day, which made an
+  idle process look busy.
 
-The Live and Max launchers start `ableton-linkd --daemon` when the binary
-exists and no process with that name is running. `ABLETON_LINKD` overrides
-its path. The user unit runs `--linger 0`; it is installed but stays
-disabled unless you enable it for an always-on anchor.
+The Live and Max launchers ask `ableton-linkctl` to start the daemon when the
+saved mode allows it. The controller handles one start or stop at a time and
+records the process ID. Before it sends a signal, it checks `/proc/PID/exe`
+against the resolved `ABLETON_LINKD` path. The user unit runs `--linger 0` in
+always mode.
 
-### `linkprobe.exe`
+## Test Wine networking with `linkprobe.exe`
 
-The repository contains `tools/linkprobe.exe`; the `.run` installer does not
-install it. The program runs under this Wine and tests `SO_REUSEADDR`, a bind
-to `0.0.0.0:20808`, per-interface `IP_ADD_MEMBERSHIP`, multicast transmit,
-and receive.
+The repository includes `tools/linkprobe.exe`. The `.run` installer does not
+install it. Run the program under Wine to test `SO_REUSEADDR`, a bind to
+`0.0.0.0:20808`, `IP_ADD_MEMBERSHIP` on each interface, multicast transmission,
+and multicast reception.
 
 Its exact verdict lines are:
 
@@ -122,66 +122,62 @@ LINKPROBE RX-NETWORK OK
 LINKPROBE PEERS: N
 ```
 
-The process exits zero when transmit and loopback receive succeed.
+The process exits with status zero when transmission and loopback reception
+succeed.
 `RX-NETWORK OK` requires a datagram whose source is not one of the local
 machine's addresses. The daemon on the same machine is not enough for that
 line, even though it can appear in `PEERS`.
 
 `linkprobe.exe` sends discovery datagrams without a session payload. It tests
-Wine's multicast socket behavior, not full Ableton Link session membership.
+Wine's multicast socket behaviour, not full Ableton Link session membership.
 
-`tools/jacklinkd.c` is unrelated. It restores JACK port links and happens to
-register the JACK client name `ableton-linkd`. Current launchers do not start
-it.
+`tools/jacklinkd.c` restores JACK port links. It uses `ableton-linkd` as its
+JACK client name, but current launchers do not start it.
 
-## Verification
+## Verify Link
 
-Check the host setup while Live is open, or within 15 minutes of closing
-it:
+Check the saved mode, firewall rule, and daemon state:
 
 ```bash
-pgrep -a ableton-linkd
+sh install-ableton-latest.run link status
 ```
 
-With Live closed for longer, an empty result is the expected state: the
-daemon has exited. `systemctl --user status ableton-linkd.service` reports
-the unit as inactive and disabled unless you enabled the always-on anchor
-yourself.
+In session mode, the command reports `state: stopped` after Live has stayed
+closed for the configured idle time. In always mode, it reports the daemon
+started by the user service.
 
 For `ufw`, run `sudo ufw status` and look for `20808/udp`. For firewalld, run
 `firewall-cmd --list-ports`.
 
-The setup runs once per version and does not notice a firewall enabled after
-it. In that case, allow UDP 20808 yourself or re-run the setup script.
+If you enable a firewall later, repeat `link enable`. The installer then checks
+the firewall and records any rule it adds.
 
-To check that native peers can join each other, start the daemon, then run
-the probe against it:
+Start the daemon, then use its probe to check that two native peers can join:
 
 ```bash
-"$HOME/.local/share/ableton-wine/ableton-linkd" --daemon
+"$HOME/.local/share/ableton-wine/ableton-linkctl" start
 "$HOME/.local/share/ableton-wine/ableton-linkd" --probe 10
 ```
 
-The probe prints `peers: 1` or more and exits zero. The started daemon
-exits on its own 15 minutes after the probe finishes. This confirms that
-two native SDK instances can join. It does not identify Live as the peer.
+The probe prints `peers: 1` or a larger number and exits with status zero. The
+daemon exits 15 minutes after the probe finishes. This result confirms that
+two native SDK instances can join. It does not confirm that Live joined.
 
-From a checkout, test Wine's local multicast socket behavior:
+From a checkout, test Wine's local multicast socket behaviour:
 
 ```bash
 env WINEPREFIX="$HOME/.wine-ableton" \
   "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine" tools/linkprobe.exe
 ```
 
-Require `LINKPROBE TX OK` and `LINKPROBE RX-LOOPBACK OK`. To require
-`LINKPROBE RX-NETWORK OK`, run another Link peer on a second LAN host during
-the test.
+Confirm that the output contains `LINKPROBE TX OK` and
+`LINKPROBE RX-LOOPBACK OK`. To check `LINKPROBE RX-NETWORK OK`, run another
+Link peer on a second computer on the same LAN.
 
-In Live, open Preferences, select Link, Tempo & MIDI, enable Show Link
-Toggle, then enable Link in the control bar. Confirm that its peer count is
-at least one. Change tempo from each peer in turn, check beat and phase
-alignment, and restart Live. Confirm that the restarted Live instance rejoins
-the same tempo and phase.
+In Live, open `Preferences > Link, Tempo & MIDI` and enable `Show Link Toggle`.
+Enable Link in the control bar and confirm that Live shows at least one peer.
+Change the tempo from each peer in turn, then check the beat and phase. Restart
+Live and confirm that it rejoins at the same tempo and phase.
 
 For packet-level checks:
 
@@ -193,27 +189,27 @@ Discovery uses `224.76.78.75:20808`. The Wireshark filter
 `ip.dst == 224.76.78.75 || ip.dst == 224.0.0.22` also includes IGMPv3
 membership reports.
 
-If a known remote peer is active but neither the native probe nor tcpdump
-sees it, check the firewall, the access point (many block or filter
-multicast), and that both hosts sit on the same LAN segment. If native tools
-see the remote peer but Live does not, compare the linkprobe verdicts and
-packet capture before treating the result as a Wine socket fault.
+If neither the native probe nor `tcpdump` sees an active peer, check the
+firewall and access point. Many access points block or filter multicast. Also
+confirm that both computers use the same LAN segment. If the native tools see
+the peer but Live does not, compare the `linkprobe.exe` results with the packet
+capture before diagnosing a Wine socket fault.
 
-## Protocol and scope
+## Check the network requirements
 
-Ableton Link discovers peers with UDP multicast on
-`224.76.78.75:20808`. Pairwise timeline measurements use unicast UDP on
-ephemeral ports. Host connection tracking covers replies to those outbound
-exchanges, so the setup opens only UDP 20808.
+Ableton Link discovers peers through UDP multicast on
+`224.76.78.75:20808`. Pairs of peers measure their timelines through unicast
+UDP on temporary ports. The host tracks replies to those outgoing exchanges,
+so the installer opens only UDP port 20808.
 
-Peers must share a LAN that carries multicast. Native Linux applications
-with Ableton Link support join the session directly. JACK-only applications
-may use the separate upstream
+Peers must use a LAN that carries multicast. Linux applications with Ableton
+Link support join the session directly. JACK-only applications can use the
+separate upstream
 [`jack_link`](https://github.com/rncbc/jack_link) project.
 
-PipeASIO has no JACK transport layer. The native peer therefore
-cannot synchronize Live through JACK. Live joins the Link session as its own
-Wine peer and follows the shared timeline itself.
+PipeASIO has no JACK transport layer, so the native peer cannot synchronise
+Live through JACK. Live joins the Link session as a Wine peer and follows the
+shared timeline itself.
 
 Ableton Link is Ableton's technology. This project follows its naming and
 enablement guidelines and is not affiliated with or endorsed by Ableton.

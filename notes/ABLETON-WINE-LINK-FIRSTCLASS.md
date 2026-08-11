@@ -4,6 +4,10 @@ This design shipped in release 2026.07.23.1. Current setup and verification
 instructions are in [ABLETON-WINE-LINK.md](ABLETON-WINE-LINK.md). This file
 records the implementation choices and remaining test coverage.
 
+*Current releases use the Link modes and `ableton-linkctl` described in
+[ABLETON-WINE-LINK.md](ABLETON-WINE-LINK.md). The sections below record the
+launcher and service design shipped in release 2026.07.23.1.*
+
 ## Direct Wine networking
 
 Live joins Ableton Link as its own Wine peer. Wine 11.11 passes the multicast

@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=@NAME@
 Comment=Music production and performance
-Exec=@HOME@/.local/bin/ableton-live %f
+Exec=@BIN@/ableton-live %f
 Type=Application
 StartupNotify=true
-Path=@HOME@/.wine-ableton
+Path=@PREFIX@
 Icon=@ICON@
 StartupWMClass=@WMCLASS@
 MimeType=application/x-ableton-live-set;application/x-ableton-live-clip;application/x-ableton-live-pack;

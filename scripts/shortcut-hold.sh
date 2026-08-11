@@ -79,8 +79,13 @@ ableton_shortcuts_keys()
 
 ableton_shortcuts_live_running()
 {
-    pgrep -af '[P]rogramData.*Ableton Live.*\.exe|[A]bleton Live.*\.exe.*ProgramData' \
-        >/dev/null 2>&1
+    if declare -F ableton_live_running >/dev/null 2>&1; then
+        ableton_live_running
+        return
+    fi
+    # Without the prefix/runtime-scoped lifecycle helper there is no safe
+    # process identity test. Treat Live as absent instead of matching globally.
+    return 1
 }
 
 ableton_shortcuts_init_state()
@@ -398,6 +403,12 @@ ableton_shortcuts_prepare()
 ableton_shortcuts_watch_loop()
 {
     local delay="${ABLETON_SHORTCUTS_POLL_SECONDS:-2}"
+    if ! awk -v value="$delay" 'BEGIN {
+        exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value + 0 > 0 && value + 0 <= 60)
+    }' </dev/null; then
+        echo "ableton-live: invalid ABLETON_SHORTCUTS_POLL_SECONDS '$delay'; using 2" >&2
+        delay=2
+    fi
     exec 7>"$ableton_shortcuts_watch_lock" || return 1
     flock -n 7 || return 0
     while [ -f "$ableton_shortcuts_state" ]; do
