@@ -1,0 +1,798 @@
+From 818e39a4665ffb3d8e1bb0bb62fae42c40a0c26c Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Tue, 4 Aug 2026 23:25:29 +0200
+Subject: [PATCH] win32u: cache the enumerated host font list in the prefix
+
+Enumerating the host fonts (a fontconfig walk plus one freetype parse per
+face) repeats in every font-using process. The session font cache does not
+prevent this: font_init() runs the enumeration before it consults the
+cache key, and the key is created with REG_OPTION_VOLATILE, so Wine
+deletes it with the wineserver session. On a host with 3482 font files
+the enumeration costs about 300 ms in the first process of every session.
+The Ableton launcher starts a fresh session for every Live launch, so
+Live repeats it on every start.
+
+Record the raw face submissions of one enumeration, before any collision
+with an already loaded face is resolved, and write them to
+c:\windows\wine-host-font.cache. On later starts font_init() replays the
+records through add_gdi_face(), so a collision with a prefix font
+resolves against the prefix state of the loading process, not the state
+of the process that wrote the file. The file is keyed by a stamp over
+every enumeration input: the host font directory trees (entry names,
+sizes and nanosecond mtimes, dot-prefixed names included), the
+fontconfig configuration files and library version, the locale that
+picks the face names, and the default antialiasing flags. A walk that
+overruns the depth or entry limit fails the stamp and the cache stays
+off. font_init() validates the complete file, including a checksum,
+before it adds a single face; any defect discards the whole file, and
+the full enumeration runs and rewrites it through a temporary file plus
+rename, so a torn write can never be read back. Reads and writes hold
+the existing font mutex. The prefix-local directories (c:\windows\Fonts,
+the Wine data dir) always rescan, so fonts installed into the prefix
+appear without invalidating the cache. WINE_DISABLE_HOST_FONT_CACHE=1
+turns the cache off.
+
+Verified on a 64-bit scratch build against a fresh prefix, 9721 host
+font directory entries: the font tree after a replay is line-identical
+to the tree after a live enumeration; a flipped byte and a truncation
+are each rejected whole and the file is rewritten; a new font, a
+removed font, a nanosecond-only mtime change, a locale change and a
+fontconfig configuration change each miss the stamp and rerun the
+enumeration. Measured saving with the first cache version on the real
+stack: about 1.9 s per Live launch. The mechanism that produces the
+saving, skipping the enumeration while the stamp matches, is unchanged.
+
+See notes/FINDINGS-M4L-LAUNCH-2026-08-04.md, P-M1.
+---
+ dlls/win32u/font.c          | 454 +++++++++++++++++++++++++++++++++++-
+ dlls/win32u/freetype.c      | 180 +++++++++++++-
+ dlls/win32u/ntgdi_private.h |   2 +
+ 3 files changed, 633 insertions(+), 3 deletions(-)
+
+diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
+index e8fe1b2..73d736a 100644
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -1211,6 +1211,15 @@ static struct gdi_font_face *create_face( struct gdi_font_family *family, const
+     return NULL;
+ }
+ 
++/* The persistent host font cache (below) records every host face
++ * submission of the enumeration before collisions are resolved. */
++static BOOL host_font_capture_active;
++static void host_font_cache_capture( const WCHAR *family_name, const WCHAR *second_name,
++                                     const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
++                                     BOOL is_mem_font, UINT index, FONTSIGNATURE fs, DWORD ntmflags,
++                                     DWORD weight, DWORD version, DWORD flags,
++                                     const struct bitmap_font_size *size );
++
+ int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
+                   const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
+                   void *data_ptr, SIZE_T data_size, UINT index, FONTSIGNATURE fs,
+@@ -1221,6 +1230,11 @@ int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
+     struct gdi_font_family *family;
+     int ret = 0;
+ 
++    if (host_font_capture_active && (flags & ADDFONT_HOST_FONT))
++        host_font_cache_capture( family_name, second_name, style, fullname, file,
++                                 data_ptr != NULL, index, fs, ntmflags, weight,
++                                 version, flags, size );
++
+     if ((family = find_family_from_name( family_name ))) family->refcount++;
+     else if (!(family = create_family( family_name, second_name ))) return ret;
+ 
+@@ -6782,6 +6796,421 @@ static void load_registry_fonts(void)
+     NtClose( hkey );
+ }
+ 
++/***********************************************************************
++ * Persistent host font cache
++ *
++ * The host font enumeration (fontconfig walk plus one freetype parse per
++ * face) repeats in every font-using process and dominates the first
++ * process's font_init time. This cache records the raw face submissions of
++ * one enumeration, before any collision with an already loaded face is
++ * resolved, and replays them through add_gdi_face on later starts, so
++ * collisions with prefix fonts resolve against the prefix state of the
++ * loading process rather than the one that wrote the file. The file is
++ * keyed by a stamp over every enumeration input (the host font directory
++ * trees, the fontconfig configuration, the locale, the antialiasing
++ * defaults), carries a checksum, and is replaced through a temporary file
++ * plus rename, so a torn write can never be read back. The complete file
++ * is validated before the first face is added; a file that fails any
++ * check is ignored as a whole, and the full enumeration runs and rewrites
++ * it. WINE_DISABLE_HOST_FONT_CACHE=1 disables both reading and writing.
++ */
++
++static const WCHAR host_font_cache_pathW[] =
++    {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',
++     'w','i','n','e','-','h','o','s','t','-','f','o','n','t','.','c','a','c','h','e',0};
++static const WCHAR host_font_cache_tmp_pathW[] =
++    {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s','\\',
++     'w','i','n','e','-','h','o','s','t','-','f','o','n','t','.','c','a','c','h','e','.','t','m','p',0};
++
++#define HOST_FONT_CACHE_MAGIC   0x31434657 /* "WFC1" */
++#define HOST_FONT_CACHE_VERSION 2
++/* String caps bound what a record may carry, not what GDI keeps: raw
++ * submissions go in untruncated (split families run past LF_FACESIZE),
++ * and add_gdi_face applies its own limits on replay exactly as it does
++ * during a live enumeration. */
++#define HOST_FONT_CACHE_MAX_NAME 256      /* WCHARs, family/style cap per face */
++#define HOST_FONT_CACHE_MAX_FULL 512      /* WCHARs, full name cap per face */
++#define HOST_FONT_CACHE_MAX_FILE 1024     /* WCHARs, path cap per face */
++#define HOST_FONT_CACHE_MAX_SIZE (64 * 1024 * 1024)
++
++struct host_font_cache_header
++{
++    DWORD  magic;
++    DWORD  version;
++    UINT64 stamp;
++    UINT64 checksum;   /* FNV-1a of the whole file, with this field zeroed */
++    DWORD  count;
++    DWORD  total_size;
++};
++
++struct host_font_cache_face
++{
++    DWORD                   size;      /* whole record, bytes, 4-aligned */
++    DWORD                   index;
++    DWORD                   flags;
++    DWORD                   ntmflags;
++    DWORD                   weight;
++    DWORD                   version;
++    DWORD                   scalable;
++    struct bitmap_font_size bitmap;
++    FONTSIGNATURE           fs;
++    /* followed by 5 strings, each a DWORD char count plus WCHAR data:
++     * family, second family name, style, full name, file */
++};
++
++/* One raw face submission of the running enumeration, serialized as the
++ * on-disk record. Replaying the records through add_gdi_face is equivalent
++ * to rerunning the enumeration, whatever the prefix fonts look like when
++ * the file is read. */
++struct host_font_capture
++{
++    struct list                entry;
++    struct host_font_cache_face record;
++    /* string data follows, exactly as stored in the file */
++};
++
++static struct list host_font_captures = LIST_INIT( host_font_captures );
++static BOOL host_font_capture_failed;
++
++static UINT64 host_font_cache_hash( UINT64 hash, const void *data, SIZE_T len )
++{
++    /* FNV-1a, the same fold the host font stamp uses */
++    const unsigned char *p = data;
++    while (len--)
++    {
++        hash ^= *p++;
++        hash *= 1099511628211ull;
++    }
++    return hash;
++}
++
++static UINT64 host_font_cache_checksum( const struct host_font_cache_header *header,
++                                        const char *payload, SIZE_T payload_size )
++{
++    struct host_font_cache_header copy = *header;
++    UINT64 hash = 1469598103934665603ull;
++
++    copy.checksum = 0;
++    hash = host_font_cache_hash( hash, &copy, sizeof(copy) );
++    return host_font_cache_hash( hash, payload, payload_size );
++}
++
++static BOOL host_font_cache_disabled(void)
++{
++    const char *env = getenv( "WINE_DISABLE_HOST_FONT_CACHE" );
++    return env && !strcmp( env, "1" );
++}
++
++/* Writes go to the temporary name and reach the final name only through
++ * the rename below, so readers never see a partially written file. */
++static HANDLE open_host_font_cache( BOOL write )
++{
++    OBJECT_ATTRIBUTES attr;
++    UNICODE_STRING nt_name;
++    IO_STATUS_BLOCK io = {{0}};
++    HANDLE handle;
++    NTSTATUS status;
++
++    nt_name.Buffer = (WCHAR *)(write ? host_font_cache_tmp_pathW : host_font_cache_pathW);
++    nt_name.Length = nt_name.MaximumLength = write ? sizeof(host_font_cache_tmp_pathW) - sizeof(WCHAR)
++                                                   : sizeof(host_font_cache_pathW) - sizeof(WCHAR);
++    attr.Length = sizeof(attr);
++    attr.RootDirectory = 0;
++    attr.Attributes = OBJ_CASE_INSENSITIVE;
++    attr.ObjectName = &nt_name;
++    attr.SecurityDescriptor = NULL;
++    attr.SecurityQualityOfService = NULL;
++
++    if (write)
++        status = NtCreateFile( &handle, GENERIC_WRITE | DELETE | SYNCHRONIZE, &attr, &io, NULL,
++                               FILE_ATTRIBUTE_NORMAL, 0, FILE_OVERWRITE_IF,
++                               FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0 );
++    else
++        status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
++                             FILE_SHARE_READ,
++                             FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT );
++    return status ? NULL : handle;
++}
++
++static BOOL rename_host_font_cache( HANDLE handle )
++{
++    char buffer[FIELD_OFFSET(FILE_RENAME_INFORMATION, FileName) + sizeof(host_font_cache_pathW)];
++    FILE_RENAME_INFORMATION *info = (FILE_RENAME_INFORMATION *)buffer;
++    IO_STATUS_BLOCK io = {{0}};
++
++    memset( buffer, 0, sizeof(buffer) );
++    info->ReplaceIfExists = TRUE;
++    info->RootDirectory   = 0;
++    info->FileNameLength  = sizeof(host_font_cache_pathW) - sizeof(WCHAR);
++    memcpy( info->FileName, host_font_cache_pathW, info->FileNameLength );
++    return !NtSetInformationFile( handle, &io, info, sizeof(buffer), FileRenameInformation );
++}
++
++static BOOL host_font_cache_get_string( const char **ptr, const char *end, DWORD max_chars,
++                                        WCHAR *buffer )
++{
++    DWORD count;
++
++    if ((SIZE_T)(end - *ptr) < sizeof(DWORD)) return FALSE;
++    memcpy( &count, *ptr, sizeof(DWORD) );
++    *ptr += sizeof(DWORD);
++    if (count >= max_chars) return FALSE;
++    if ((SIZE_T)(end - *ptr) < count * sizeof(WCHAR)) return FALSE;
++    memcpy( buffer, *ptr, count * sizeof(WCHAR) );
++    buffer[count] = 0;
++    *ptr += count * sizeof(WCHAR);
++    return TRUE;
++}
++
++static BOOL host_font_cache_check_string( const char **ptr, const char *end, DWORD max_chars )
++{
++    DWORD count;
++
++    if ((SIZE_T)(end - *ptr) < sizeof(DWORD)) return FALSE;
++    memcpy( &count, *ptr, sizeof(DWORD) );
++    *ptr += sizeof(DWORD);
++    if (count >= max_chars) return FALSE;
++    if ((SIZE_T)(end - *ptr) < count * sizeof(WCHAR)) return FALSE;
++    *ptr += count * sizeof(WCHAR);
++    return TRUE;
++}
++
++/* Validate the complete file before anything touches the font tree: header
++ * fields, checksum, and the structure of every record. A defect anywhere
++ * rejects the whole file, so no face from a bad file is ever added. */
++static BOOL validate_host_font_cache( const char *data, SIZE_T size, UINT64 stamp )
++{
++    struct host_font_cache_header header;
++    struct host_font_cache_face cached;
++    const char *ptr, *record, *record_end;
++    DWORD i;
++
++    if (size < sizeof(header)) return FALSE;
++    memcpy( &header, data, sizeof(header) );
++    if (header.magic != HOST_FONT_CACHE_MAGIC || header.version != HOST_FONT_CACHE_VERSION ||
++        header.total_size != size || !header.count) return FALSE;
++    if (header.stamp != stamp)
++    {
++        TRACE( "host font cache stamp mismatch, falling back to enumeration\n" );
++        return FALSE;
++    }
++    if (host_font_cache_checksum( &header, data + sizeof(header), size - sizeof(header) )
++        != header.checksum) return FALSE;
++
++    ptr = data + sizeof(header);
++    for (i = 0; i < header.count; i++)
++    {
++        record = ptr;
++        if ((SIZE_T)(data + size - record) < sizeof(cached)) return FALSE;
++        memcpy( &cached, record, sizeof(cached) );
++        if (cached.size < sizeof(cached) + 5 * sizeof(DWORD) || (cached.size & 3) ||
++            cached.size > (SIZE_T)(data + size - record)) return FALSE;
++        record_end = record + cached.size;
++        ptr = record + sizeof(cached);
++        if (!host_font_cache_check_string( &ptr, record_end, HOST_FONT_CACHE_MAX_NAME )) return FALSE;
++        if (!host_font_cache_check_string( &ptr, record_end, HOST_FONT_CACHE_MAX_NAME )) return FALSE;
++        if (!host_font_cache_check_string( &ptr, record_end, HOST_FONT_CACHE_MAX_NAME )) return FALSE;
++        if (!host_font_cache_check_string( &ptr, record_end, HOST_FONT_CACHE_MAX_FULL )) return FALSE;
++        if (!host_font_cache_check_string( &ptr, record_end, HOST_FONT_CACHE_MAX_FILE )) return FALSE;
++        ptr = record_end;
++    }
++    return ptr == data + size;
++}
++
++static BOOL load_host_font_cache( UINT64 stamp )
++{
++    struct host_font_cache_header header;
++    struct host_font_cache_face cached;
++    FILE_STANDARD_INFORMATION std_info;
++    IO_STATUS_BLOCK io = {{0}};
++    HANDLE handle;
++    char *data = NULL;
++    const char *ptr, *record, *record_end;
++    SIZE_T size;
++    WCHAR family[HOST_FONT_CACHE_MAX_NAME], second[HOST_FONT_CACHE_MAX_NAME];
++    WCHAR style[HOST_FONT_CACHE_MAX_NAME], fullname[HOST_FONT_CACHE_MAX_FULL];
++    WCHAR file[HOST_FONT_CACHE_MAX_FILE];
++    DWORD i, loaded = 0;
++
++    if (!(handle = open_host_font_cache( FALSE ))) return FALSE;
++    if (NtQueryInformationFile( handle, &io, &std_info, sizeof(std_info), FileStandardInformation ))
++        goto failed;
++    size = std_info.EndOfFile.QuadPart;
++    if (size < sizeof(header) || size > HOST_FONT_CACHE_MAX_SIZE) goto failed;
++    if (!(data = malloc( size ))) goto failed;
++    if (NtReadFile( handle, 0, NULL, NULL, &io, data, size, NULL, NULL )) goto failed;
++    if (io.Information != size) goto failed;
++    NtClose( handle );
++    handle = NULL;
++
++    if (!validate_host_font_cache( data, size, stamp )) goto failed;
++
++    /* every record is proven well formed: replay them */
++    memcpy( &header, data, sizeof(header) );
++    ptr = data + sizeof(header);
++    for (i = 0; i < header.count; i++)
++    {
++        record = ptr;
++        memcpy( &cached, record, sizeof(cached) );
++        record_end = record + cached.size;
++        ptr = record + sizeof(cached);
++        if (!host_font_cache_get_string( &ptr, record_end, HOST_FONT_CACHE_MAX_NAME, family )) goto failed;
++        if (!host_font_cache_get_string( &ptr, record_end, HOST_FONT_CACHE_MAX_NAME, second )) goto failed;
++        if (!host_font_cache_get_string( &ptr, record_end, HOST_FONT_CACHE_MAX_NAME, style )) goto failed;
++        if (!host_font_cache_get_string( &ptr, record_end, HOST_FONT_CACHE_MAX_FULL, fullname )) goto failed;
++        if (!host_font_cache_get_string( &ptr, record_end, HOST_FONT_CACHE_MAX_FILE, file )) goto failed;
++        add_gdi_face( family, second, style, fullname, file, NULL, 0,
++                      cached.index, cached.fs, cached.ntmflags, cached.weight,
++                      cached.version, cached.flags,
++                      cached.scalable ? NULL : &cached.bitmap );
++        loaded++;
++        ptr = record_end;
++    }
++    free( data );
++    TRACE( "replayed %u host faces from the font cache\n", loaded );
++    return TRUE;
++
++failed:
++    if (handle) NtClose( handle );
++    free( data );
++    return FALSE;
++}
++
++static char *host_font_cache_put_string( char *ptr, const WCHAR *str )
++{
++    DWORD count = lstrlenW( str );
++
++    memcpy( ptr, &count, sizeof(count) );
++    ptr += sizeof(count);
++    memcpy( ptr, str, count * sizeof(WCHAR) );
++    return ptr + count * sizeof(WCHAR);
++}
++
++/* Record one raw host face submission, called from add_gdi_face before the
++ * face meets the font tree. A submission the format cannot represent
++ * poisons the whole capture: writing the other faces would replay a
++ * different enumeration than the one that ran. */
++static void host_font_cache_capture( const WCHAR *family_name, const WCHAR *second_name,
++                                     const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
++                                     BOOL is_mem_font, UINT index, FONTSIGNATURE fs, DWORD ntmflags,
++                                     DWORD weight, DWORD version, DWORD flags,
++                                     const struct bitmap_font_size *size )
++{
++    static const WCHAR emptyW[1];
++    struct host_font_capture *capture;
++    DWORD record_size;
++    char *ptr;
++
++    if (host_font_capture_failed) return;
++    if (!second_name) second_name = emptyW;
++
++    if (is_mem_font || !style || !fullname || !file ||
++        lstrlenW( family_name ) >= HOST_FONT_CACHE_MAX_NAME ||
++        lstrlenW( second_name ) >= HOST_FONT_CACHE_MAX_NAME ||
++        lstrlenW( style ) >= HOST_FONT_CACHE_MAX_NAME ||
++        lstrlenW( fullname ) >= HOST_FONT_CACHE_MAX_FULL ||
++        lstrlenW( file ) >= HOST_FONT_CACHE_MAX_FILE)
++    {
++        WARN( "face %s does not fit the cache format, not caching\n", debugstr_w(fullname) );
++        host_font_capture_failed = TRUE;
++        return;
++    }
++
++    record_size = sizeof(struct host_font_cache_face) + 5 * sizeof(DWORD) +
++        (lstrlenW( family_name ) + lstrlenW( second_name ) + lstrlenW( style ) +
++         lstrlenW( fullname ) + lstrlenW( file )) * sizeof(WCHAR);
++    record_size = (record_size + 3) & ~3;
++
++    if (!(capture = calloc( 1, FIELD_OFFSET(struct host_font_capture, record) + record_size )))
++    {
++        host_font_capture_failed = TRUE;
++        return;
++    }
++    capture->record.size     = record_size;
++    capture->record.index    = index;
++    capture->record.flags    = flags & ~ADDFONT_EXTERNAL_FOUND;
++    capture->record.ntmflags = ntmflags;
++    capture->record.weight   = weight;
++    capture->record.version  = version;
++    capture->record.scalable = size == NULL;
++    if (size) capture->record.bitmap = *size;
++    capture->record.fs       = fs;
++    ptr = (char *)(&capture->record + 1);
++    ptr = host_font_cache_put_string( ptr, family_name );
++    ptr = host_font_cache_put_string( ptr, second_name );
++    ptr = host_font_cache_put_string( ptr, style );
++    ptr = host_font_cache_put_string( ptr, fullname );
++    host_font_cache_put_string( ptr, file );
++    list_add_tail( &host_font_captures, &capture->entry );
++}
++
++static void free_host_font_captures(void)
++{
++    struct host_font_capture *capture, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( capture, next, &host_font_captures, struct host_font_capture, entry )
++        free( capture );
++    list_init( &host_font_captures );
++    host_font_capture_failed = FALSE;
++}
++
++static void save_host_font_cache( UINT64 stamp )
++{
++    struct host_font_cache_header header;
++    struct host_font_capture *capture;
++    IO_STATUS_BLOCK io = {{0}};
++    HANDLE handle;
++    char *data, *ptr;
++    SIZE_T total = sizeof(header);
++    DWORD count = 0;
++    BOOL written = FALSE;
++
++    if (host_font_capture_failed) return;
++    LIST_FOR_EACH_ENTRY( capture, &host_font_captures, struct host_font_capture, entry )
++    {
++        total += capture->record.size;
++        count++;
++    }
++    if (!count) return;
++    if (total > HOST_FONT_CACHE_MAX_SIZE) return;
++    if (!(data = malloc( total ))) return;
++
++    ptr = data + sizeof(header);
++    LIST_FOR_EACH_ENTRY( capture, &host_font_captures, struct host_font_capture, entry )
++    {
++        memcpy( ptr, &capture->record, capture->record.size );
++        ptr += capture->record.size;
++    }
++
++    memset( &header, 0, sizeof(header) );
++    header.magic      = HOST_FONT_CACHE_MAGIC;
++    header.version    = HOST_FONT_CACHE_VERSION;
++    header.stamp      = stamp;
++    header.count      = count;
++    header.total_size = total;
++    header.checksum   = host_font_cache_checksum( &header, data + sizeof(header),
++                                                  total - sizeof(header) );
++    memcpy( data, &header, sizeof(header) );
++
++    if ((handle = open_host_font_cache( TRUE )))
++    {
++        if (!NtWriteFile( handle, 0, NULL, NULL, &io, data, total, NULL, NULL ) &&
++            io.Information == total && rename_host_font_cache( handle ))
++        {
++            TRACE( "saved %u host faces to the font cache\n", count );
++            written = TRUE;
++        }
++        if (!written)
++        {
++            FILE_DISPOSITION_INFORMATION disp = { TRUE };
++            WARN( "failed to write the host font cache\n" );
++            NtSetInformationFile( handle, &io, &disp, sizeof(disp), FileDispositionInformation );
++        }
++        NtClose( handle );
++    }
++    free( data );
++}
++
+ static HKEY open_hkcu(void)
+ {
+     char buffer[256];
+@@ -6814,6 +7243,7 @@ UINT font_init(void)
+     HANDLE mutex;
+     DWORD disposition;
+     UINT dpi = 0;
++    UINT64 host_stamp = 0;
+ 
+     static WCHAR wine_font_mutexW[] =
+         {'\\','B','a','s','e','N','a','m','e','d','O','b','j','e','c','t','s',
+@@ -6833,16 +7263,36 @@ UINT font_init(void)
+ 
+     load_system_bitmap_fonts();
+     load_file_system_fonts();
+-    font_funcs->load_fonts();
+ 
+     attr.Attributes = OBJ_OPENIF;
+     attr.ObjectName = &name;
+     name.Buffer = wine_font_mutexW;
+     name.Length = name.MaximumLength = sizeof(wine_font_mutexW);
+ 
+-    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0) return dpi;
++    if (NtCreateMutant( &mutex, MUTEX_ALL_ACCESS, &attr, FALSE ) < 0)
++    {
++        font_funcs->load_fonts();
++        return dpi;
++    }
+     NtWaitForSingleObject( mutex, FALSE, NULL );
+ 
++    /* The prefix-local directories above always rescan; only the host font
++     * enumeration goes through the persistent cache. Reading and writing
++     * happen under the font mutex, so one process writes at a time. */
++    if (host_font_cache_disabled() ||
++        !(host_stamp = font_funcs->get_host_fonts_stamp()))
++    {
++        font_funcs->load_fonts();
++    }
++    else if (!load_host_font_cache( host_stamp ))
++    {
++        host_font_capture_active = TRUE;
++        font_funcs->load_fonts();
++        host_font_capture_active = FALSE;
++        save_host_font_cache( host_stamp );
++        free_host_font_captures();
++    }
++
+     wine_fonts_cache_key = reg_create_key( wine_fonts_key, cacheW, sizeof(cacheW),
+                                            REG_OPTION_VOLATILE, &disposition );
+ 
+diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
+index 832043a..8175562 100644
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -139,6 +139,8 @@ MAKE_FUNCPTR(FcPatternGetBool);
+ MAKE_FUNCPTR(FcPatternGetInteger);
+ MAKE_FUNCPTR(FcPatternGetString);
+ MAKE_FUNCPTR(FcConfigGetFontDirs);
++MAKE_FUNCPTR(FcConfigGetConfigFiles);
++MAKE_FUNCPTR(FcGetVersion);
+ MAKE_FUNCPTR(FcConfigGetCurrent);
+ MAKE_FUNCPTR(FcCacheCopySet);
+ MAKE_FUNCPTR(FcCacheNumSubdir);
+@@ -1272,6 +1274,11 @@ static void init_fontconfig(void)
+     LOAD_FUNCPTR(FcStrSetMember);
+ #undef LOAD_FUNCPTR
+ 
++    /* only used to key the persistent host font cache: a missing symbol
++     * disables the cache, not fontconfig */
++    pFcConfigGetConfigFiles = dlsym( fc_handle, "FcConfigGetConfigFiles" );
++    pFcGetVersion = dlsym( fc_handle, "FcGetVersion" );
++
+     if (pFcInit())
+     {
+         FcPattern *pattern = pFcPatternCreate();
+@@ -1348,13 +1355,172 @@ static void load_fontconfig_fonts( void )
+     if (!(done_set = pFcStrSetCreate())) goto done;
+     if (!(dir_list = pFcConfigGetFontDirs( config ))) goto done;
+ 
+-    fontconfig_add_fonts_from_dir_list( config, dir_list, done_set, ADDFONT_EXTERNAL_FONT );
++    fontconfig_add_fonts_from_dir_list( config, dir_list, done_set,
++                                        ADDFONT_EXTERNAL_FONT | ADDFONT_HOST_FONT );
+ 
+ done:
+     if (dir_list) pFcStrListDone( dir_list );
+     if (done_set) pFcStrSetDestroy( done_set );
+ }
+ 
++static UINT64 host_fonts_stamp_hash( UINT64 hash, const void *data, size_t len )
++{
++    const unsigned char *p = data;
++    while (len--)
++    {
++        hash ^= *p++;
++        hash *= 1099511628211ull;
++    }
++    return hash;
++}
++
++/* Fold one stat result into an entry hash: the size and the full-precision
++ * mtime. A file replaced within one second still changes the stamp. */
++static UINT64 host_fonts_stamp_stat( UINT64 entry, const struct stat *st )
++{
++    UINT64 size = st->st_size, sec;
++    DWORD nsec;
++#ifdef HAVE_STRUCT_STAT_ST_MTIM
++    sec  = st->st_mtim.tv_sec;
++    nsec = st->st_mtim.tv_nsec;
++#elif defined(HAVE_STRUCT_STAT_ST_MTIMESPEC)
++    sec  = st->st_mtimespec.tv_sec;
++    nsec = st->st_mtimespec.tv_nsec;
++#else
++    sec  = st->st_mtime;
++    nsec = 0;
++#endif
++    entry = host_fonts_stamp_hash( entry, &size, sizeof(size) );
++    entry = host_fonts_stamp_hash( entry, &sec, sizeof(sec) );
++    return host_fonts_stamp_hash( entry, &nsec, sizeof(nsec) );
++}
++
++struct host_fonts_stamp
++{
++    unsigned int entries;
++    BOOL         failed;   /* an input the stamp cannot cover: the cache stays off */
++};
++
++#define HOST_FONTS_STAMP_MAX_DEPTH   8
++#define HOST_FONTS_STAMP_MAX_ENTRIES 65536
++
++/* Stamp one directory tree: fold every entry's name, and for regular files
++ * the size and mtime, into an order-independent hash. readdir order varies
++ * between filesystems, so entries combine with xor rather than sequentially.
++ * Dot-prefixed names count like any other: fontconfig reads them too. A
++ * tree that overruns the depth or entry limit marks the stamp failed, and
++ * the cache stays off rather than being keyed on a partial view. */
++static UINT64 host_fonts_stamp_dir( const char *path, unsigned int depth, struct host_fonts_stamp *stamp )
++{
++    UINT64 hash = 0, entry;
++    DIR *dir;
++    struct dirent *ent;
++    struct stat st;
++    char buffer[1024];
++    size_t len = strlen( path );
++
++    if (depth >= HOST_FONTS_STAMP_MAX_DEPTH || len >= sizeof(buffer) - 2)
++    {
++        stamp->failed = TRUE;
++        return hash;
++    }
++    if (!(dir = opendir( path ))) return hash;
++    memcpy( buffer, path, len );
++    buffer[len++] = '/';
++    while (!stamp->failed && (ent = readdir( dir )))
++    {
++        size_t name_len = strlen( ent->d_name );
++        if (!strcmp( ent->d_name, "." ) || !strcmp( ent->d_name, ".." )) continue;
++        if (++stamp->entries > HOST_FONTS_STAMP_MAX_ENTRIES || len + name_len >= sizeof(buffer))
++        {
++            stamp->failed = TRUE;
++            break;
++        }
++        memcpy( buffer + len, ent->d_name, name_len + 1 );
++        entry = host_fonts_stamp_hash( 1469598103934665603ull, ent->d_name, name_len );
++        if (stat( buffer, &st ))
++            /* present but not statable: the name still counts, so the entry
++             * appearing or disappearing changes the stamp */
++            entry = host_fonts_stamp_hash( entry, "?", 1 );
++        else if (S_ISDIR( st.st_mode ))
++            entry ^= host_fonts_stamp_dir( buffer, depth + 1, stamp );
++        else
++            entry = host_fonts_stamp_stat( entry, &st );
++        hash ^= entry;
++    }
++    closedir( dir );
++    return hash;
++}
++
++/* The face list depends on more than the font files: the fontconfig
++ * configuration supplies the directory list and the per-pattern and
++ * default antialiasing properties, the locale picks the face names at
++ * parse time, and the antialiasing defaults are folded into every face's
++ * flags. Stamp them all so a change to any of them reruns the
++ * enumeration instead of replaying faces built from stale inputs. */
++static UINT64 host_fonts_stamp_config( FcConfig *config, struct host_fonts_stamp *stamp )
++{
++    UINT64 hash = 1469598103934665603ull;
++    FcStrList *files;
++    const FcChar8 *file;
++    struct stat st;
++    int fc_version;
++    UINT lcid = system_lcid, aa_flags = default_aa_flags;
++
++    if (!pFcConfigGetConfigFiles || !pFcGetVersion)
++    {
++        stamp->failed = TRUE;
++        return hash;
++    }
++    fc_version = pFcGetVersion();
++    hash = host_fonts_stamp_hash( hash, &fc_version, sizeof(fc_version) );
++    hash = host_fonts_stamp_hash( hash, &lcid, sizeof(lcid) );
++    hash = host_fonts_stamp_hash( hash, &aa_flags, sizeof(aa_flags) );
++    if (!(files = pFcConfigGetConfigFiles( config )))
++    {
++        stamp->failed = TRUE;
++        return hash;
++    }
++    /* folded in list order: the load order decides which config file wins */
++    while ((file = pFcStrListNext( files )))
++    {
++        hash = host_fonts_stamp_hash( hash, file, strlen( (const char *)file ) + 1 );
++        if (stat( (const char *)file, &st )) hash = host_fonts_stamp_hash( hash, "?", 1 );
++        else hash = host_fonts_stamp_stat( hash, &st );
++    }
++    pFcStrListDone( files );
++    return hash;
++}
++
++static UINT64 fontconfig_host_fonts_stamp(void)
++{
++    UINT64 hash = 1469598103934665603ull, config_hash;
++    struct host_fonts_stamp stamp = { 0 };
++    FcStrList *dir_list;
++    const FcChar8 *dir;
++    FcConfig *config;
++
++    if (!fontconfig_enabled) return 0;
++    if (!(config = pFcConfigGetCurrent())) return 0;
++    config_hash = host_fonts_stamp_config( config, &stamp );
++    hash = host_fonts_stamp_hash( hash, &config_hash, sizeof(config_hash) );
++    if (!(dir_list = pFcConfigGetFontDirs( config ))) return 0;
++    while ((dir = pFcStrListNext( dir_list )))
++    {
++        hash = host_fonts_stamp_hash( hash, dir, strlen( (const char *)dir ) + 1 );
++        hash ^= host_fonts_stamp_dir( (const char *)dir, 0, &stamp );
++    }
++    pFcStrListDone( dir_list );
++    if (stamp.failed)
++    {
++        TRACE( "host font stamp failed, the cache stays off\n" );
++        return 0;
++    }
++    hash = host_fonts_stamp_hash( hash, &stamp.entries, sizeof(stamp.entries) );
++    TRACE( "host font stamp %s over %u entries\n", wine_dbgstr_longlong(hash), stamp.entries );
++    return hash ? hash : 1;
++}
++
+ #elif defined(__APPLE__)
+ 
+ static void load_mac_font_callback(const void *value, void *context)
+@@ -1550,6 +1716,17 @@ static void freetype_load_fonts(void)
+ #endif
+ }
+ 
++/* Zero disables the persistent host font cache: the font list then always
++ * comes from a live enumeration, as before. */
++static UINT64 freetype_get_host_fonts_stamp(void)
++{
++#ifdef SONAME_LIBFONTCONFIG
++    return fontconfig_host_fonts_stamp();
++#else
++    return 0;
++#endif
++}
++
+ /* Some fonts have large usWinDescent values, as a result of storing signed short
+    in unsigned field. That's probably caused by sTypoDescent vs usWinDescent confusion in
+    some font generation tools. */
+@@ -3881,6 +4058,7 @@ static UINT freetype_get_kerning_pairs( struct gdi_font *font, KERNINGPAIR **pai
+ static const struct font_backend_funcs font_funcs =
+ {
+     freetype_load_fonts,
++    freetype_get_host_fonts_stamp,
+     fontconfig_enum_family_fallbacks,
+     freetype_add_font,
+     freetype_add_mem_font,
+diff --git a/dlls/win32u/ntgdi_private.h b/dlls/win32u/ntgdi_private.h
+index fcfbce5..af886e2 100644
+--- a/dlls/win32u/ntgdi_private.h
++++ b/dlls/win32u/ntgdi_private.h
+@@ -315,11 +315,13 @@ struct gdi_font
+ #define ADDFONT_ADD_RESOURCE  0x08  /* added through AddFontResource */
+ #define ADDFONT_VERTICAL_FONT 0x10
+ #define ADDFONT_EXTERNAL_FOUND 0x20
++#define ADDFONT_HOST_FONT     0x40  /* enumerated from the host font libraries */
+ #define ADDFONT_AA_FLAGS(flags) ((flags) << 16)
+ 
+ struct font_backend_funcs
+ {
+     void  (*load_fonts)(void);
++    UINT64 (*get_host_fonts_stamp)(void);
+     BOOL  (*enum_family_fallbacks)( UINT pitch_and_family, int index, WCHAR buffer[LF_FACESIZE] );
+     INT   (*add_font)( const WCHAR *file, UINT flags );
+     INT   (*add_mem_font)( void *ptr, SIZE_T size, UINT flags );
+-- 
+2.55.0
+

@@ -11,10 +11,10 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 81 files, numbered 0001 through 0089.
-Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
-and 0072 through 0074 are reserved by open pull requests and will enter this
-branch as those merge.
+The current Wine series contains 82 files, numbered 0001 through 0095.
+Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068,
+0072 through 0074, and 0090 through 0094 are reserved by open pull requests
+and will enter this branch as those merge.
 
 ## Applying the series
 
@@ -371,3 +371,23 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
+- `0095`: cache the enumerated host font list in
+  `c:\windows\wine-host-font.cache`. Wine otherwise re-enumerates the host
+  fonts (a fontconfig walk plus one freetype parse per face) in every
+  font-using process; the launcher kills the wineserver on every launch, so
+  Live repeats the enumeration on every start, about 1.9 s per launch
+  across Live and its helper processes on the measured machine. The file
+  holds the raw face submissions of one enumeration, and later starts
+  replay them through `add_gdi_face()`, so a collision with a prefix font
+  resolves against the prefix state of the reading process. The stamp
+  covers every enumeration input: the host font directory trees (entry
+  names, sizes, nanosecond mtimes), the fontconfig configuration files and
+  library version, the locale that picks the face names, and the default
+  antialiasing flags. A walk that overruns the depth or entry limit fails
+  the stamp and the cache stays off. Wine validates the complete file,
+  checksum included, before it adds a single face, and writes it through a
+  temporary file plus rename. Prefix-local font directories always rescan.
+  `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off. First shipped as
+  0070 on the performance-moonshot branch (PR 139); renumbered behind the
+  reserved 0090-0094 pointer gesture series and hardened before merge. See
+  `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.
