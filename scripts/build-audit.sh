@@ -158,6 +158,7 @@ FINGERPRINTS='
 0093|ascii|lib/wine/x86_64-unix/winex11.so|lost X focus to another client while clipping
 0094|ascii|lib/wine/x86_64-unix/winex11.so|XWayland warp emulation activated after observed failed warps
 0095|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDragThrow
+0096|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_HOST_FONT_CACHE
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
