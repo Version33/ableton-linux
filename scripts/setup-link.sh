@@ -10,13 +10,18 @@ for lib in "$here/lib/config.sh" "$here/config.sh" \
 done
 declare -F ableton_config_init >/dev/null 2>&1 || { echo "!! setup-link: config helper is missing" >&2; exit 1; }
 ableton_config_init
+for lib in "$here/lib/manifest.sh" "$ABLETON_DATA_HOME/lib/manifest.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
+declare -F ableton_validate_install_state_journals >/dev/null 2>&1 || {
+    echo "!! setup-link: ownership helper is missing" >&2; exit 1; }
 
 action="${1:-enable}"
 [ $# -eq 0 ] || shift
 mode=session
 transaction_dir=""
 case "$action" in
-    snapshot|rollback|commit)
+    snapshot|preflight-rollback|preflight-commit|rollback|commit)
         [ $# -ge 1 ] || { echo "!! setup-link.sh $action needs a transaction directory" >&2; exit 2; }
         transaction_dir="$1"
         shift ;;
@@ -28,8 +33,17 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-case "$action" in enable|disable|status|snapshot|rollback|commit|plan-enable|plan-disable) ;;
+if [ -n "$transaction_dir" ]; then
+    ABLETON_TRANSACTION_DIR="$transaction_dir"
+    export ABLETON_TRANSACTION_DIR
+fi
+case "$action" in enable|disable|status|snapshot|preflight-rollback|preflight-commit|rollback|commit|plan-enable|plan-disable) ;;
     *) echo "usage: setup-link.sh enable [--mode=session|always] | disable | status" >&2; exit 2 ;;
+esac
+case "$action" in
+    enable|disable|snapshot|preflight-rollback|preflight-commit|rollback|commit)
+        ableton_install_lock_acquire
+        ableton_validate_install_state_journals ;;
 esac
 
 state_file="$ABLETON_STATE_HOME/link-firewall"
@@ -83,8 +97,26 @@ WantedBy=default.target'
 
 unit_is_owned()
 {
-    [ -f "$unit_file" ] || return 1
-    grep -qxF 'X-AbletonLinuxOwned=true' "$unit_file" 2>/dev/null && return 0
+    local escaped
+    [ -f "$unit_file" ] && [ ! -L "$unit_file" ] || return 1
+    escaped="${ABLETON_LINKD//\\/\\\\}"
+    escaped="${escaped//\"/\\\"}"
+    escaped="${escaped//%/%%}"
+    cmp -s -- "$unit_file" <(cat <<EOF
+[Unit]
+Description=Ableton Link session anchor (ableton-linux)
+After=default.target
+X-AbletonLinuxOwned=true
+
+[Service]
+ExecStart="$escaped" --linger 0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+    ) && return 0
     # Adopt only the two exact unit definitions shipped before ownership
     # markers. Keep any unit with another directive or executable unchanged.
     legacy_unit_is_owned
@@ -118,9 +150,52 @@ stop_owned_service()
     fi
 }
 
+link_firewall_record_valid()
+{
+    local file="$1"
+    [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] \
+        && ableton_file_has_no_nul "$file" \
+        && [ "$(wc -l < "$file")" -eq 1 ] || return 1
+    case "$(sed -n '1p' "$file")" in
+        ufw-added|firewalld-added|none) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_link_firewall_state()
+{
+    [ ! -e "$state_file" ] && [ ! -L "$state_file" ] && return 0
+    link_firewall_record_valid "$state_file"
+}
+
+write_link_firewall_state()
+{
+    local value="$1" tmp token
+    case "$value" in ufw-added|firewalld-added|none) ;; *) return 1 ;; esac
+    ableton_mark_state_home || return 1
+    ableton_txn_snapshot "$state_file" || return 1
+    tmp="$(mktemp "$ABLETON_STATE_HOME/.link-firewall.XXXXXX")" || return 1
+    if ! printf '%s\n' "$value" > "$tmp" \
+       || ! chmod 600 "$tmp" \
+       || ! link_firewall_record_valid "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    token="$(ableton_object_token "$tmp")" || { rm -f -- "$tmp"; return 1; }
+    ableton_txn_expect "$state_file" "$token" || { rm -f -- "$tmp"; return 1; }
+    if ! mv -T -f -- "$tmp" "$state_file" || ! link_firewall_record_valid "$state_file"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+}
+
 remove_owned_firewall()
 {
-    [ -r "$state_file" ] || return 0
+    validate_link_firewall_state || {
+        echo "!! unsafe Link firewall ownership record: $state_file" >&2
+        return 1
+    }
+    [ ! -e "$state_file" ] && [ ! -L "$state_file" ] && return 0
     local state rc=0
     state="$(sed -n '1p' "$state_file")"
     case "$state" in
@@ -142,29 +217,38 @@ remove_owned_firewall()
         *) echo "!! unrecognised Link firewall ownership record: $state_file" >&2; return 1 ;;
     esac
     [ "$rc" -eq 0 ] || { echo "!! failed to remove the recorded Link firewall rule" >&2; return "$rc"; }
+    ableton_txn_snapshot "$state_file" || return 1
+    ableton_txn_expect "$state_file" absent || return 1
     rm -f -- "$state_file"
 }
 
 restore_firewall_snapshot()
 {
     local snapshot="$1" prior="" current="" rc=0
-    [ ! -r "$snapshot" ] || prior="$(sed -n '1p' "$snapshot")"
+    if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then
+        link_firewall_record_valid "$snapshot" || return 1
+        prior="$(sed -n '1p' "$snapshot")"
+    fi
+    validate_link_firewall_state || return 1
     [ ! -r "$state_file" ] || current="$(sed -n '1p' "$state_file")"
     if [ -r "$snapshot" ] && [ "$current" = "$prior" ]; then
         return 0
     fi
-    [ ! -e "$state_file" ] || remove_owned_firewall || rc=$?
+    [ ! -e "$state_file" ] && [ ! -L "$state_file" ] \
+        || remove_owned_firewall || rc=$?
     [ "$rc" -eq 0 ] || return "$rc"
     if [ -r "$snapshot" ]; then
         restore_firewall_record "$prior"
     else
+        ableton_txn_snapshot "$state_file" || return 1
+        ableton_txn_expect "$state_file" absent || return 1
         rm -f -- "$state_file"
     fi
 }
 
 legacy_hook_is_owned()
 {
-    [ -f "$legacy_hook" ] \
+    [ -f "$legacy_hook" ] && [ ! -L "$legacy_hook" ] \
         && grep -qxF '#!/bin/sh' "$legacy_hook" 2>/dev/null \
         && grep -qF '[ "$2" = "up" ] || exit 0' "$legacy_hook" 2>/dev/null \
         && grep -qF 'ip route replace 224.0.0.0/4' "$legacy_hook" 2>/dev/null
@@ -172,10 +256,18 @@ legacy_hook_is_owned()
 
 snapshot_legacy_network()
 {
-    local destination="$1"
-    legacy_hook_is_owned || return 0
-    cp -a -- "$legacy_hook" "$destination.hook"
-    ip -4 route show 224.0.0.0/4 2>/dev/null | head -n 1 > "$destination.route" || true
+    local destination="$1" route_line=""
+    if legacy_hook_is_owned; then
+        cp -a -- "$legacy_hook" "$destination.hook"
+    else
+        : > "$destination.hook.absent"
+    fi
+    route_line="$(ip -4 route show 224.0.0.0/4 2>/dev/null | head -n 1 || true)"
+    if [ -n "$route_line" ]; then
+        printf '%s\n' "$route_line" > "$destination.route"
+    else
+        : > "$destination.route.absent"
+    fi
 }
 
 restore_legacy_network()
@@ -225,6 +317,7 @@ manifest_digest_for()
 legacy_link_file_is_owned()
 {
     local target="$1"
+    [ -f "$target" ] && [ ! -L "$target" ] || return 1
     case "$target" in
         "$ABLETON_DATA_HOME/ableton-linkd")
             strings "$target" 2>/dev/null | grep -qF 'ableton-linkd: native Ableton Link session anchor and probe' ;;
@@ -241,9 +334,10 @@ legacy_link_file_is_owned()
 link_binary_is_owned()
 {
     local expected current
+    [ "$ABLETON_LINKD" = "$ABLETON_DATA_HOME/ableton-linkd" ] || return 1
     expected="$(manifest_digest_for "$ABLETON_LINKD" 2>/dev/null || true)"
     if [ -n "$expected" ]; then
-        current="$(sha256sum -- "$ABLETON_LINKD" 2>/dev/null | awk '{print $1}')"
+        current="$(link_path_digest "$ABLETON_LINKD" 2>/dev/null || true)"
         [ -n "$current" ] && [ "$current" = "$expected" ]
         return
     fi
@@ -253,43 +347,78 @@ link_binary_is_owned()
 remove_owned_link_file()
 {
     local target="$1" expected current
-    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
-        restore_link_prestate "$target"
-        return 0
-    fi
     expected="$(manifest_digest_for "$target" 2>/dev/null || true)"
     if [ -n "$expected" ]; then
-        current="$(sha256sum -- "$target" 2>/dev/null | awk '{print $1}')"
+        current="$(link_path_digest "$target" 2>/dev/null || true)"
         if [ "$current" != "$expected" ]; then
             echo "!! keeping modified Link file $target" >&2
+            ableton_abandon_managed_file "$target" || return 1
+            link_deowned["$target"]=1
             link_residual=1
             return 0
         fi
     elif ! legacy_link_file_is_owned "$target"; then
+        if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+            ableton_remove_managed_file "$target" || return 1
+            link_deowned["$target"]=1
+            return 0
+        fi
         echo "!! keeping unowned Link path $target" >&2
         link_residual=1
         return 0
     fi
-    rm -f -- "$target"
-    restore_link_prestate "$target"
+    ableton_remove_managed_file "$target" || return 1
     link_deowned["$target"]=1
+}
+
+LINK_PRESTATE_BACKUP=""
+link_path_digest()
+{
+    if [ -L "$1" ]; then
+        { printf 'symlink\0'; readlink -n -- "$1"; } | sha256sum | awk '{print $1}'
+    elif [ -f "$1" ]; then
+        sha256sum -- "$1" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+validate_link_prestate()
+{
+    local target="$1" index="$ABLETON_STATE_HOME/install-prestate.tsv"
+    local backup expected count
+    LINK_PRESTATE_BACKUP=""
+    [ -r "$index" ] || return 0
+    count="$(awk -F '\t' -v p="$target" '$1=="present" && $2==p { n++ } END { print n+0 }' "$index")"
+    [ "$count" -le 1 ] || {
+        echo "!! Link pre-install state is ambiguous for $target" >&2; return 1; }
+    [ "$count" -eq 1 ] || return 0
+    backup="$(awk -F '\t' -v p="$target" '$1=="present" && $2==p { print $3; exit }' "$index")"
+    expected="$ABLETON_STATE_HOME/install-prestate/$(printf '%s' "$target" | sha256sum | awk '{print $1}')"
+    if [ "$backup" != "$expected" ] || [ ! -e "$backup" ] \
+       || { [ ! -f "$backup" ] && [ ! -L "$backup" ]; }; then
+        echo "!! cannot safely restore the pre-install Link file $target" >&2
+        return 1
+    fi
+    LINK_PRESTATE_BACKUP="$backup"
 }
 
 restore_link_prestate()
 {
-    local target="$1" index="$ABLETON_STATE_HOME/install-prestate.tsv" backup tmp
-    [ -r "$index" ] || return 0
-    backup="$(awk -F '\t' -v p="$target" '$1=="present" && $2==p { print $3; exit }' "$index")"
+    local target="$1" index="$ABLETON_STATE_HOME/install-prestate.tsv" backup tmp digest
+    validate_link_prestate "$target" || return 1
+    backup="$LINK_PRESTATE_BACKUP"
     [ -n "$backup" ] || return 0
-    if [ -e "$backup" ] || [ -L "$backup" ]; then
-        mkdir -p -- "$(dirname "$target")"
-        cp -a -- "$backup" "$target"
-    fi
+    digest="$(link_path_digest "$backup")" || return 1
+    ableton_atomic_restore_object "$backup" "$target" || return 1
+    [ "$(link_path_digest "$target" 2>/dev/null || true)" = "$digest" ] || return 1
     tmp="$(mktemp "$ABLETON_STATE_HOME/.prestate-link.XXXXXX")"
-    awk -F '\t' -v p="$target" '$2 != p' "$index" > "$tmp"
-    chmod 600 "$tmp"
-    mv -f -- "$tmp" "$index"
-    rm -f -- "$backup"
+    if ! awk -F '\t' -v p="$target" '$2 != p' "$index" > "$tmp" \
+       || ! chmod 600 "$tmp" || ! mv -f -- "$tmp" "$index"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    rm -f -- "$backup" || return 1
     link_deowned["$target"]=1
 }
 
@@ -300,19 +429,28 @@ prune_link_manifest()
     tmp="$(mktemp "$ABLETON_STATE_HOME/.manifest-link.XXXXXX")"
     while IFS=$'\t' read -r kind path digest; do
         case "$path" in
-            "$ABLETON_LINKD"|"$data_unit"|"$linkctl"|"$ABLETON_DATA_HOME/setup-link.sh")
+            "$ABLETON_DATA_HOME/ableton-linkd"|"$data_unit"|"$linkctl"|"$ABLETON_DATA_HOME/setup-link.sh")
                 [ -z "${link_deowned[$path]+x}" ] || continue
                 [ -e "$path" ] || [ -L "$path" ] || continue ;;
         esac
         printf '%s\t%s\t%s\n' "$kind" "$path" "$digest" >> "$tmp"
     done < "$manifest"
     chmod 600 "$tmp"
+    if [ -n "${ABLETON_TRANSACTION_DIR:-}" ] \
+       && [ -e "$ABLETON_TRANSACTION_DIR/files.tsv" ]; then
+        ableton_txn_snapshot "$manifest"
+        ableton_txn_expect "$manifest" "$(ableton_regular_source_token "$tmp")"
+    fi
     mv -f -- "$tmp" "$manifest"
 }
 
 disable_link()
 {
     echo "== disable Ableton Link =="
+    validate_link_firewall_state || {
+        echo "!! unsafe Link firewall ownership record: $state_file" >&2
+        return 1
+    }
     stop_owned_service
     if [ -x "$here/ableton-linkctl" ]; then "$here/ableton-linkctl" stop
     elif [ -x "$linkctl" ]; then "$linkctl" stop
@@ -323,7 +461,10 @@ disable_link()
     if command -v systemctl >/dev/null 2>&1; then
         ableton_run_bounded 20 systemctl --user daemon-reload >/dev/null 2>&1 || true
     fi
-    remove_owned_link_file "$ABLETON_LINKD"
+    remove_owned_link_file "$ABLETON_DATA_HOME/ableton-linkd"
+    if [ "$ABLETON_LINKD" != "$ABLETON_DATA_HOME/ableton-linkd" ]; then
+        echo "kept externally managed Link daemon $ABLETON_LINKD"
+    fi
     remove_owned_link_file "$data_unit"
     remove_owned_link_file "$linkctl"
     remove_owned_link_file "$ABLETON_DATA_HOME/setup-link.sh"
@@ -341,8 +482,9 @@ disable_link()
 
 install_unit()
 {
+    local escaped loaded_fragment="" tmp=""
     [ -x "$ABLETON_LINKD" ] || { echo "!! ableton-linkd is missing at $ABLETON_LINKD" >&2; return 1; }
-    if [ -e "$unit_file" ] && ! unit_is_owned; then
+    if { [ -e "$unit_file" ] || [ -L "$unit_file" ]; } && ! unit_is_owned; then
         echo "!! refusing to replace foreign systemd unit $unit_file" >&2
         return 1
     fi
@@ -354,10 +496,11 @@ install_unit()
         fi
     fi
     mkdir -p -- "$unit_dir"
-    local escaped="${ABLETON_LINKD//\\/\\\\}"
+    escaped="${ABLETON_LINKD//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
     escaped="${escaped//%/%%}"
-    cat > "$unit_file.tmp" <<EOF
+    tmp="$(mktemp "$unit_dir/.ableton-linkd.service.XXXXXX")" || return 1
+    if ! cat > "$tmp" <<EOF
 [Unit]
 Description=Ableton Link session anchor (ableton-linux)
 After=default.target
@@ -371,46 +514,59 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
-    chmod 644 "$unit_file.tmp"
-    mv -f -- "$unit_file.tmp" "$unit_file"
+    then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    if ! chmod 644 "$tmp" || ! mv -f -- "$tmp" "$unit_file"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
     command -v systemctl >/dev/null 2>&1 || return 0
     ableton_run_bounded 20 systemctl --user daemon-reload
 }
 
 configure_firewall()
 {
+    validate_link_firewall_state || {
+        echo "!! unsafe Link firewall ownership record: $state_file" >&2
+        return 1
+    }
     ableton_mark_state_home
     if [ -r "$state_file" ]; then
         case "$(sed -n '1p' "$state_file")" in
             ufw-added|firewalld-added) return 0 ;;
-            none) rm -f -- "$state_file" ;;
+            none) : ;;
             *) echo "!! unrecognised Link firewall ownership record: $state_file" >&2; return 1 ;;
         esac
     fi
     if command -v ufw >/dev/null 2>&1 && grep -qsi '^ENABLED=yes' /etc/ufw/ufw.conf; then
         if ableton_run_bounded 20 ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'; then
-            printf 'none\n' > "$state_file"
+            write_link_firewall_state none
             echo "   ufw already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         else
             echo "   ufw is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            write_link_firewall_state ufw-added
+            # Persist ownership before touching the firewall.  If sudo or ufw
+            # fails after making a partial change, the caller's recovery still
+            # has enough authority to remove only this attempted rule.
             ableton_run_bounded 120 sudo ufw allow 20808/udp || return $?
-            printf 'ufw-added\n' > "$state_file"
         fi
     elif command -v firewall-cmd >/dev/null 2>&1 \
          && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
         if ableton_run_bounded 20 firewall-cmd --permanent --query-port=20808/udp >/dev/null 2>&1; then
-            printf 'none\n' > "$state_file"
+            write_link_firewall_state none
             echo "   firewalld already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         else
             echo "   firewalld is active: adding UDP 20808 (sudo, bounded to two minutes)"
-            printf 'firewalld-added\n' > "$state_file"
-            ableton_run_bounded 120 sudo firewall-cmd --permanent --add-port=20808/udp || { rm -f -- "$state_file"; return 1; }
+            write_link_firewall_state firewalld-added
+            ableton_run_bounded 120 sudo firewall-cmd --permanent --add-port=20808/udp || return $?
             # Ownership is already recorded before reload. If reload fails, the
             # caller's rollback can still remove the persistent rule.
             ableton_run_bounded 120 sudo firewall-cmd --reload || return $?
         fi
     else
-        printf 'none\n' > "$state_file"
+        write_link_firewall_state none
         echo "   no active ufw/firewalld; no firewall mutation"
     fi
 }
@@ -440,28 +596,59 @@ restore_firewall_record()
         *) echo "!! cannot restore unknown firewall record '$prior'" >&2; return 1 ;;
     esac
     [ "$rc" -eq 0 ] || return "$rc"
-    printf '%s\n' "$prior" > "$state_file"
+    write_link_firewall_state "$prior"
 }
 
 snapshot_link_transaction()
 {
     local snap="$transaction_dir/link" pids asset label manifest
-    [ ! -e "$snap/ready" ] || return 0
-    mkdir -p -- "$snap"
+    ableton_txn_init || return 1
+    validate_link_firewall_state || {
+        echo "!! unsafe Link firewall ownership record: $state_file" >&2
+        return 1
+    }
+    if [ -e "$snap" ] || [ -L "$snap" ]; then
+        [ -d "$snap" ] && [ ! -L "$snap" ] || {
+            echo "!! Link transaction snapshot path is unsafe" >&2
+            return 1
+        }
+        if find "$snap" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+            validate_link_transaction_snapshot || return 1
+            return 0
+        fi
+    else
+        mkdir -m 700 -- "$snap" || return 1
+    fi
     printf '%s\n' "$ABLETON_LINK_MODE" > "$snap/policy"
-    if [ -e "$state_file" ]; then cp -a -- "$state_file" "$snap/firewall"
+    if [ -f "$state_file" ] && [ ! -L "$state_file" ]; then cp -a -- "$state_file" "$snap/firewall"
     else : > "$snap/firewall.absent"; fi
     snapshot_legacy_network "$snap/legacy"
-    if [ -e "$unit_file" ]; then cp -a -- "$unit_file" "$snap/unit"
-    else : > "$snap/unit.absent"; fi
+    if [ -f "$unit_file" ] && [ ! -L "$unit_file" ]; then cp -a -- "$unit_file" "$snap/unit"
+    else
+        [ ! -e "$unit_file" ] && [ ! -L "$unit_file" ] || {
+            echo "!! unsafe or foreign Link unit cannot be snapshotted: $unit_file" >&2
+            return 1
+        }
+        : > "$snap/unit.absent"
+    fi
     label=0
-    for asset in "$ABLETON_LINKD" "$data_unit" "$linkctl" "$ABLETON_DATA_HOME/setup-link.sh"; do
+    for asset in "$ABLETON_DATA_HOME/ableton-linkd" "$data_unit" "$linkctl" "$ABLETON_DATA_HOME/setup-link.sh"; do
         printf '%s\n' "$asset" > "$snap/asset-$label.path"
-        [ ! -e "$asset" ] && [ ! -L "$asset" ] || cp -a -- "$asset" "$snap/asset-$label.file"
+        if [ -f "$asset" ] || [ -L "$asset" ]; then
+            cp -a -- "$asset" "$snap/asset-$label.file"
+        else
+            [ ! -e "$asset" ] || { echo "!! unsafe Link asset cannot be snapshotted: $asset" >&2; return 1; }
+            : > "$snap/asset-$label.absent"
+        fi
         label=$((label + 1))
     done
     manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    [ ! -e "$manifest" ] || cp -a -- "$manifest" "$snap/manifest"
+    if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then cp -a -- "$manifest" "$snap/manifest"
+    else
+        [ ! -e "$manifest" ] && [ ! -L "$manifest" ] \
+            || { echo "!! unsafe Link ownership snapshot" >&2; return 1; }
+        : > "$snap/manifest.absent"
+    fi
     if [ -e "$ABLETON_STATE_HOME/install-prestate.tsv" ]; then
         cp -a -- "$ABLETON_STATE_HOME/install-prestate.tsv" "$snap/prestate.tsv"
     else
@@ -474,19 +661,227 @@ snapshot_link_transaction()
     fi
     if unit_is_owned && command -v systemctl >/dev/null 2>&1; then
         ableton_run_bounded 20 systemctl --user is-enabled --quiet ableton-linkd.service 2>/dev/null \
-            && : > "$snap/enabled" || true
+            && : > "$snap/enabled" || : > "$snap/enabled.absent"
         loaded_unit_is_owned \
             && ableton_run_bounded 20 systemctl --user is-active --quiet ableton-linkd.service 2>/dev/null \
-            && : > "$snap/active" || true
+            && : > "$snap/active" || : > "$snap/active.absent"
+    else
+        : > "$snap/enabled.absent"
+        : > "$snap/active.absent"
     fi
     pids="$(owned_link_pids | head -n 1)"
-    [ -z "$pids" ] || : > "$snap/detached-active"
+    if [ -z "$pids" ]; then : > "$snap/detached-active.absent"
+    else : > "$snap/detached-active"; fi
     : > "$snap/ready"
+}
+
+link_snapshot_pair_valid()
+{
+    local base="$1" type="$2" absent_path="${3:-$1.absent}" present=0 absent=0 digest
+    [ ! -e "$base" ] && [ ! -L "$base" ] || present=1
+    [ ! -e "$absent_path" ] && [ ! -L "$absent_path" ] || absent=1
+    [ $((present + absent)) -eq 1 ] || return 1
+    if [ "$absent" -eq 1 ]; then
+        [ -f "$absent_path" ] && [ ! -L "$absent_path" ] && [ ! -s "$absent_path" ]
+        return
+    fi
+    case "$type" in
+        regular)
+            [ -f "$base" ] && [ ! -L "$base" ] && [ -r "$base" ] \
+                && ableton_file_has_no_nul "$base" ;;
+        object)
+            { [ -f "$base" ] || [ -L "$base" ]; } \
+                && digest="$(ableton_manifest_digest "$base" 2>/dev/null || true)" \
+                && [ -n "$digest" ] ;;
+        directory) [ -d "$base" ] && [ ! -L "$base" ] ;;
+        marker) [ -f "$base" ] && [ ! -L "$base" ] && [ ! -s "$base" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_link_transaction_snapshot()
+{
+    local snap="$transaction_dir/link" prior label path expected saved count=0 names_count=0
+    local status p backup extra digest slot name
+    local -A seen=() prestate_seen=() prestate_slots=()
+    [ ! -e "$snap" ] && [ ! -L "$snap" ] && return 0
+    [ -d "$snap" ] && [ ! -L "$snap" ] || {
+        echo "!! Link transaction snapshot is unsafe" >&2; return 1; }
+    [ -f "$snap/ready" ] && [ ! -L "$snap/ready" ] && [ ! -s "$snap/ready" ] || {
+        echo "!! Link transaction ready marker is invalid" >&2; return 1; }
+    [ -f "$snap/policy" ] && [ ! -L "$snap/policy" ] \
+        && ableton_file_has_no_nul "$snap/policy" \
+        && [ "$(wc -l < "$snap/policy")" -eq 1 ] || {
+        echo "!! Link transaction policy is invalid" >&2; return 1; }
+    prior="$(sed -n '1p' "$snap/policy")"
+    case "$prior" in off|session|always) ;; *) echo "!! Link transaction policy is invalid" >&2; return 1 ;; esac
+    while IFS= read -r -d '' name; do
+        name="${name##*/}"; names_count=$((names_count + 1))
+        case "$name" in
+            ready|policy|firewall|firewall.absent|unit|unit.absent|manifest|manifest.absent|\
+            prestate.tsv|prestate.absent|prestate-dir|prestate-dir.absent|\
+            enabled|enabled.absent|active|active.absent|\
+            detached-active|detached-active.absent|legacy.hook|legacy.hook.absent|\
+            legacy.route|legacy.route.absent|\
+            asset-[0-3].path|asset-[0-3].file|asset-[0-3].absent) ;;
+            *) echo "!! Link transaction snapshot has an unknown member: $name" >&2; return 1 ;;
+        esac
+    done < <(find "$snap" -mindepth 1 -maxdepth 1 -print0)
+    [ "$names_count" -eq 20 ] || {
+        echo "!! Link transaction snapshot inventory is incomplete" >&2; return 1; }
+    if ! { link_snapshot_pair_valid "$snap/firewall" regular \
+           && link_snapshot_pair_valid "$snap/unit" regular \
+           && link_snapshot_pair_valid "$snap/manifest" regular \
+           && link_snapshot_pair_valid "$snap/prestate.tsv" regular "$snap/prestate.absent" \
+           && link_snapshot_pair_valid "$snap/prestate-dir" directory \
+           && link_snapshot_pair_valid "$snap/enabled" marker \
+           && link_snapshot_pair_valid "$snap/active" marker \
+           && link_snapshot_pair_valid "$snap/detached-active" marker \
+           && link_snapshot_pair_valid "$snap/legacy.hook" regular \
+           && link_snapshot_pair_valid "$snap/legacy.route" regular; }; then
+        echo "!! Link transaction present/absent evidence is invalid" >&2
+        return 1
+    fi
+    [ ! -e "$snap/firewall" ] || link_firewall_record_valid "$snap/firewall" || {
+        echo "!! Link firewall snapshot is invalid" >&2; return 1; }
+    [ ! -e "$snap/legacy.hook" ] || {
+        grep -qxF '#!/bin/sh' "$snap/legacy.hook" \
+            && grep -qF '[ "$2" = "up" ] || exit 0' "$snap/legacy.hook" \
+            && grep -qF 'ip route replace 224.0.0.0/4' "$snap/legacy.hook"; } || {
+        echo "!! Link legacy-hook snapshot is invalid" >&2; return 1; }
+    if [ -e "$snap/legacy.route" ]; then
+        case "$(sed -n '1p' "$snap/legacy.route")" in 224.0.0.0/4\ *) ;; *)
+            echo "!! Link legacy-route snapshot is invalid" >&2; return 1 ;; esac
+    fi
+    [ ! -e "$snap/manifest" ] || ableton_validate_ownership_manifest "$snap/manifest" || return 1
+    if [ -e "$snap/prestate.tsv" ]; then
+        while IFS=$'\t' read -r status p backup extra || [ -n "$status$p$backup$extra" ]; do
+            [ -z "$extra" ] && [ "$status" = present ] \
+                && ableton_manifest_path_ok "$p" \
+                && [ -z "${prestate_seen[$p]+x}" ] \
+                && { ableton_managed_path_allowed file "$p" \
+                     || ableton_managed_path_allowed config "$p" \
+                     || ableton_managed_path_allowed symlink "$p"; } || return 1
+            expected="$ABLETON_STATE_HOME/install-prestate/$(printf '%s' "$p" | sha256sum | awk '{print $1}')"
+            [ "$backup" = "$expected" ] || return 1
+            backup="$snap/prestate-dir/${backup##*/}"
+            { [ -f "$backup" ] || [ -L "$backup" ]; } || return 1
+            digest="$(ableton_manifest_digest "$backup" 2>/dev/null || true)"
+            [ -n "$digest" ] || return 1
+            prestate_seen["$p"]=1
+            prestate_slots["${backup##*/}"]=1
+        done < "$snap/prestate.tsv"
+    fi
+    if [ -d "$snap/prestate-dir" ]; then
+        while IFS= read -r -d '' slot; do
+            name="${slot##*/}"
+            if ! { [[ "$name" =~ ^[0-9a-f]{64}$ ]] \
+                   && { [ -f "$slot" ] || [ -L "$slot" ]; } \
+                   && [ -n "$(ableton_manifest_digest "$slot" 2>/dev/null || true)" ] \
+                   && { [ ! -e "$snap/prestate.tsv" ] \
+                        || [ -n "${prestate_slots[$name]+x}" ]; }; }; then
+                echo "!! Link prestate snapshot contains an unindexed object" >&2
+                return 1
+            fi
+        done < <(find "$snap/prestate-dir" -mindepth 1 -maxdepth 1 -print0)
+    fi
+    for label in 0 1 2 3; do
+        saved="$snap/asset-$label.path"
+        [ -f "$saved" ] && [ ! -L "$saved" ] && [ -r "$saved" ] \
+            && ableton_file_has_no_nul "$saved" \
+            && [ "$(wc -l < "$saved")" -eq 1 ] || return 1
+        label="${saved##*/asset-}"; label="${label%.path}"
+        case "$label" in 0|1|2|3) ;; *) echo "!! Link asset snapshot label is invalid" >&2; return 1 ;; esac
+        path="$(sed -n '1p' "$saved")"
+        case "$label" in
+            0) expected="$ABLETON_DATA_HOME/ableton-linkd" ;;
+            1) expected="$data_unit" ;;
+            2) expected="$linkctl" ;;
+            3) expected="$ABLETON_DATA_HOME/setup-link.sh" ;;
+        esac
+        [ "$path" = "$expected" ] && [ -z "${seen[$path]+x}" ] || {
+            echo "!! Link asset snapshot path is invalid" >&2; return 1; }
+        seen["$path"]=1; count=$((count + 1))
+        link_snapshot_pair_valid "${saved%.path}.file" object "${saved%.path}.absent" || {
+            echo "!! Link asset snapshot object is unsafe" >&2; return 1; }
+    done
+    [ "$count" -eq 4 ] || { echo "!! Link asset snapshot set is incomplete" >&2; return 1; }
+
+}
+
+preflight_link_transaction()
+{
+    local path snap="$transaction_dir/link" saved current prior expected
+    validate_link_transaction_snapshot || return 1
+    if [ -e "$transaction_dir/files.tsv" ] || [ -L "$transaction_dir/files.tsv" ]; then
+        ableton_txn_preflight_rollback_files "$transaction_dir" || return 1
+    fi
+    # Rollback removes or replaces these exact destinations. Refuse a changed
+    # directory/special object before an outer transaction restores any other
+    # component, and require existing Link paths to remain project-owned.
+    for path in "$unit_file" "$ABLETON_DATA_HOME/ableton-linkd" "$data_unit" \
+                "$linkctl" "$ABLETON_DATA_HOME/setup-link.sh" \
+                "$ABLETON_STATE_HOME/install-manifest.tsv" \
+                "$ABLETON_STATE_HOME/install-prestate.tsv"; do
+        [ ! -e "$path" ] && [ ! -L "$path" ] && continue
+        { [ -f "$path" ] || [ -L "$path" ]; } && [ ! -d "$path" ] || {
+            echo "!! Link rollback destination is unsafe: $path" >&2; return 1; }
+    done
+    if [ -e "$ABLETON_STATE_HOME/install-prestate" ] \
+       || [ -L "$ABLETON_STATE_HOME/install-prestate" ]; then
+        [ -d "$ABLETON_STATE_HOME/install-prestate" ] \
+            && [ ! -L "$ABLETON_STATE_HOME/install-prestate" ] || {
+            echo "!! Link rollback prestate destination is unsafe" >&2; return 1; }
+    fi
+
+    # Do not overwrite a user edit made after the snapshot. A live destination
+    # must still be the snapshotted object or a replacement claimed by the
+    # current project manifest.
+    current="$(ableton_object_token "$unit_file" 2>/dev/null || true)"
+    prior=absent
+    [ ! -e "$snap/unit" ] \
+        || prior="$(ableton_object_token "$snap/unit" 2>/dev/null || true)"
+    if [ -z "$current" ] \
+       || { [ "$current" != "$prior" ] && ! unit_is_owned; }; then
+            echo "!! Link unit changed while rollback was pending: $unit_file" >&2
+            return 1
+    fi
+    for saved in "$snap"/asset-[0-3].path; do
+        path="$(sed -n '1p' "$saved")"
+        current="$(ableton_object_token "$path" 2>/dev/null || true)"
+        prior=absent
+        [ ! -e "${saved%.path}.file" ] \
+            || prior="$(ableton_object_token "${saved%.path}.file" 2>/dev/null || true)"
+        expected="$(manifest_digest_for "$path" 2>/dev/null || true)"
+        [ -z "$expected" ] || expected="file:$expected"
+        if [ -z "$current" ] \
+           || { [ "$current" != "$prior" ] && [ "$current" != "$expected" ]; }; then
+            echo "!! Link asset changed while rollback was pending: $path" >&2
+            return 1
+        fi
+    done
+    if [ -e "$ABLETON_STATE_HOME/install-manifest.tsv" ]; then
+        ableton_validate_ownership_manifest "$ABLETON_STATE_HOME/install-manifest.tsv" || return 1
+    fi
+    if [ -e "$ABLETON_STATE_HOME/install-prestate.tsv" ]; then
+        ableton_validate_prestate_index \
+            "$ABLETON_STATE_HOME/install-prestate.tsv" \
+            "$ABLETON_STATE_HOME/install-prestate" || return 1
+    fi
+}
+
+preflight_link_commit_transaction()
+{
+    validate_link_transaction_snapshot || return 1
+    if [ -e "$transaction_dir/files.tsv" ] || [ -L "$transaction_dir/files.tsv" ]; then
+        ableton_txn_preflight_commit_files "$transaction_dir" || return 1
+    fi
 }
 
 rollback_link_transaction()
 {
     local snap="$transaction_dir/link" prior rc=0 ctl path saved manifest
+    preflight_link_transaction || return 1
     [ -e "$snap/ready" ] || return 0
     prior="$(sed -n '1p' "$snap/policy")"
     stop_owned_service
@@ -495,8 +890,7 @@ rollback_link_transaction()
     restore_firewall_snapshot "$snap/firewall" || rc=$?
     restore_legacy_network "$snap/legacy" || rc=$?
     if [ -e "$snap/unit" ]; then
-        mkdir -p -- "$unit_dir"
-        cp -a -- "$snap/unit" "$unit_file"
+        ableton_atomic_restore_object "$snap/unit" "$unit_file" || rc=1
     elif unit_is_owned; then
         rm -f -- "$unit_file"
     fi
@@ -505,20 +899,32 @@ rollback_link_transaction()
         path="$(sed -n '1p' "$saved")"
         saved="${saved%.path}.file"
         if [ -e "$saved" ] || [ -L "$saved" ]; then
-            mkdir -p -- "$(dirname "$path")"
-            rm -f -- "$path"
-            cp -a -- "$saved" "$path"
+            ableton_atomic_restore_object "$saved" "$path" || rc=1
+        elif [ -e "$path" ] || [ -L "$path" ]; then
+            if legacy_link_file_is_owned "$path"; then
+                rm -f -- "$path"
+            else
+                echo "!! Link asset changed while rollback was pending: $path" >&2
+                rc=1
+            fi
         fi
     done
     manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
     if [ -e "$snap/manifest" ]; then
         ableton_mark_state_home
-        cp -a -- "$snap/manifest" "$manifest"
+        ableton_atomic_restore_object "$snap/manifest" "$manifest" || rc=1
+    elif [ -e "$manifest" ] || [ -L "$manifest" ]; then
+        if ableton_validate_ownership_manifest "$manifest"; then
+            rm -f -- "$manifest"
+        else
+            rc=1
+        fi
     fi
     rm -f -- "$ABLETON_STATE_HOME/install-prestate.tsv"
     rm -rf -- "$ABLETON_STATE_HOME/install-prestate"
     if [ -e "$snap/prestate.tsv" ]; then
-        cp -a -- "$snap/prestate.tsv" "$ABLETON_STATE_HOME/install-prestate.tsv"
+        ableton_atomic_restore_object "$snap/prestate.tsv" \
+            "$ABLETON_STATE_HOME/install-prestate.tsv" || rc=1
     fi
     if [ -d "$snap/prestate-dir" ]; then
         cp -a -- "$snap/prestate-dir" "$ABLETON_STATE_HOME/install-prestate"
@@ -545,6 +951,7 @@ commit_link_transaction()
 {
     local snap="$transaction_dir/link" ctl
     [ -e "$snap/ready" ] || return 0
+    preflight_link_commit_transaction || return 1
     ctl="$here/ableton-linkctl"; [ -x "$ctl" ] || ctl="$linkctl"
     if [ -e "$snap/detached-active" ] && [ "$ABLETON_LINK_MODE" = session ] && [ -x "$ctl" ]; then
         "$ctl" start
@@ -562,7 +969,7 @@ plan_link()
         [ ! -r "$state_file" ] || printf '  reverse recorded firewall state (%s): %s\n' "$(sed -n '1p' "$state_file")" "$state_file"
         [ ! -e "$legacy_hook" ] || printf '  remove recognisable legacy hook/route: %s\n' "$legacy_hook"
         printf '  remove manifest-owned Link assets: %s, %s/{ableton-linkctl,setup-link.sh,ableton-linkd.service}\n' \
-            "$ABLETON_LINKD" "$ABLETON_DATA_HOME"
+            "$ABLETON_DATA_HOME/ableton-linkd" "$ABLETON_DATA_HOME"
         return 0
     fi
     printf '  set persistent policy %s: %s\n' "$mode" "$ABLETON_CONFIG_FILE"
@@ -590,31 +997,163 @@ plan_link()
     esac
 }
 
+ABLETON_LINK_ENABLE_RECOVERY_ERROR=""
+link_enable_recovery_error()
+{
+    ABLETON_LINK_ENABLE_RECOVERY_ERROR="${ABLETON_LINK_ENABLE_RECOVERY_ERROR}${ABLETON_LINK_ENABLE_RECOVERY_ERROR:+; }$1"
+}
+
+link_enable_record_post()
+{
+    local snapshot="$1" label="$2" target="$3" token
+    token="$(ableton_object_token "$target" 2>/dev/null || true)"
+    [ -n "$token" ] || return 1
+    printf '%s\n' "$token" > "$snapshot/$label.post"
+    chmod 600 "$snapshot/$label.post"
+}
+
+link_enable_target_safe_for_restore()
+{
+    local snapshot="$1" label="$2" target="$3" existed="$4"
+    local current prior=absent post=""
+    current="$(ableton_object_token "$target" 2>/dev/null || true)"
+    [ -n "$current" ] || return 1
+    if [ "$existed" -eq 1 ]; then
+        prior="$(ableton_object_token "$snapshot/$label" 2>/dev/null || true)"
+        [ -n "$prior" ] || return 1
+    fi
+    [ ! -e "$snapshot/$label.post" ] \
+        || post="$(sed -n '1p' "$snapshot/$label.post")"
+    [ "$current" = absent ] || [ "$current" = "$prior" ] \
+        || { [ -n "$post" ] && [ "$current" = "$post" ]; }
+}
+
+restore_link_enable_snapshot()
+{
+    local snapshot="$1" unit_existed="$2" config_existed="$3"
+    local restore_config="$4" operation_rc="$5" recovery_rc=0
+    ABLETON_LINK_ENABLE_RECOVERY_ERROR=""
+    if ! link_enable_target_safe_for_restore "$snapshot" unit "$unit_file" "$unit_existed"; then
+        link_enable_recovery_error "Link unit changed during recovery"
+        recovery_rc=1
+    fi
+    if [ "$restore_config" -eq 1 ] \
+       && ! link_enable_target_safe_for_restore \
+            "$snapshot" config "$ABLETON_CONFIG_FILE" "$config_existed"; then
+        link_enable_recovery_error "Link configuration changed during recovery"
+        recovery_rc=1
+    fi
+    [ "$recovery_rc" -eq 0 ] || {
+        printf 'operation=enable\noperation_exit=%s\nrestoration_complete=no\nrestoration_error=%s\n' \
+            "$operation_rc" "$ABLETON_LINK_ENABLE_RECOVERY_ERROR" > "$snapshot/FAILURE" 2>/dev/null || true
+        return 1
+    }
+    # Recheck all local destinations immediately before any restoration.  A
+    # user edit made during a sudo/systemctl window must not be overwritten.
+    if ! link_enable_target_safe_for_restore "$snapshot" unit "$unit_file" "$unit_existed"; then
+        link_enable_recovery_error "Link unit changed during recovery"; recovery_rc=1
+    fi
+    if [ "$restore_config" -eq 1 ] \
+       && ! link_enable_target_safe_for_restore \
+            "$snapshot" config "$ABLETON_CONFIG_FILE" "$config_existed"; then
+        link_enable_recovery_error "Link configuration changed during recovery"; recovery_rc=1
+    fi
+    if [ "$recovery_rc" -eq 0 ] && ! restore_firewall_snapshot "$snapshot/firewall"; then
+        link_enable_recovery_error "firewall restoration failed"; recovery_rc=1
+    fi
+    if [ "$recovery_rc" -eq 0 ] && ! restore_legacy_network "$snapshot/legacy"; then
+        link_enable_recovery_error "legacy network restoration failed"; recovery_rc=1
+    fi
+    if [ "$recovery_rc" -eq 0 ] && [ "$unit_existed" -eq 1 ]; then
+        if ! ableton_atomic_restore_object "$snapshot/unit" "$unit_file"; then
+            link_enable_recovery_error "Link unit restoration failed"; recovery_rc=1
+        fi
+    elif [ "$recovery_rc" -eq 0 ] \
+         && { [ -e "$unit_file" ] || [ -L "$unit_file" ]; }; then
+        if unit_is_owned; then
+            if ! rm -f -- "$unit_file"; then
+                link_enable_recovery_error "Link unit cleanup failed"; recovery_rc=1
+            fi
+        else
+            link_enable_recovery_error "Link unit changed during recovery"; recovery_rc=1
+        fi
+    fi
+    if [ "$recovery_rc" -eq 0 ] && [ "$restore_config" -eq 1 ]; then
+        if [ "$config_existed" -eq 1 ]; then
+            if ! ableton_atomic_restore_object "$snapshot/config" "$ABLETON_CONFIG_FILE"; then
+                link_enable_recovery_error "Link configuration restoration failed"; recovery_rc=1
+            fi
+        elif ! rm -f -- "$ABLETON_CONFIG_FILE"; then
+            link_enable_recovery_error "Link configuration cleanup failed"; recovery_rc=1
+        fi
+    fi
+    if [ "$recovery_rc" -eq 0 ]; then
+        if rm -rf -- "$snapshot"; then
+            return 0
+        fi
+        link_enable_recovery_error "recovery snapshot cleanup failed"; recovery_rc=1
+    fi
+    printf 'operation=enable\noperation_exit=%s\nrestoration_complete=no\nrestoration_error=%s\n' \
+        "$operation_rc" "$ABLETON_LINK_ENABLE_RECOVERY_ERROR" > "$snapshot/FAILURE" 2>/dev/null || true
+    return "$recovery_rc"
+}
+
 enable_link()
 {
     [ -x "$linkctl" ] || { echo "!! ableton-linkctl is missing at $linkctl; install Link assets first" >&2; return 1; }
     echo "== enable Ableton Link ($mode) =="
     local snapshot unit_existed=0 config_existed=0 rc=0
+    validate_link_firewall_state || {
+        echo "!! unsafe Link firewall ownership record: $state_file" >&2
+        return 1
+    }
+    # Refuse unsafe live objects before claiming state or creating a recovery
+    # directory.  A dangling/foreign unit or unsafe config is not pre-state we
+    # can later restore safely.
+    if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
+        [ -f "$unit_file" ] && [ ! -L "$unit_file" ] || {
+            echo "!! unsafe or foreign Link unit cannot be snapshotted: $unit_file" >&2
+            return 1
+        }
+    fi
+    if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
+        if ! { [ -f "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ] \
+               && ableton_managed_config_valid "$ABLETON_CONFIG_FILE"; }; then
+            echo "!! unsafe installer configuration cannot be snapshotted" >&2
+            return 1
+        fi
+    fi
     ableton_mark_state_home
     snapshot="$(mktemp -d "$ABLETON_STATE_HOME/.link-enable.XXXXXX")"
     if [ -e "$state_file" ]; then cp -a -- "$state_file" "$snapshot/firewall"; fi
     snapshot_legacy_network "$snapshot/legacy"
-    if [ -e "$unit_file" ]; then cp -a -- "$unit_file" "$snapshot/unit"; unit_existed=1; fi
-    if [ -e "$ABLETON_CONFIG_FILE" ]; then cp -a -- "$ABLETON_CONFIG_FILE" "$snapshot/config"; config_existed=1; fi
+    if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
+        cp -a -- "$unit_file" "$snapshot/unit"; unit_existed=1
+    fi
+    if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
+        cp -a -- "$ABLETON_CONFIG_FILE" "$snapshot/config"; config_existed=1
+    fi
     remove_owned_legacy_hook || rc=$?
     if [ "$rc" -eq 0 ]; then configure_firewall || rc=$?; fi
-    if [ "$rc" -eq 0 ]; then install_unit || rc=$?; fi
+    if [ "$rc" -eq 0 ]; then
+        install_unit || rc=$?
+        [ ! -e "$unit_file" ] || link_enable_record_post "$snapshot" unit "$unit_file" || rc=1
+    fi
     if [ "$rc" -ne 0 ]; then
-        restore_firewall_snapshot "$snapshot/firewall" || true
-        restore_legacy_network "$snapshot/legacy" || true
-        if [ "$unit_existed" -eq 1 ]; then cp -a -- "$snapshot/unit" "$unit_file"
-        elif unit_is_owned; then rm -f -- "$unit_file"; fi
-        rm -rf -- "$snapshot"
+        if restore_link_enable_snapshot "$snapshot" "$unit_existed" "$config_existed" 0 "$rc"; then
+            echo "!! Link enable failed; the previous Link state was restored" >&2
+        else
+            echo "!! Link enable failed and automatic restoration is incomplete: $ABLETON_LINK_ENABLE_RECOVERY_ERROR" >&2
+            echo "!! recovery snapshot kept at $snapshot" >&2
+        fi
         return "$rc"
     fi
     ABLETON_LINK_MODE="$mode"
     export ABLETON_LINK_MODE
     ableton_write_config || rc=$?
+    if [ -e "$ABLETON_CONFIG_FILE" ] && ableton_managed_config_valid "$ABLETON_CONFIG_FILE"; then
+        link_enable_record_post "$snapshot" config "$ABLETON_CONFIG_FILE" || rc=1
+    fi
     if [ "$rc" -eq 0 ]; then
         case "$mode" in
             session)
@@ -627,13 +1166,12 @@ enable_link()
     fi
     if [ "$rc" -ne 0 ]; then
         stop_owned_service
-        restore_firewall_snapshot "$snapshot/firewall" || true
-        restore_legacy_network "$snapshot/legacy" || true
-        if [ "$unit_existed" -eq 1 ]; then cp -a -- "$snapshot/unit" "$unit_file"
-        elif unit_is_owned; then rm -f -- "$unit_file"; fi
-        if [ "$config_existed" -eq 1 ]; then cp -a -- "$snapshot/config" "$ABLETON_CONFIG_FILE"
-        else rm -f -- "$ABLETON_CONFIG_FILE"; fi
-        rm -rf -- "$snapshot"
+        if restore_link_enable_snapshot "$snapshot" "$unit_existed" "$config_existed" 1 "$rc"; then
+            echo "!! Link enable failed; the previous Link state was restored" >&2
+        else
+            echo "!! Link enable failed and automatic restoration is incomplete: $ABLETON_LINK_ENABLE_RECOVERY_ERROR" >&2
+            echo "!! recovery snapshot kept at $snapshot" >&2
+        fi
         return "$rc"
     fi
     rm -rf -- "$snapshot"
@@ -650,6 +1188,8 @@ case "$action" in
         [ -r "$state_file" ] && printf 'firewall: %s\n' "$(sed -n '1p' "$state_file")" || echo 'firewall: unrecorded'
         ;;
     snapshot) snapshot_link_transaction ;;
+    preflight-rollback) preflight_link_transaction ;;
+    preflight-commit) preflight_link_commit_transaction ;;
     rollback) rollback_link_transaction ;;
     commit) commit_link_transaction ;;
     plan-enable|plan-disable) plan_link ;;

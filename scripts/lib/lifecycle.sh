@@ -17,9 +17,9 @@ ableton_pid_has_env()
 
 ableton_pid_uses_runtime()
 {
-    local pid="$1" exe root
+    local pid="$1" root="${2:-$ABLETON_WINE_ROOT}" exe
     exe="$(readlink -f -- "/proc/$pid/exe" 2>/dev/null || true)"
-    root="$(readlink -f -- "$ABLETON_WINE_ROOT" 2>/dev/null || printf '%s' "$ABLETON_WINE_ROOT")"
+    root="$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")"
     case "$root" in
         /usr|/usr/local)
             case "$exe" in
@@ -45,6 +45,24 @@ ableton_prefix_pids()
         printf '%s\n' "$pid"
     done
     return 0
+}
+
+ableton_runtime_pids()
+{
+    local root="${1:-$ABLETON_WINE_ROOT}" proc pid
+    for proc in /proc/[0-9]*; do
+        pid="${proc#/proc/}"
+        ableton_pid_uses_runtime "$pid" "$root" || continue
+        printf '%s\n' "$pid"
+    done
+    return 0
+}
+
+ableton_runtime_busy()
+{
+    local root="${1:-$ABLETON_WINE_ROOT}" pid
+    pid="$(ableton_runtime_pids "$root" | head -n 1)"
+    [ -n "$pid" ]
 }
 
 ableton_pid_cmdline()

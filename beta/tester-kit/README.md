@@ -1,124 +1,81 @@
-# Tester kit
+# Tester kit reference
 
-`run-session` collects a system report, installs the test build, runs the
-automated probes, and writes one session file. Start with the
-[quick start](../README.md). The [test plan](../TESTING.md) lists the manual
-checks.
+`run-session` prepares a test prefix, records a redacted Linux report, verifies
+and runs a candidate installer, executes regression probes, and writes one
+session report.
 
-Use a physical x86-64 Linux machine. The kit does not support virtual machines.
-
-## Default flow
-
-From the root of this repository:
+## Run the default checks
 
 ```bash
 ./beta/tester-kit/run-session
 ```
 
-1. Prepares an empty Wine prefix at `~/.wine-ableton`. A non-empty prefix
-   requires `--reuse-prefix`.
-2. Collects the redacted Linux system report.
-3. Downloads the installer from `config/installer-url` and verifies its
-   SHA-256 before running it. `--allow-unverified-installer` bypasses this
-   requirement.
-4. Verifies every shipped probe against `probes/SHA256SUMS` and
-   `probes/advanced/SHA256SUMS`; a mismatch stops the session as a damaged
-   kit.
-5. Initialises the prefix with the installed Wine (`wineboot`) and runs
-   the test set below.
-6. Writes `session-YYYY-MM-DD-HHMMSS.txt` to the current directory or the
-   directory set by `--output-dir`.
+The default prefix is `~/.wine-ableton` and the report is written to the
+current directory. The runner refuses a non-empty prefix unless you approve it
+with `--reuse-prefix`.
 
-Each check records `PASS`, `FAIL`, `WARN`, `REVIEW`, `SKIP`, or `INFO`. A
-session with any `FAIL` exits with a nonzero status. Review the report, then
-file one issue per failure and attach the unchanged session file.
+The candidate URL comes from `config/installer-url`. The runner requires a
+matching SHA-256 from `URL.sha256` or `--installer-sha256`. The
+`--allow-unverified-installer` option is for deliberate local work only.
 
-## Options
+## Useful options
 
-| Option | Effect |
-| --- | --- |
-| `--output-dir DIR` | Directory for the final session text file |
-| `--prefix DIR` | Test prefix; default `~/.wine-ableton` |
-| `--reuse-prefix` | Permit a non-empty existing prefix |
-| `--installer-url URL` | Override the URL in `config/installer-url` |
-| `--installer-sha256 SHA256` | Expected installer hash |
-| `--allow-unverified-installer` | Run a downloaded installer without a checksum |
-| `--skip-installer` | Do not download or run the installer |
-| `--wine PATH` | Prefer this Wine binary over discovered runtimes |
-| `--live-probes` | Add Live window probes and three manual checks |
-| `--live-only` | Run only host readiness and Live checks |
-| `--advanced-input-trace` | Add an explicitly confirmed global Wine input trace |
-| `--non-interactive` | Suppress prompts; manual results become `SKIP` or `REVIEW` |
-| `--quick` | Use 5,000 rather than 30,000 stress iterations |
-| `--keep-work` | Keep the private temporary evidence directory |
-| `--list` | List the test set without changing anything |
-
-The kit checks known paths under `~/.local/opt` and
-`~/.config/ableton-wine/runtime-path` after any path supplied with `--wine`.
-
-## Test set
-
-| ID | Check |
-| --- | --- |
-| W00 | Runtime startup and fresh-prefix initialisation |
-| H01 | WirePlumber session-manager readiness |
-| H02 | PipeWire-Pulse graph readiness |
-| T01 | Shared-session allocator stress |
-| T02 | Pop-up menu creation |
-| T03 | Live-style menu/resize convergence |
-| T03M | Raw DPI and non-client metrics |
-| T04 | OpenGL child context and sRGB pixel format |
-| T05 | Plug-in title bars and layered shadows, visual |
-| T06 | XDG portal file dialogue, visual |
-| T07 | Virtual MIDI controller replug |
-| C01 | DPI, file-dialogue and audio-driver policy snapshot |
-| C02 | Nested audio endpoint FriendlyName guard |
-| L01-L05, L10-L12 | Optional passive and manual Live-session probes |
-| A01 | Optional global Wine mouse and JUCE input trace |
-
-L01-L05 inspect Live's open windows without clicking or typing. L10-L12 ask
-for manual observations. A01 hooks Wine input and requires you to type
-`TRACE`. See [Advanced test tools](probes/advanced/README.md).
-
-## Layout
-
-- `run-session`: session entry point.
-- `config/installer-url`: default installer URL.
-- `lib/`: collector, installer fetcher, verifier, and probe runner sourced
-  by `run-session`.
-- `probes/src` and `probes/windows`: PE probes and their sources.
-- `probes/advanced`: investigation tools that can change Live, input, or audio
-  routing.
-
-## Privacy
-
-The collector removes unique hardware identifiers. It redacts account paths,
-MAC addresses, credential lines, and captured window titles. The
-[profiler privacy guide](../scripts/README.md) defines the full scope. If
-excluded data appears, keep the report local and report the collector failure.
-Do not share that report, even after removing the data.
-
-## Rebuilding the probes (maintainers)
-
-The maintainer script rebuilds six PE artifacts against a Wine build tree:
-
-```bash
-ABLETON_WINE_SOURCE=/path/to/wine-d2d1-nspa-src \
-  ./beta/tester-kit/probes/build-maintainer-probes.sh
+```text
+--output-dir DIR             write the final report in DIR
+--prefix DIR                 use a different test prefix
+--reuse-prefix               permit a non-empty prefix
+--installer-url URL          replace the configured candidate URL
+--installer-sha256 SHA256    supply the expected candidate hash
+--skip-installer             run probes without downloading the candidate
+--wine PATH                  select a Wine binary explicitly
+--live-probes                add passive and manual Live checks
+--live-only                  check an existing Live installation
+--advanced-input-trace       collect the confirmed global input trace
+--non-interactive            turn manual results into SKIP or REVIEW
+--quick                      reduce stress iterations from 30,000 to 5,000
+--keep-work                  retain the private temporary evidence directory
+--list                       list checks without changing anything
 ```
 
-The source tree must contain `build-wow64`, or `ABLETON_WINE_BUILD` must point
-to that build directory. The command also requires Clang and LLD. The script
-currently rebuilds `resizeprobe.exe`,
-`pluginwindowprobe.exe`, `portalprobe.exe`, `ntsyncprobe.exe`, `spyhost.exe`,
-and `mousespy.dll`. It then regenerates both checksum files for the binaries
-already present. Do not edit checksums by hand.
+Run `./beta/tester-kit/run-session --help` for the complete usage text.
 
-Build the Linux tools with:
+## Checks included
+
+- `W00`: Wine startup and prefix initialisation
+- `H01-H02`: WirePlumber and PipeWire-Pulse readiness
+- `T01-T07`: shared mappings, menus, resize, OpenGL, file dialogues, and MIDI
+- `C01-C02`: prefix policy and endpoint registry checks
+- `L01-L12`: optional Live observations and manual actions
+- `A01`: optional Wine and JUCE input trace
+
+The report distinguishes `PASS`, `FAIL`, `WARN`, `REVIEW`, `SKIP`, and `INFO`.
+An automated failure makes the runner exit non-zero.
+
+## Files
+
+- `run-session`: session runner
+- `config/installer-url`: default candidate URL
+- `lib/`: collection, download, redaction, and probe helpers
+- `probes/windows/`: prebuilt Wine probes
+- `probes/src/`: native probe sources
+- `probes/advanced/`: optional diagnostic tools
+- `probes/SHA256SUMS`: distributed probe hashes
+
+## Private data
+
+Temporary evidence uses mode `0700` and is removed unless `--keep-work` is
+set. The final report removes common identifiers, credentials, account paths,
+and window titles. Review it before sharing. Do not edit a report to hide a
+redaction failure; keep it local and report the collector defect.
+
+## Rebuild distributed probes
+
+Maintainers can rebuild native tools with:
 
 ```bash
 ./beta/tester-kit/probes/build-native-tools
 ```
 
-This command needs a C compiler. Individual tools also need the development
-libraries reported by the build script.
+Build Windows probes through the maintainer build environment, then refresh
+the matching `SHA256SUMS`. Run `run-session --list` and the privacy checks
+before distributing a changed kit.

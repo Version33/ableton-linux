@@ -30,7 +30,7 @@ When you interact or engage with this repository in any capacity, you agree to:
 
 We will not tolerate homophobic, transphobic, racist, ableist and sexist slurs and content, even if intended as a joke, or as an ironic remark. That also includes demeaning, belittling or otherwise verbally intimidating communication. In short, any attitudes that may promote the oppression and/or exclusion of historically marginalised groups will not be accepted.
 
-### Engage honestly.
+### Speak directly.
 
 We talk to and with people rather than about people and/or groups. That means no sub-posting, unwelcome, or otherwise toxic comments regarding a person’s lifestyle choices and practices, antagonising and incendiary generalisations, flaming or edgy remarks at the expense of someone or another community. While we thrive on sarcasm, critique and the need to seek support and alliances while expressing defeating feelings, we ask that you avoid persistent trauma dumping. This repository should not stand in as your personal punching bag.
 

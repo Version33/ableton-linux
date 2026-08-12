@@ -1,0 +1,436 @@
+From ff630a381d5c42ab59632f29683b4965c534853d Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Mon, 10 Aug 2026 18:27:15 +0200
+Subject: [PATCH 6/7] log PipeWire versions and enforce the 1.4.2 runtime floor
+
+PipeASIO 1.5 supports PipeWire 1.4.2 and newer. Enforce that same floor inside the driver for both the loaded client library and the connected daemon, so a post-install downgrade or manually sideloaded runtime cannot enter an unsupported compatibility path.
+
+Reject an old loaded client before pw_init or any context setup. The daemon version arrives in pw_core_info during audio_open initial sync. A strict shared parser accepts normal package suffixes, rejects malformed or missing versions, and has native boundary coverage. An append-only audio status carries a focused Init failure across WoW64 without adding a new Unix call.
+
+Keep logging daemon, client, and header versions. Keep the dynamic audio-node proxy tracking from the earlier design so node.force-quantum changes remain visible without node removal, but remove the pre-1.2 power-of-two envelope and its PE/WoW64 query.
+---
+ include/audio.h               |   1 +
+ include/pipeasio_parse.h      |  56 +++++++++++++++
+ src/asio.c                    |   8 +-
+ src/audio.c                   | 150 +++++++++++++++++++++++++++++++++++------
+ tests/unit/test_config.c      |  23 ++++++
+ tests/wow64/unix_abi_layout.c |   1 +
+ 6 files changed, 213 insertions(+), 26 deletions(-)
+
+diff --git a/include/audio.h b/include/audio.h
+index 85def7a..3c78eca 100644
+--- a/include/audio.h
++++ b/include/audio.h
+@@ -78,6 +78,7 @@ typedef int (*audio_sample_rate_cb)(audio_nframes_t nframes, void *arg);
+ #define AUDIO_STATUS_NO_CONTEXT 3u
+ #define AUDIO_STATUS_NO_DAEMON 4u
+ #define AUDIO_STATUS_NO_UNIXLIB 5u
++#define AUDIO_STATUS_UNSUPPORTED_PIPEWIRE 6u
+
+ /* audio_port_register / audio_get_device_ports flag bits */
+ #define AUDIO_PORT_IS_INPUT 0x01u
+diff --git a/include/pipeasio_parse.h b/include/pipeasio_parse.h
+index e7a3937..d71fda6 100644
+--- a/include/pipeasio_parse.h
++++ b/include/pipeasio_parse.h
+@@ -11,6 +11,62 @@
+
+ #define PIPEASIO_CONFIG_LINE_MAX 1024
+
++/* PipeASIO 1.5's supported PipeWire client/daemon floor.  Keep this next to
++ * the pure parser so the runtime check and its native unit coverage share one
++ * fail-closed implementation. */
++#define PIPEASIO_PIPEWIRE_MIN_MAJOR 1
++#define PIPEASIO_PIPEWIRE_MIN_MINOR 4
++#define PIPEASIO_PIPEWIRE_MIN_PATCH 2
++#define PIPEASIO_PIPEWIRE_MIN_VERSION "1.4.2"
++
++static inline bool
++pipeasio_pipewire_version_supported(const char *text)
++{
++    const char   *part = text;
++    char         *end;
++    unsigned long values[3];
++    bool          prerelease = false;
++
++    if (!text || !*text)
++        return false;
++    for (size_t i = 0; i < 3; ++i)
++    {
++        if (*part < '0' || *part > '9')
++            return false;
++        errno     = 0;
++        values[i] = strtoul(part, &end, 10);
++        if (errno == ERANGE || end == part || end - part > 9 || values[i] > INT_MAX)
++            return false;
++        if (i < 2)
++        {
++            if (*end != '.')
++                return false;
++            part = end + 1;
++        }
++        else if (*end)
++        {
++            if (*end != '-' && *end != '+' && *end != '~')
++                return false;
++            prerelease = *end == '~';
++            const unsigned char *suffix = (const unsigned char *)end + 1;
++            if (!*suffix)
++                return false;
++            for (; *suffix; ++suffix)
++                if (!isalnum(*suffix) && *suffix != '.' && *suffix != '_'
++                    && *suffix != '~' && *suffix != '-')
++                    return false;
++        }
++    }
++
++    if (values[0] != PIPEASIO_PIPEWIRE_MIN_MAJOR)
++        return values[0] > PIPEASIO_PIPEWIRE_MIN_MAJOR;
++    if (values[1] != PIPEASIO_PIPEWIRE_MIN_MINOR)
++        return values[1] > PIPEASIO_PIPEWIRE_MIN_MINOR;
++    if (values[2] != PIPEASIO_PIPEWIRE_MIN_PATCH)
++        return values[2] > PIPEASIO_PIPEWIRE_MIN_PATCH;
++    return !prerelease;
++}
++
+ static inline bool
+ pipeasio_parse_int(const char *text, int minimum, int maximum, int *result)
+ {
+diff --git a/src/asio.c b/src/asio.c
+index d056605..82db75d 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -433,7 +433,6 @@ HIDDEN void __thiscall_OutputReady(void);
+
+ static inline int process_callback(audio_nframes_t nframes, void *arg);
+ static inline int sample_rate_callback(audio_nframes_t nframes, void *arg);
+-static LONG restricted_buffer_size(IPipeASIOImpl *This, LONG frames, const char *what);
+
+ /*
+  *  Support functions
+@@ -1169,8 +1168,7 @@ config_watch_proc(LPVOID arg)
+                 && pipeasio_quantum_should_restore(adopted, pending, q,
+                                                    This->host_current_buffersize, forcing))
+             {
+-                restore = restricted_buffer_size(This, This->pipeasio_preferred_buffersize,
+-                                                 "restored buffer size");
++                restore = This->pipeasio_preferred_buffersize;
+                 atomic_store(&This->restore_pending_quantum, restore);
+                 atomic_store(&This->restore_request_tick, 0);
+                 atomic_store(&This->adopt_pending_quantum, 0);
+@@ -1519,6 +1517,10 @@ Init(LPPIPEASIO iface, void *sysRef)
+         case AUDIO_STATUS_NO_MEMORY:
+             set_last_error(This, "out of memory");
+             break;
++        case AUDIO_STATUS_UNSUPPORTED_PIPEWIRE:
++            set_last_error(This, "PipeWire 1.4.2 or newer is required for both the client "
++                                 "library and daemon; check the Wine log");
++            break;
+         default:
+             set_last_error(This, "failed to initialize the PipeWire client; check the Wine log");
+             break;
+diff --git a/src/audio.c b/src/audio.c
+index a2baa16..6221786 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -303,6 +303,8 @@ struct audio_client
+     uint64_t           mute_accum;             /* graph frames banked while muted */
+     _Atomic uint32_t   global_force_quantum;   /* settings clock.force-quantum, 0 = none */
+     _Atomic uint32_t   foreign_forcers;        /* cached nodes with node.force-quantum */
++    bool               daemon_version_seen;    /* core info arrived during initial sync */
++    bool               daemon_supported;       /* parsed version is at least 1.4.2 */
+     bool               rate_announced; /* process announced a rate this activation */
+     uint64_t           cycle_count;
+     struct spa_source *diagnostic_event;
+@@ -384,12 +386,16 @@ struct audio_client
+
+ struct audio_node_info
+ {
+-    uint32_t id;
+-    uint32_t device_id; /* PW_KEY_DEVICE_ID owner card, SPA_ID_INVALID when none */
+-    char    *node_name;
+-    char    *display_name;
+-    char    *media_class;
+-    bool     foreign_forcer; /* counted in foreign_forcers (issue #49) */
++    audio_client_t *client;
++    uint32_t        id;
++    uint32_t        device_id; /* PW_KEY_DEVICE_ID owner card, SPA_ID_INVALID when none */
++    char           *node_name;
++    char           *display_name;
++    char           *media_class;
++    bool            is_ours;
++    bool            foreign_forcer; /* counted in foreign_forcers (issue #49) */
++    struct pw_node *proxy;           /* bound for dynamic node property updates */
++    struct spa_hook listener;
+ };
+
+ struct audio_port
+@@ -442,8 +448,11 @@ static void audio_on_registry_global(void *userdata, uint32_t id, uint32_t permi
+                                      const struct spa_dict *props);
+ static void audio_on_registry_global_remove(void *userdata, uint32_t id);
+
++static void audio_on_core_info(void *userdata, const struct pw_core_info *info);
++
+ static const struct pw_core_events audio_core_events = {
+     PW_VERSION_CORE_EVENTS,
++    .info = audio_on_core_info,
+     .done = audio_on_core_done,
+ };
+
+@@ -469,6 +478,17 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     uint32_t err = AUDIO_STATUS_ERROR;
+     if (status)
+         *status = AUDIO_STATUS_OK;
++    const char *client_version = pw_get_library_version();
++    if (!pipeasio_pipewire_version_supported(client_version))
++    {
++        ERR("PipeWire client library %s is unsupported; version "
++            PIPEASIO_PIPEWIRE_MIN_VERSION " or newer is required "
++            "(pipeasio-daemon-version)\n",
++            client_version ? client_version : "<missing>");
++        if (status)
++            *status = AUDIO_STATUS_UNSUPPORTED_PIPEWIRE;
++        return NULL;
++    }
+     audio_client_t *c = calloc(1, sizeof(*c));
+     if (!c)
+     {
+@@ -574,6 +594,19 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+
+     pw_thread_loop_unlock(c->loop);
+     audio_sync(c);
++    if (!c->daemon_version_seen)
++    {
++        ERR("PipeWire daemon did not report a readable version; version "
++            PIPEASIO_PIPEWIRE_MIN_VERSION " or newer is required "
++            "(pipeasio-daemon-version)\n");
++        err = AUDIO_STATUS_UNSUPPORTED_PIPEWIRE;
++        goto fail_connected;
++    }
++    if (!c->daemon_supported)
++    {
++        err = AUDIO_STATUS_UNSUPPORTED_PIPEWIRE;
++        goto fail_connected;
++    }
+     /* A second sync drains the initial property burst of the "default" and
+      * "settings" metadata objects: they are bound during the first sync's
+      * global emission, so their values (default.audio.sink/source, the graph
+@@ -590,6 +623,11 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+           c->n_discovered);
+     return c;
+
++fail_connected:
++    if (status)
++        *status = err;
++    audio_close(c);
++    return NULL;
+ fail_started:
+     pw_thread_loop_stop(c->loop);
+ fail_ctx:
+@@ -635,6 +673,13 @@ audio_close(audio_client_t *c)
+             pw_proxy_destroy((struct pw_proxy *)c->settings_metadata);
+             c->settings_metadata = NULL;
+         }
++        for (uint32_t i = 0; i < c->n_nodes; ++i)
++            if (c->nodes[i]->proxy)
++            {
++                spa_hook_remove(&c->nodes[i]->listener);
++                pw_proxy_destroy((struct pw_proxy *)c->nodes[i]->proxy);
++                c->nodes[i]->proxy = NULL;
++            }
+         if (c->registry)
+         {
+             spa_hook_remove(&c->registry_listener);
+@@ -1903,6 +1948,27 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+     }
+ }
+
++/* The core info event lands during audio_open's initial sync. Log all three
++ * versions and fail closed against the same 1.4.2 support floor enforced by
++ * the installer; this also catches a post-install daemon downgrade. */
++static void
++audio_on_core_info(void *userdata, const struct pw_core_info *info)
++{
++    audio_client_t *c = userdata;
++    if (c->daemon_version_seen || !info || !info->version)
++        return;
++    c->daemon_version_seen = true;
++    c->daemon_supported = pipeasio_pipewire_version_supported(info->version);
++    TRACE("PipeWire daemon %s, client library %s, headers %s "
++          "(pipeasio-daemon-version)\n",
++          info->version, pw_get_library_version(), pw_get_headers_version());
++    if (!c->daemon_supported)
++        ERR("PipeWire daemon %s is unsupported; version "
++            PIPEASIO_PIPEWIRE_MIN_VERSION " or newer is required "
++            "(pipeasio-daemon-version)\n",
++            info->version);
++}
++
+ /* Core sync completion. */
+
+ static void
+@@ -1997,14 +2063,49 @@ audio_registry_property_valid(const char *value)
+     return !value || strnlen(value, AUDIO_REGISTRY_PROPERTY_MAX + 1) <= AUDIO_REGISTRY_PROPERTY_MAX;
+ }
+
++/* Keep the aggregate foreign-forcer count synchronized with the current
++ * property set of one bound node.  Registry globals only provide a creation
++ * snapshot; PW_NODE_CHANGE_MASK_PROPS is required for Q -> 0 and 0 -> Q on a
++ * node that stays alive. */
++static void
++audio_update_node_forcer(struct audio_node_info *node, const struct spa_dict *props)
++{
++    if (!node || node->is_ours || !node->client || !props)
++        return;
++    const char *force_q = spa_dict_lookup(props, PW_KEY_NODE_FORCE_QUANTUM);
++    if (!audio_registry_property_valid(force_q))
++        force_q = NULL;
++    int delta = pipeasio_quantum_forcer_transition(&node->foreign_forcer, force_q);
++    if (delta > 0)
++        atomic_fetch_add_explicit(&node->client->foreign_forcers, 1, memory_order_acq_rel);
++    else if (delta < 0)
++        atomic_fetch_sub_explicit(&node->client->foreign_forcers, 1, memory_order_acq_rel);
++    if (delta)
++        TRACE("registry: node %u force-quantum %s\n", node->id,
++              node->foreign_forcer ? "enabled" : "cleared");
++}
++
++static void
++audio_on_node_info(void *userdata, const struct pw_node_info *info)
++{
++    struct audio_node_info *node = userdata;
++    if (!info || !(info->change_mask & PW_NODE_CHANGE_MASK_PROPS))
++        return;
++    audio_update_node_forcer(node, info->props);
++}
++
++static const struct pw_node_events audio_node_events = {
++    PW_VERSION_NODE_EVENTS,
++    .info = audio_on_node_info,
++};
++
+ static void
+-audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
++audio_cache_node(audio_client_t *c, uint32_t id, uint32_t version, const struct spa_dict *props)
+ {
+     const char *node_name   = spa_dict_lookup(props, PW_KEY_NODE_NAME);
+     const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+     const char *description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+     const char *nick        = spa_dict_lookup(props, PW_KEY_NODE_NICK);
+-    const char *force_q     = spa_dict_lookup(props, PW_KEY_NODE_FORCE_QUANTUM);
+     const char *device_id_s = spa_dict_lookup(props, PW_KEY_DEVICE_ID);
+     if (!node_name || !audio_registry_property_valid(node_name)
+         || !audio_registry_property_valid(media_class)
+@@ -2042,24 +2143,12 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
+     struct audio_node_info *n = calloc(1, sizeof(*n));
+     if (!n)
+         return;
++    n->client    = c;
+     n->id = id;
++    n->is_ours   = is_ours;
+     n->device_id = SPA_ID_INVALID;
+     if (device_id_s && audio_registry_property_valid(device_id_s))
+         pipeasio_parse_u32_id(device_id_s, &n->device_id);
+-    /* Track foreign quantum forcers so the watcher can tell when the
+-     * forcing condition ends (issue #49).  Our own node's force is not
+-     * foreign.  Best effort: a node that turns its force on after being
+-     * cached is not seen (registry props are read at global emission). */
+-    if (!is_ours && force_q && audio_registry_property_valid(force_q))
+-    {
+-        int fq = 0;
+-        if (pipeasio_parse_int(force_q, 0, INT_MAX, &fq) && fq > 0)
+-        {
+-            n->foreign_forcer = true;
+-            atomic_fetch_add_explicit(&c->foreign_forcers, 1, memory_order_acq_rel);
+-            TRACE("registry: node %u forces quantum %d\n", id, fq);
+-        }
+-    }
+     n->node_name    = strdup(node_name);
+     n->media_class  = audio_dup_or_null(media_class);
+     n->display_name = strdup(description ? description : (nick ? nick : node_name));
+@@ -2090,6 +2179,15 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
+         c->cap_nodes = new_cap;
+     }
+     c->nodes[c->n_nodes++] = n;
++    audio_update_node_forcer(n, props);
++    /* Bind every cached audio node so later PW_NODE_CHANGE_MASK_PROPS events
++     * update the forcer count without waiting for node removal. */
++    uint32_t bind_version = version < PW_VERSION_NODE ? version : PW_VERSION_NODE;
++    n->proxy = pw_registry_bind(c->registry, id, PW_TYPE_INTERFACE_Node, bind_version, 0);
++    if (n->proxy)
++        pw_node_add_listener(n->proxy, &n->listener, &audio_node_events, n);
++    else
++        WARN("registry: could not bind node %u; dynamic force-quantum updates unavailable\n", id);
+     audio_refresh_defaults(c);
+     TRACE("registry: +node id=%u name=\"%s\" class=\"%s\" desc=\"%s\"\n", id, n->node_name,
+           n->media_class ? n->media_class : "", n->display_name);
+@@ -2384,7 +2482,7 @@ audio_on_registry_global(void *userdata, uint32_t id, uint32_t permissions, cons
+     if (!type || !props)
+         return;
+     if (!strcmp(type, PW_TYPE_INTERFACE_Node))
+-        audio_cache_node(client, id, props);
++        audio_cache_node(client, id, version, props);
+     else if (!strcmp(type, PW_TYPE_INTERFACE_Port))
+         audio_cache_port(client, id, props);
+     else if (!strcmp(type, PW_TYPE_INTERFACE_Metadata))
+@@ -2445,6 +2543,12 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
+             struct audio_node_info *node = client->nodes[i];
+             if (node->foreign_forcer)
+                 atomic_fetch_sub_explicit(&client->foreign_forcers, 1, memory_order_acq_rel);
++            if (node->proxy)
++            {
++                spa_hook_remove(&node->listener);
++                pw_proxy_destroy((struct pw_proxy *)node->proxy);
++                node->proxy = NULL;
++            }
+             if (client->chosen_node[0] == id)
+                 client->chosen_node[0] = SPA_ID_INVALID;
+             if (client->chosen_node[1] == id)
+diff --git a/tests/unit/test_config.c b/tests/unit/test_config.c
+index 7317acb..bd9ff3b 100644
+--- a/tests/unit/test_config.c
++++ b/tests/unit/test_config.c
+@@ -273,6 +273,29 @@ main(void)
+         EXPECT_TRUE(!pipeasio_parse_u32_id("18446744073709551616", &id));
+     }
+
++    TEST_GROUP("PipeWire 1.4.2 runtime floor")
++    {
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported(NULL));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported(""));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4.1"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.0.5"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.4.2"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.4.2-1ubuntu1"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.4.2-1~ubuntu"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.4.2+git"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4.2~rc1"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4.2~rc1-1"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.4.3~rc1"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.5.0~beta1"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("1.10.0"));
++        EXPECT_TRUE(pipeasio_pipewire_version_supported("2.0.0"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4.2junk"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4.2-"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported("1.4.2+git+more"));
++        EXPECT_TRUE(!pipeasio_pipewire_version_supported(" 1.4.2"));
++    }
++
+     /* Comments, stray whitespace, unknown keys, bool spellings, no header. */
+     TEST_GROUP("lenient parse")
+     {
+diff --git a/tests/wow64/unix_abi_layout.c b/tests/wow64/unix_abi_layout.c
+index 815afb3..4b7352e 100644
+--- a/tests/wow64/unix_abi_layout.c
++++ b/tests/wow64/unix_abi_layout.c
+@@ -57,6 +57,7 @@ CHECK(AUDIO_STATUS_NO_MEMORY == 2, "audio status ABI drift");
+ CHECK(AUDIO_STATUS_NO_CONTEXT == 3, "audio status ABI drift");
+ CHECK(AUDIO_STATUS_NO_DAEMON == 4, "audio status ABI drift");
+ CHECK(AUDIO_STATUS_NO_UNIXLIB == 5, "audio status ABI drift");
++CHECK(AUDIO_STATUS_UNSUPPORTED_PIPEWIRE == 6, "audio status ABI drift");
+
+ CHECK(sizeof(pa_i64) == 8, "pa_i64 size");
+ CHECK(offsetof(pa_i64, lo) == 0, "pa_i64 lo offset");
+--
+2.55.0

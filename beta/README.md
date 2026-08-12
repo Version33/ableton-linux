@@ -1,40 +1,27 @@
-# Ableton Wine beta test kit
+# Beta testing
 
-This work-in-progress kit tests Ableton Live 12 with Ableton Wine on Linux.
+The beta kit checks a candidate Ableton Linux installer on a separate Wine
+prefix and writes one redacted session report.
 
-## Getting started
+## Run a session
 
-Use a physical x86-64 Linux machine. The kit does not support virtual machines.
-
-From the root of this repository:
+From the repository root:
 
 ```bash
 ./beta/tester-kit/run-session
 ```
 
-The command collects a redacted system report, downloads and verifies the
-configured Wine installer, prepares `~/.wine-ableton`, runs the probes, and
-writes:
-
-```text
-session-YYYY-MM-DD-HHMMSS.txt
-```
-
-The collector removes unique hardware identifiers. It redacts account paths,
-MAC addresses, credential lines, and captured window titles. If excluded data
-appears, keep the report local and report the collector failure. Do not share
-that report, even after removing the data. See
-[Environment profilers](scripts/README.md) for the full scope.
-
-After installing Live in `~/.wine-ableton`, start it and run the Live checks:
+The default prefix is `~/.wine-ableton`. The runner refuses a non-empty prefix
+unless you pass `--reuse-prefix`. Use a separate account or an explicit test
+prefix if that path contains an installation you need to keep:
 
 ```bash
-./beta/tester-kit/run-session --live-only \
-  --wine "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine"
+./beta/tester-kit/run-session --prefix "$HOME/.wine-ableton-beta"
 ```
 
-The command asks you to open Learn View and one representative Direct2D or
-JUCE plugin editor. L01-L05 inspect those windows without injecting input.
-L10-L12 ask you to check window stability, input, and Learn View rendering.
-See the [tester kit reference](tester-kit/README.md) for all options and
-probes.
+The finished report is named `session-YYYY-MM-DD-HHMMSS.txt`. Read it before
+sharing it. If a private value appears, keep the report local and file a
+collector bug instead of editing the report.
+
+Use [TESTING.md](TESTING.md) for the release test sequence. The
+[tester-kit reference](tester-kit/README.md) lists every option and check.

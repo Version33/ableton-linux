@@ -1,94 +1,84 @@
-# Build and configure Ableton Live on Linux
+# Build Ableton Live on Linux
 
-This document covers source builds and configuration overrides for developers
-and advanced users.
+This page covers the current source build, tests, packaging, and maintainer options.
 
-## Requirements
+## Build
 
-The build requires:
-
-- Podman
-- about 10 GB of free disk space
-- `zstd`
-- `cabextract`
-- `binutils`
-- a host C compiler and maths library for `make check`
-
-## Build and install from source
-
-Run:
+Install Podman, Git, Bash, Python 3, GNU Coreutils, GNU Findutils, GNU grep, GNU tar, binutils, `zstd`, and `cabextract`. `make check` also needs a host C compiler and maths library. Allow about 10 GB of free disk space.
+Then run:
 
 ```bash
 ./build.sh
-./scripts/installer.sh install \
-  --live-installer "/path/to/Ableton Live 12 Suite Installer.exe" \
-  --live-major 12 --link=session
-ableton-live
 ```
 
-`build.sh` creates the patched Wine runtime and `dist/ableton-linkd`.
-`installer.sh` validates and stages the selected components. If a step fails,
-it restores the state from before the command.
-The lower-level `install.sh`, `setup-prefix.sh`, and `setup-link.sh` scripts are
-component implementations rather than the public command interface.
-
-## Manage individual components
-
-Use the component commands when you do not want a complete installation:
+Set `ENGINE` to another compatible container command if needed. Set `JOBS` to limit parallel work:
 
 ```bash
-# Copy only the Wine runtime.
-./scripts/installer.sh runtime install
+env JOBS=8 ./build.sh
+```
 
-# Create or update only the selected Wine prefix.
+The build verifies the vendored Wine, PipeASIO, PipeWire SDK, ntsync, and Ableton Link inputs. It then creates the container image, builds Wine and PipeASIO, runs the compiled test suites and patch audit, and writes the runtime and build records to `dist/`.
+
+ThreadSanitizer runs by default. Where it cannot start at all, the default permits only a recognised startup limitation and records a non-release build; races, test failures and unrecognised errors still fail the build. To require a successful ThreadSanitizer result instead, so that a startup limitation is an error:
+
+```bash
+env PIPEASIO_TSAN_MODE=require ./build.sh
+```
+
+Continuous integration sets `require`. Official packages need the successful result either way: packing, tagging and publishing all refuse a build record that does not carry it.
+
+## Install a source build
+
+Install `cabextract`, then run the installer dispatcher after a successful build:
+
+```bash
+./scripts/installer.sh install \
+  --live-installer "/path/to/Ableton Live 12 Suite Installer.zip" \
+  --live-major 12 \
+  --link=session
+```
+
+The dispatcher validates the new files before changing the current installation. If an operation fails before it commits, it restores the files and configuration recorded at the start.
+
+Use one component directly when a full install is not needed:
+
+```bash
+./scripts/installer.sh runtime install
 ./scripts/installer.sh prefix create --live-major 12
 ./scripts/installer.sh prefix update --live-major 12
-
-# Change only Link and the Link state owned by this project.
+./scripts/installer.sh prefix repair-live11
 ./scripts/installer.sh link enable --mode=session
 ./scripts/installer.sh link disable
 ./scripts/installer.sh link status
 ```
 
-Select other locations with `--prefix PATH` and `--runtime-root PATH`. Preview
-all planned file, service, and firewall changes without applying them:
+Preview any supported operation without changing files:
 
 ```bash
 ./scripts/installer.sh plan update
 ./scripts/installer.sh plan uninstall --delete-prefix
 ```
 
-The installer does not change system scheduling policy. Run
-`./scripts/setup-realtime.sh` separately if you want to change the host audio
-settings.
+Run `./scripts/installer.sh --help` for the complete current command list.
 
-## Run the checks
+## Test
 
-Run the repository checks:
+Run the repository policy, launcher, installer, and PipeASIO checks:
 
 ```bash
 make check
-make verify
-scripts/test-shortcut-hold.sh
-scripts/test-installer-lifecycle.sh
+make test
 ```
 
-`make check` inspects the pointer changes and tests their limits with difficult
-input. `make verify` also checks the pinned source files. Neither command starts
-Wine or Live.
+`make check` inspects the pointer changes and tests their limits with difficult input. Neither it nor `make verify` starts Wine or Live.
 
-Build the Wine menu test with all compiler warnings enabled. Then run its two
-modes:
+Verify all pinned build and packaging inputs:
 
 ```bash
-winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
-./altnum-menu-repro.exe swallow
-./altnum-menu-repro.exe pass
+make verify
 ```
 
-The GNOME check uses temporary data and does not change the desktop settings.
-The Wine check sends keys to its own window. It needs a working Wine display.
-Each mode returns a non-zero status when a required result fails.
+The container build also runs PipeASIO's non-integration CTest suite, a no-Qt build, ASan and UBSan tests, ThreadSanitizer unit tests, relocation and registration checks, and the final runtime audit. These checks do not replace a run with Live and real audio hardware.
 
 ## Configure Ableton Link
 
@@ -98,33 +88,29 @@ Configure Ableton Link networking and choose when it runs:
 ./scripts/installer.sh link enable --mode=session
 ```
 
-This requests `sudo` only when an active firewall needs the UDP 20808
-allowance, or when a hook from an earlier setup version needs removing.
+This requests `sudo` only when an active firewall needs the UDP 20808 allowance, or when a hook from an earlier setup version needs removing.
 
-## Build the single-file installer
+## Package
 
-Run:
+After a successful `./build.sh`, create the single-file installer:
 
 ```bash
 ./scripts/make-installer.sh
 ```
 
-The result is `dist/ableton-wine-setup-<version>.run`. The installer includes
-the runtime, launchers, Ableton Link support, setup scripts, and corresponding
-source required by bundled licences.
+This writes `dist/ableton-wine-setup-<version>.run` and its SHA-256 file. Packaging refuses a build that lacks the required sanitizer result or fails the runtime audit.
 
-## Environment variables
+## Current configuration
 
-For installer and launcher settings, command-line options override exported
-variables, exported variables override saved XDG settings, and saved settings
-override the defaults. The `WINE_X11_*` values below override saved Wine
-settings for one launch.
+The installer saves the runtime root, Wine prefix, selected Live major version, and Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
 
-- `ABLETON_WINE_ROOT` selects the Wine runtime. The default is
-  `~/.local/opt/wine-d2d1-nspa-11.13`.
-- `ABLETON_WINEPREFIX` selects the Wine prefix. The default is
-  `~/.wine-ableton`.
-- `ABLETON_LIVE_VERSION=11|12` selects a Live major version.
+- `ABLETON_WINE_ROOT` selects the Wine runtime. The default is `~/.local/opt/wine-d2d1-nspa-11.13`.
+- `ABLETON_WINEPREFIX` selects the Wine prefix. The default is `~/.wine-ableton`.
+- `ABLETON_LIVE_VERSION=11|12` selects a Live major version for the launcher.
+- `ABLETON_LINK_MODE=off|session|always` controls when Ableton Link runs.
+
+These environment variables change one launch without changing the saved installer configuration:
+
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
 - `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
   installer, Live launcher, Max launcher, service, and uninstaller.
@@ -194,22 +180,19 @@ The settings, defaults, limits, and hands-on checks are in
 - `ENGINE` selects the container engine used by build scripts. The default is
   `podman`.
 
-Adjust installer time limits with `ABLETON_WINE_COMMAND_TIMEOUT`,
-`ABLETON_WINETRICKS_TIMEOUT`, `ABLETON_LIVE_INSTALL_TIMEOUT`,
-`ABLETON_PAYLOAD_EXTRACT_TIMEOUT`, `ABLETON_RUNTIME_EXTRACT_TIMEOUT`,
-`ABLETON_PAYLOAD_IO_TIMEOUT`, and `ABLETON_LAUNCH_TIMEOUT`. The installer checks
-each value before use. When a process reaches its limit, the installer sends
-`TERM`, waits five seconds, then sends `KILL` if the process is still running.
+The build-only `ENGINE` variable selects the container command. Its default is `podman`.
+
+PipeASIO stores its settings in `${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini`. The installer creates a 256-frame, two-input, two-output configuration only when that file does not exist. The driver accepts buffer sizes from 32 to 8192 frames.
+
+The optional `scripts/setup-realtime.sh` asks for `sudo`, adds the current user to the real-time audio group, writes the project audio limits and swappiness settings under `/etc`, and enables `rtirq` when it is installed. Run it only when you want those system changes, then log out and back in.
 
 ## Repository layout
 
-- [`patches`](patches/): Wine and PipeASIO patches
-- [`scripts`](scripts/): build, install, setup, and launch scripts
-- [`vendor`](vendor/): pinned build inputs
-- [`notes`](notes/): implementation records and investigations
+- [`patches`](patches/): ordered Wine and PipeASIO patches, checksums, and provenance
+- [`scripts`](scripts/): build, install, launch, test, and release scripts
+- [`vendor`](vendor/): pinned source inputs
 - [`tools`](tools/): diagnostic and build tools
-- [`bin`](bin/): installed launchers
-- [`dist`](dist/): build output
-- [`beta`](beta/): beta test kit
+- [`desktop`](desktop/): application and file-type integration
+- [`dist`](dist/): generated build output
 
-The patch list and provenance are in [`patches/BASE.txt`](patches/BASE.txt).
+The authoritative patch list and provenance are in [patches/BASE.txt](patches/BASE.txt).

@@ -34,12 +34,16 @@ set -euo pipefail
 state="${ABLETON_TEST_MIME_STATE:?}"
 case "${1:-}" in
     default)
-        [ "$#" -eq 3 ]
+        [ "$#" -ge 3 ]
+        application="$2"
+        shift 2
         mkdir -p -- "$(dirname "$state")"
         touch "$state"
-        awk -F '\t' -v type="$3" '$1 != type' "$state" > "$state.tmp"
-        printf '%s\t%s\n' "$3" "$2" >> "$state.tmp"
-        mv -- "$state.tmp" "$state" ;;
+        for type in "$@"; do
+            awk -F '\t' -v type="$type" '$1 != type' "$state" > "$state.tmp"
+            printf '%s\t%s\n' "$type" "$application" >> "$state.tmp"
+            mv -- "$state.tmp" "$state"
+        done ;;
     query)
         [ "${2:-}" = default ] && [ "$#" -eq 3 ]
         if [ "${ABLETON_TEST_XDG_STICKY:-0}" -eq 1 ]; then
@@ -83,7 +87,10 @@ cat > "$base/data/applications/wine-extension-auz.desktop" <<'EOF'
 [Desktop Entry]
 Exec=env WINEPREFIX=/tmp/foreign wine start %f
 EOF
-run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"
+if ! run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
+    cat "$base/err" >&2
+    fail "installer cannot install desktop integration in an isolated home"
+fi
 [ -f "$base/data/applications/$protocol_id" ] || fail "installer omits the project protocol handler"
 [ -f "$base/data/applications/$auz_id" ] || fail "installer omits the project AUZ handler"
 [ -f "$base/data/ableton-wine/$protocol_id" ] || fail "installer omits the staged protocol handler"

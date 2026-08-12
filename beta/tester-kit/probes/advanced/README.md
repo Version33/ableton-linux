@@ -1,42 +1,43 @@
-# Advanced test tools
+# Advanced diagnostic tools
 
-These tools are for investigating a specific failure. The normal tester command
-does not run them unless you request the input trace. Some tools send input,
-close Live, resize its window, or change audio connections.
+These probes collect evidence for a specific failure. They are not part of the
+default test run because some need manual interaction or observe input across
+the Wine desktop.
 
-Save the project before using them. Record the exact command in the issue.
-
-## Build the Linux tools
-
-From the root of this repository:
+## Build native tools
 
 ```bash
 ./beta/tester-kit/probes/build-native-tools
 ```
 
-The script writes the programs and `build-results.txt` under
-`beta/tester-kit/probes/advanced/native/`. It stops if no C compiler is
-installed. A missing development library marks the affected program `SKIP`.
-The script does not install packages or use `sudo`.
+The build script writes Linux executables under `probes/advanced/linux/` and
+updates their hashes. Use the repository maintainer environment for Windows
+probe builds.
 
-## Live input trace
+## Capture a Live input trace
 
-This is the only advanced workflow that `run-session` can start:
+Run the trace only after reading its prompt:
 
 ```bash
-./beta/tester-kit/run-session --live-only \
-  --advanced-input-trace \
-  --wine "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine"
+./beta/tester-kit/run-session --live-only --advanced-input-trace \
+  --prefix "$HOME/.wine-ableton-beta"
 ```
 
-The command asks you to type `TRACE`. It then watches Wine mouse input and JUCE
-plug-in windows for 15 seconds. Use the affected window during those 15
-seconds.
+The trace observes mouse and keyboard input delivered to Wine while it runs.
+Close unrelated applications, enter no passwords, and stop the trace as soon
+as the requested action is complete. The final report removes captured window
+titles, but the retained temporary directory can contain more detailed
+evidence. Keep that directory private.
 
-The hook DLL can remain loaded until Live exits. Save first, run the trace, and
-then quit Live.
+## Windows probes
 
-## Windows tools
+Windows probes run under the selected Wine runtime. They inspect input,
+window-management, DirectComposition, and related Win32 paths used by Live.
+Their source lives beside the distributed executables where available.
+
+Run only the tool named by an investigation and attach its output to that
+issue. A result from an advanced probe is evidence for that path only; it does
+not replace a full Live run.
 
 | Tool | What it does |
 | --- | --- |

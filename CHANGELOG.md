@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### PipeASIO 1.5
+
+- Updated the audio driver from PipeASIO 1.2.2 to 1.5.0.
+- Live can use every buffer size from 32 to 8192 frames.
+- Live pauses audio while it changes to the PipeWire buffer size used by another
+  audio programme, then resumes at the correct speed.
+- A sample rate accepted by Live stays selected after the audio engine restarts.
+- MIDI timestamps continue across a 49.7-day timer wrap while audio is running.
+- PipeASIO Settings ships with the runtime and appears in the application menu.
+- The installer and audio driver require PipeWire 1.4.2 or newer.
+- PipeASIO real-time scheduling is off by default. Its environment override now
+  accepts `1/0`, `true/false`, `yes/no`, `on/off`, and `enabled/disabled`.
+- The installer can update individual parts, restore the previous runtime, and
+  remove files while preserving user changes.
+- A failed install or update now restores the saved installer and PipeASIO
+  configuration as well as the previous runtime.
+- The single-file installer includes audio reporting, real-time setup, and
+  rollback tools.
+- Official packages now require a completed ThreadSanitizer run. Local builds
+  that skip a recognised ThreadSanitizer startup limitation cannot be released.
+- Release checks now reject incomplete patch lists and mismatched build,
+  runtime, or installer records.
+- This PipeASIO update does not reduce Live's CPU use.
+
+### Installer and launcher
+
+- Link setup retries after an incomplete service step.
+- The session power setting now stays active when Live starts from an
+  `ableton://` URL or an `.auz` file.
+- An unresponsive power service no longer stalls Live's launch.
+- The real-time setup removes the boot-time CPU setting used by earlier
+  releases.
+- `ableton-linkd` rejects fractional linger values instead of treating them as
+  a request to stay open forever.
+
+### Pointer input
+
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
   navigation. A plain middle click remains a click.
 - Fixed left- and right-button control drags speeding up when a second touch
@@ -22,22 +59,6 @@
 - Named pointer values ignore letter case. `off` and `0` work wherever
   `disabled` works. Invalid settings appear in the normal launch log.
 
-- Link setup records its version marker only when the service step
-  completed, so a host where that step failed retries it on the next
-  update instead of counting itself configured. The version moves to 5.
-- The session power-profile hold now covers launches through ableton://
-  URLs and .auz files. Live is started with `start /w`, so the launcher
-  waits on Live itself and the hold no longer ends right after the
-  handoff.
-- The launchers bound the power-profile probe with a 10-second timeout,
-  so an unresponsive power daemon no longer stalls Live's launch.
-- The uninstaller now names the boot-time CPU speed setting that earlier
-  releases installed, and prints the commands to remove it.
-- The realtime setup script and the troubleshooting guide now warn
-  Pop!_OS and other System76 users off power-profiles-daemon: the
-  package manager removes the System76 power tools to install it.
-- ableton-linkd rejects fractional `--linger` values instead of
-  truncating them toward the never-exit setting.
 - Live's GPU renderer is available on the Intel graphics built into 2015
   through 2019 processors (Wine patch 0066). Wine's device table skipped 24
   of those models, among them the UHD Graphics 630, and reported each as a
@@ -166,8 +187,7 @@
 - Live now uses its GPU renderer. Prefix setup removes the legacy
   `-_ForceGdiBackend` line from `Options.txt` (step 5c). This removes the
   Learn View and Splice view flicker in the measured cases and drops idle CPU
-  to 1-2%. Some edge cases remain under investigation. See
-  [the GPU renderer note](notes/ABLETON-WINE-GPU-RENDERER.md).
+  to 1-2%. Some edge cases remain under investigation.
 - Fixed windows fighting an interactive resize below the app minimum
   (Wine patch 0053). winex11 now exports the `WM_GETMINMAXINFO` minimum
   as the X11 `PMinSize` hint, and the window manager stops the drag at
@@ -185,21 +205,19 @@
   pane's area at timer cadence. DirectComposition re-blits now stop while the
   target window's ancestor chain is hidden. Reported by jttdev, reviewed by
   Giang Nguyen.
-- Menu colors now follow the desktop theme correctly (issue 35, Wine patches
-  0049 to 0052). The menu bar takes the darker chrome color and dropdowns take
-  the lighter content color, grayed items lose the engraved bevel,
-  `SetSysColors` invalidates the per-process color cache and repaints the
+- Menu colours now follow the desktop theme correctly (issue 35, Wine patches
+  0049 to 0052). The menu bar takes the darker chrome colour and dropdowns take
+  the lighter content colour, greyed items lose the engraved bevel,
+  `SetSysColors` invalidates the per-process colour cache and repaints the
   non-client area, and the menu bar hides its alt-key mnemonic underlines until
   Alt is held. The theme watcher waits on inotify when `inotify-tools` is
   installed and selects the newest `Preferences.cfg` by modification time. A
-  live theme switch can still take a few seconds to appear. See
-  [the menu color note](notes/ABLETON-WINE-MENU-COLOR-THEMING.md).
+  live theme switch can still take a few seconds to appear.
 - Moved the Wine base from 11.11 to 11.13 (giang17/wine `d2d1-dcomp-11.13` at
   `5c23dd1c`). Wine patches 0046 to 0048 fix the series against 11.13's
   frame-latency, fractional-DPI, and libusb detection changes. The runtime now
   installs to `~/.local/opt/wine-d2d1-nspa-11.13`; the 11.11 directory from
-  earlier releases stays on disk and can be deleted, about 380 MB. See
-  [the base bump note](notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md).
+  earlier releases stays on disk and can be deleted, about 380 MB.
 - The installer now configures Ableton Link during installation. Setup no
   longer adds a multicast route or NetworkManager hook: the Link SDK selects
   its interfaces itself. `sudo` is used to open UDP port 20808 when UFW or
@@ -213,8 +231,7 @@
 - Added a repository Code of Conduct.
 - Fixed a Live crash when closing WebView2 plugin editors (issue 52, Wine
   patch 0045). `RevokeDragDrop` now rejects windows owned by another process,
-  matching `RegisterDragDrop`. Fix by Giang Nguyen. See
-  [the WebView2 close-crash note](notes/ABLETON-WINE-WEBVIEW2-PLUGIN-CLOSE-CRASH.md).
+  matching `RegisterDragDrop`. Fix by Giang Nguyen.
 - `build.sh` now creates `dist/ableton-linkd`. Installer packaging calls the
   same Podman helper when that artifact is absent or not executable. The
   helper builds against the vendored Ableton Link SDK.
@@ -233,8 +250,7 @@
 
 - Added built-in Ableton Link support. `ableton-linkd` is a passive native peer
   that remains in the session while Live restarts. `ableton-linkd --probe 10`
-  reports the peer count and tempo. See
-  [the Link notes](notes/ABLETON-WINE-LINK.md).
+  reports the peer count and tempo.
 - Added `linkprobe.exe` to test Wine multicast on UDP port 20808 without Live.
 - Shipped `setup-link.sh`. It configures the multicast route, adds a UDP 20808
   allowance when UFW or firewalld is installed, installs a NetworkManager hook
@@ -296,14 +312,14 @@
   patch 0038).
 - Kept the close button on Live's title bar while its startup modal is open
   under KDE (issue 31, Wine patch 0037).
-- Added Live-themed and system-themed menu colors, Ableton Sans menu text, and
+- Added Live-themed and system-themed menu colours, Ableton Sans menu text, and
   the `setsyscolors.exe` live refresh helper.
 
 ## 2026.07.18.1
 
 - Added experimental Live 11 setup through `ABLETON_LIVE_VERSION=11`.
 - Corrected GPU identification for Intel Arc B580 device `0xe20b` (issue 11).
-- Stopped DirectComposition re-blits when its d2d1 device failed to initialize,
+- Stopped DirectComposition re-blits when its d2d1 device failed to initialise,
   including the reported NVIDIA setup under NixOS and `steam-run` (issue 16).
 - Added display-scale profiles from 100% to 250% and
   `ABLETON_DPI_MODE=dpi<N>`.
@@ -312,7 +328,7 @@
 - Added `setup-realtime.sh`.
 - Added `-DontCombineAPCs` to reduce an idle Wine thread. Release 2026.07.19.1
   removed it because it broke playback.
-- Synced Win32 menu colors to the desktop light or dark scheme.
+- Synced Win32 menu colours to the desktop light or dark scheme.
 - Changed Learn View to use SwiftShader and added `ABLETON_DCOMP=off`.
   Later releases refined the Learn View fix.
 - Reused Live's bundled VC++ redistributable when it was already valid.
@@ -336,7 +352,7 @@
 ## 2026.07.17.2
 
 - Replaced WineASIO with PipeASIO 1.2.2.
-- Added host light and dark menu-color sync.
+- Added host light and dark menu-colour sync.
 - Added the installer's `--update` mode.
 
 ## 2026.07.17.1

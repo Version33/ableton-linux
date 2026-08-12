@@ -1,158 +1,111 @@
-# Ableton Wine beta test plan
+# Beta release test plan
 
-## Goal
+Use this plan to check a release candidate on real Linux systems before
+publishing it. Record failures by test ID and keep one issue per failure.
 
-Test one Ableton Wine build across x86-64 Linux systems and record the result.
+## Test systems
 
-A build passes on a system only when a tester can:
+Cover the environments available to the project. Prioritise variation in:
 
-1. start with an empty Wine prefix at `~/.wine-ableton`;
-2. follow the published instructions without extra commands;
-3. install, authorise, and use Ableton Live 12;
-4. complete the tests assigned to that machine;
-5. produce a complete test report.
+- distribution and desktop environment
+- X11 and Xwayland sessions
+- Intel, AMD, and NVIDIA graphics
+- PipeWire and WirePlumber versions
+- Live 11 and Live 12 editions
+- audio interfaces, MIDI controllers, Push, and common plug-ins
 
-An undocumented workaround fails the affected step. Add the fix to the package
-or instructions, publish another build, and retest it.
+Do not treat one handheld or one desktop environment as representative of all
+Linux computers.
 
-## Systems needed
+## Prepare the test
 
-Cover these system categories:
+1. Save open work and note the current Ableton Linux release.
+2. Use a separate prefix or account for a fresh-install run.
+3. Confirm that the installer URL and checksum in the tester kit name the
+   intended candidate.
+4. List the automated checks without changing the system:
 
-- Ubuntu or Mint, Fedora, Arch and Debian;
-- GNOME and KDE;
-- X11 and Wayland with XWayland;
-- AMD, Intel and NVIDIA graphics;
-- 100%, 125%, 150% and 200% display scaling;
-- built-in and external audio devices; and
-- at least one MIDI controller.
+   ```bash
+   ./beta/tester-kit/run-session --list
+   ```
 
-One machine can cover several categories. Record its distribution, kernel,
-desktop, session type, graphics driver, display scale, audio device, and MIDI
-devices. A pass applies only to the tested system.
+5. Run a normal session:
 
-Report NixOS, Sway, Hyprland, COSMIC, and unusual audio setups separately until
-each completes the same test set.
+   ```bash
+   ./beta/tester-kit/run-session --prefix "$HOME/.wine-ableton-beta"
+   ```
 
-## Test rounds
+The runner downloads the candidate over HTTPS, verifies its SHA-256, invokes
+its `install --link=off` command, checks the distributed probes, and writes a
+redacted report. It will not reuse a non-empty prefix without
+`--reuse-prefix`.
 
-| Round | Description | Done |
-| - | - | - |
-| Initialisation | Test a numbered build with an empty Wine prefix. | Done |
-| Multi-user pilot | Two other people install that build and run the basic tests. | In progress |
-| Compatibility test | Cover the systems and devices listed above. | Not started |
-| Pre-release test | Repeat the full test set on new and existing Linux systems. | Not started |
+## Check installation and update
 
-Record the value in `VERSION` for every run. Update it before publishing a
-changed build.
-
-## Pre-test preparation
-
-- Back up Ableton projects and any existing Wine prefix.
-- Use a physical x86-64 Linux machine.
-- Use an empty Wine prefix or a new user account.
-- Connect the audio, MIDI and display hardware being tested.
-- Record `VERSION` before changing anything.
-- Keep the system configuration unchanged until the report is saved.
-
-Stop if a result could damage a project, produce unsafe audio output, or expose
-private data.
-
-## Tests
-
-Run the automated tests in the [quick start](README.md), then complete the
-checks below. Skip a check only when its required software or hardware is
-unavailable.
-
-| ID | Check | Pass result |
-| --- | --- | --- |
-| 01 | Install | Patched Wine and Live install using the published commands. Live opens again after authorisation. |
-| 02 | Launch | Live starts from the launcher five times and closes cleanly each time. |
-| 03 | Projects | The demo set and a copy of an older set open and play. Edit, undo, redo, save, close and reopen the copy. |
-| 04 | Recovery | Force-close Live while using a disposable set. Live recovers the set and the next normal launch works. |
-| 05 | Windows | Resize, maximise, restore and use full screen. Menus, text input and plug-in windows remain usable. |
-| 06 | Files | Open, Save As, folder selection, Cancel and audio export all work. Reopen the exported file. |
-| 07 | Plug-ins | Scan the agreed VST3 plug-ins, open their windows, save a set containing them and reopen it. |
-| 08 | Max for Live | Open the agreed devices, change settings, save the set and reopen it. |
-| 09 | Audio | Select PipeASIO, play for ten minutes at 48 kHz and 256 frames, then record and play audio. |
-| 10 | MIDI | Test notes, controls and output. Unplug and reconnect the controller while Live is open. |
-| 11 | Stability | Use the demo set, plug-ins and controls for 30 minutes without a crash, hang or lost device. |
-| 12 | Update | Install a newer build, restore the previous build with its installer, then remove and reinstall the newer package. The Wine prefix and Live settings remain. |
-| 13 | Report | The session report names the build and system, records the results, and contains none of the data excluded by the privacy rules. |
-
-### Update test
-
-Keep the previous and newer installer files. Replace `OLD.run` and `NEW.run`
-with their paths:
+For a release package outside the tester kit, use the current installer
+commands:
 
 ```bash
-sh NEW.run --update --no-link
-sh OLD.run --update --no-link
-sh NEW.run --uninstall
-sh NEW.run --no-launch --no-link
+sh install-ableton-latest.run install \
+  --live-installer "$HOME/Downloads/Ableton Live Installer.zip" \
+  --link=session
+sh install-ableton-latest.run update
 ```
 
-The first two commands install the newer package and restore the previous one.
-The uninstaller keeps the Wine prefix. The final command reinstalls the newer
-package without starting Ableton's installer.
+Confirm that:
 
-The installer remembers `--no-link`. To configure Ableton Link after this
-sequence, run the installer again with `--link`.
+- a fresh install starts Live and registers PipeASIO
+- an update keeps Live, authorisation, projects, and user-edited settings
+- cancelling or failing an update restores the previous managed files
+- `link status` reports the selected `off`, `session`, or `always` mode
+- uninstall with `--keep-prefix` leaves Live and its authorisation in place
 
-### Audio tests
+Use `plan` before a lifecycle command when you only need to inspect its
+intended actions:
 
-Run every audio test at 48 kHz and 256 frames. On suitable machines, also cover
-44.1, 48, and 96 kHz at 128, 256, and 512 frames.
+```bash
+sh install-ableton-latest.run plan update
+```
 
-The collector takes one host-audio snapshot before installation. It includes
-device and channel data, the PipeWire rate and quantum, and current `pw-top`
-counters. During test 09, record Live's selected rate, buffer, PipeASIO
-channels, and the change in `pw-top` ERR.
+## Check Live
 
-Where available, test at least one external interface with eight or more
-channels. Keep monitoring at a safe level during reconnection tests.
+Run the optional Live probes against an installed test prefix:
 
-Slow hardware may glitch at demanding settings. A crash, hang, lost device, or
-wrong channel order is a failure.
+```bash
+./beta/tester-kit/run-session --live-only \
+  --prefix "$HOME/.wine-ableton-beta"
+```
 
-## Results and issues
+Then check these behaviours in Live:
 
-The test runner records these results:
+- select PipeASIO and play a Set without drop-outs
+- change the PipeASIO buffer and reconnect the audio device
+- use input and output together when the machine has two audio devices
+- open and close menus, plug-in editors, Learn View, and Max for Live devices
+- resize the main window and use full screen
+- disconnect and reconnect MIDI hardware
+- open a file dialogue and use Show in Explorer
+- enable Link and exchange tempo and transport state with another LAN peer
+- save, close, and reopen a Set
 
-| Term | Meaning |
-| --- | --- |
-| `PASS` | The check passed. |
-| `FAIL` | The check failed. |
-| `WARN` | The check needs attention but did not fail. |
-| `REVIEW` | A person must decide the result. |
-| `SKIP` | A requirement or confirmation was missing, so the check did not run. |
-| `INFO` | The check recorded data without a pass or fail result. |
+Run a long session with representative projects and plug-ins. Record the exact
+action, time, and visible result for any failure. Do not describe a problem as
+fixed unless the same production path has been rerun successfully.
 
-The script saves reports locally. Review each report, then file issues by hand.
-See the [tester kit reference](tester-kit/README.md).
+## Share the result
 
-Include these details in each issue:
-
-- `VERSION`;
-- test ID;
-- tested system details;
-- steps that reproduce the problem;
-- expected and actual result;
-- whether it happens every time;
-- the reviewed session report or the smallest useful log.
-
-Review every report before sharing it. Do not post Ableton installers,
-authorisation files, projects, samples, recordings, account details, or plugin
+The session report removes common account paths, addresses, identifiers,
+credentials, and window titles. Review it anyway. Never attach Ableton
+installers, authorisation files, licence keys, Sets, samples, or plug-in
 credentials.
 
-## Release check
+Attach the unchanged report to the relevant issue. Include the Live edition,
+Ableton Linux release, desktop environment, session type, and hardware needed
+to reproduce the failure.
 
-A build is ready when:
+## Release decision
 
-- a fresh install passes on each system listed in the release notes;
-- install, launch, save, audio, reporting, update and removal all pass;
-- each reported failure is fixed and retested, or stated plainly in the release notes;
-- the release notes list the exact tested systems and devices; and
-- the published files are the same files that were tested.
-
-Questions: [cade@parare.al](mailto:cade@parare.al)
+Do not publish while a required check fails or while a required platform has
+not been exercised. Document skipped checks and the reason. Run the repository
+release checks separately; the tester kit covers runtime behaviour, not every
+build or provenance rule.
