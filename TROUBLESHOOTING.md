@@ -101,11 +101,47 @@ Right-click the plugin in Live's device rack, turn off **Auto-Scale Plugin Windo
 
 Run the current project update, restart Live, and open **Settings > Display & Input**. Turn on **Enable GPU Renderer**.
 
-If the setting remains unavailable, open an issue and include the graphics card model shown by Linux and the name shown by Live.
+If you're experiencing performance issues or high CPU usage when idle, Live
+may not be using your GPU. Live only uses graphics chips it recognises, and
+when this project cannot identify your chip, Live sees an old model it
+refuses to use.
 
 ## CPU use rises when the pointer moves
 
-Check the launcher log for a repeated window-size diagnostic:
+To solve it: **update this project**.
+
+Download [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and run the update. It keeps your Live installation, your license, and
+your projects:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+Start Live, open **Settings > Display & Input**, and turn on **Enable GPU
+Renderer**. Live now names your real graphics card, and the setting stays
+on.
+
+If the setting is still greyed out, start Live with:
+
+```bash
+env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live
+```
+
+Please note: while you use this flag, any report you send to Ableton names
+a different graphics card model than yours. Start Live without the flag to
+go back.
+
+If problems continue, [open an issue](https://github.com/shibco/ableton-linux/issues)
+and include your graphics card model.
+
+## CPU spikes when moving your mouse
+
+Live keeps its current diagnostics in
+`$XDG_STATE_HOME/ableton-wine/logs/live.log` (by default,
+`~/.local/state/ableton-wine/logs/live.log`),
+whether you start it from the desktop menu or a terminal. If Live's CPU
+use jumps while you move the mouse, run:
 
 ```bash
 grep -i "sustained present-size mismatch:" ~/.local/state/ableton-wine/logs/live.log
