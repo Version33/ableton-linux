@@ -192,6 +192,31 @@ bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
 The repair moves Max 8's incompatible preferences to a timestamped backup.
 Max creates a clean preferences file when it next starts.
 
+## A newly installed font does not show up inside Live
+
+Close Live, then start it with the saved font list turned off:
+
+```bash
+env WINE_DISABLE_HOST_FONT_CACHE=1 ableton-live
+```
+
+Live keeps a saved list of your computer's fonts so it can start faster.
+The list refreshes itself when your fonts change, so a new font normally
+appears at the next launch on its own. The launch above skips the list
+and reads your fonts directly.
+
+If the missing font appears now, delete the saved list and start Live
+normally. Live rebuilds the list with your new font:
+
+```bash
+rm ~/.wine-ableton/drive_c/windows/wine-host-font.cache
+ableton-live
+```
+
+If the font is still missing with the list turned off, the list is not
+the cause. [Open an issue](https://github.com/shibco/ableton-linux/issues)
+and name the font and where you installed it from.
+
 ## A fader jumps after loading a Max for Live device
 
 Install the latest release, then start a fresh Live session. Load the affected

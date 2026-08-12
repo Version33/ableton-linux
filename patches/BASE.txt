@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 93 files, numbered 0001 through 0095.
+The current Wine series contains 94 files, numbered 0001 through 0096.
 Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
 once numbered 0066 and 0067 now appear after the gesture patches as 0093
 and 0094, because 0066 through 0068 were held for this GPU series.
@@ -429,3 +429,15 @@ Apply them in sequence with the rest of the series.
   changes, and disable it if timing setup fails. Named values ignore letter
   case; `off` and `0` mean `disabled` where supported. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0096`: cache the enumerated host font list in
+  `c:\windows\wine-host-font.cache`. Wine otherwise re-reads every host
+  font in every font-using process, and the launcher kills the wineserver
+  on every launch, so Live repeated the reading on every start: about
+  1.9 s per launch on the measured machine. The file stores the raw
+  result of one read, plus a stamp of every input to that read. When any
+  input changes, Wine reads everything again and rewrites the file. Wine
+  discards a damaged file whole, and always reads fonts inside the
+  prefix directly. `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off.
+  PR 139 first shipped this patch as 0070; it is 0096 here, renumbered
+  above the merged 0090-0095 pointer gesture series and repaired before
+  merge. See `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.

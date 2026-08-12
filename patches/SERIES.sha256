@@ -91,5 +91,6 @@ f0d2d0f95df6c1af3996699bb69e3a307c4052df7448798619e3a06a48a15fb9  0092-winex11-b
 987bfb95837c69370d39fd8b759100e49d9d67190d4344008c0fcccbc4a25a65  0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch
 601b585508cccacb51b1dd36dfcd9ea2749226743ca805e544b25c5b2a1f40c5  0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch
 b644c922888e201e1ae525ab22993d89bee835410cd36a739b9f84387009d009  0095-winex11-separate-pointer-coast-sources.patch
+707a404f2c1d4e02abfa4eb4cbe35669f0caa46ce12dd685d5748f3a699d1186  0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
