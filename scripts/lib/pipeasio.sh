@@ -26,14 +26,19 @@ ableton_pipewire_version_core()
 
 ableton_pipewire_version_ge()
 {
-    local actual required amaj amin apat rmaj rmin rpat
-    actual="$(ableton_pipewire_version_core "${1:-}")" || return 1
+    local actual_text="${1:-}" actual required amaj amin apat rmaj rmin rpat
+    actual="$(ableton_pipewire_version_core "$actual_text")" || return 1
     required="$(ableton_pipewire_version_core "${2:-}")" || return 1
     IFS=. read -r amaj amin apat <<< "$actual"
     IFS=. read -r rmaj rmin rpat <<< "$required"
     if (( 10#$amaj != 10#$rmaj )); then (( 10#$amaj > 10#$rmaj )); return; fi
     if (( 10#$amin != 10#$rmin )); then (( 10#$amin > 10#$rmin )); return; fi
-    (( 10#$apat >= 10#$rpat ))
+    if (( 10#$apat != 10#$rpat )); then (( 10#$apat > 10#$rpat )); return; fi
+    # PipeWire uses upstream-style versions, while distro package versions may
+    # append packaging/build metadata.  A leading '~' suffix denotes a
+    # prerelease of this numeric triplet and is therefore below its final
+    # release; '-' and '+' suffixes describe the final release and remain valid.
+    [[ "$actual_text" != "${actual}~"* ]]
 }
 
 # PROBE is the bundled native helper.  It calls pw_get_library_version() in the
@@ -66,11 +71,11 @@ ableton_pipewire_preflight()
     client="${client%%$'\n'*}"
     daemon="${output#*daemon=}"
     daemon="${daemon%%$'\n'*}"
-    client="$(ableton_pipewire_version_core "$client")" || {
+    ableton_pipewire_version_core "$client" >/dev/null || {
         printf '!! PipeWire returned an unreadable client version; nothing was changed.\n' >&2
         return 1
     }
-    daemon="$(ableton_pipewire_version_core "$daemon")" || {
+    ableton_pipewire_version_core "$daemon" >/dev/null || {
         printf '!! PipeWire returned an unreadable daemon version; nothing was changed.\n' >&2
         return 1
     }

@@ -1,4 +1,4 @@
-From a125d855b7ac842ed2a8cceea9d85db58a13df43 Mon Sep 17 00:00:00 2001
+From dd50f9c36a5a48a70bfe740189c110c096bdf27b Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Mon, 10 Aug 2026 18:28:35 +0200
 Subject: [PATCH 7/7] make realtime=false real: demote inherited scheduling,
@@ -17,24 +17,35 @@ policies are logged either way. audio_rt_drop is symmetric: it demotes
 whenever the thread is not SCHED_OTHER, even when the raise was never
 ours. The WoW64 pump gets the same treatment.
 
-PIPEASIO_REALTIME=on/off is a new per-launch override, parsed with the
-shared case-insensitive helper on both halves; the existing
+PIPEASIO_REALTIME is a new per-launch boolean override, parsed with the
+shared strict helper on both halves; the existing
 PIPEASIO_RT_PRIORITY spellings keep the last word. The shipped default
 stays realtime=false; the scheduling A/B decides any flip separately.
 
 Demotion is mandatory and verified: an unreadable policy, failed demotion,
 or a policy that remains realtime is reported as failure instead of logging
-a false SCHED_OTHER result. Legacy priority override tokens are parsed
-case-insensitively as well.
+a false SCHED_OTHER result. Because PipeWire discards acquire_rt's return,
+audio_activate independently checks the actual post-start policy and refuses
+activation unless realtime-off reached SCHED_OTHER 0. Realtime-on remains
+best effort. Legacy priority override tokens are parsed case-insensitively.
+
+The RT probe now includes an inherited-SCHED_RR realtime-off leg, and native
+unit coverage locks the override precedence and activation gate.
 ---
- include/pipeasio_rt_priority.h | 44 +++++++++++++++++++-
- src/asio.c                     | 21 ++++++++++
- src/audio.c                    | 92 ++++++++++++++++++++++++++++++++++++++++--
- src/wow64/audio_unix.c         | 44 ++++++++++++++++++--
- 4 files changed, 192 insertions(+), 9 deletions(-)
+ include/pipeasio_rt_priority.h  |  69 ++++++++++++++++++-
+ src/asio.c                      |  23 +++++++
+ src/audio.c                     | 115 +++++++++++++++++++++++++++-----
+ src/wow64/audio_unix.c          |  48 +++++++++++--
+ tests/asio_loopback/run.sh      |   1 +
+ tests/asio_probe/CMakeLists.txt |   3 +-
+ tests/asio_probe/run.sh         |   2 +-
+ tests/asio_probe/run32.sh       |   2 +-
+ tests/asio_probe/run_rt.sh      |  38 +++++++++--
+ tests/unit/test_config.c        |  46 +++++++++++++
+ 10 files changed, 312 insertions(+), 35 deletions(-)
 
 diff --git a/include/pipeasio_rt_priority.h b/include/pipeasio_rt_priority.h
-index 996ca36..5e10890 100644
+index 996ca36..5436332 100644
 --- a/include/pipeasio_rt_priority.h
 +++ b/include/pipeasio_rt_priority.h
 @@ -20,10 +20,13 @@
@@ -51,7 +62,7 @@ index 996ca36..5e10890 100644
  /* Range accepted by PipeWire's thread-utils interface. */
  #define PIPEASIO_RT_PRIO_MIN 1
  #define PIPEASIO_RT_PRIO_MAX 80
-@@ -40,10 +43,47 @@ pipeasio_rt_env_override(void)
+@@ -40,10 +43,72 @@ pipeasio_rt_env_override(void)
      if (!env || !*env)
          return PIPEASIO_RT_ENV_UNSET;
 
@@ -67,14 +78,39 @@ index 996ca36..5e10890 100644
      return PIPEASIO_RT_ENV_UNSET;
  }
 +
-+/* PIPEASIO_REALTIME=on/off: the plain toggle for the data-loop scheduling
-+ * class, parsed with the shared case-insensitive helper so every consumer
-+ * agrees (pipeasio-honest-realtime).  Returns 1/0/-1 (unset or other).
++/* PIPEASIO_REALTIME: the plain boolean toggle for the data-loop scheduling
++ * class, parsed with the shared strict helper so every consumer agrees
++ * (pipeasio-honest-realtime).  Returns 1/0/-1 (unset or unrecognised).
 + * PIPEASIO_RT_PRIORITY above keeps the last word for compatibility. */
 +static inline int
 +pipeasio_realtime_env_override(void)
 +{
-+    return pipeasio_env_on_off(getenv("PIPEASIO_REALTIME"));
++    return pipeasio_env_bool(getenv("PIPEASIO_REALTIME"));
++}
++
++/* Resolve the scheduling class once at the point of use.  The newer plain
++ * boolean overrides config.ini, while the legacy priority switch keeps the
++ * final word for compatibility. */
++static inline bool
++pipeasio_realtime_effective(bool configured)
++{
++    const int realtime_env = pipeasio_realtime_env_override();
++    if (realtime_env != -1)
++        configured = realtime_env != 0;
++
++    const int priority_env = pipeasio_rt_env_override();
++    if (priority_env != PIPEASIO_RT_ENV_UNSET)
++        configured = priority_env != 0;
++    return configured;
++}
++
++/* PipeWire discards acquire_rt's return value.  Validate the actual policy
++ * after pw_data_loop_start instead: realtime-on remains best effort, while
++ * realtime-off may activate only after reaching SCHED_OTHER 0. */
++static inline bool
++pipeasio_rt_start_allows_activation(bool realtime, int inspect_error, int policy, int priority)
++{
++    return realtime || (!inspect_error && policy == SCHED_OTHER && priority == 0);
 +}
 +
 +/* Scheduling policy name for before/after logging. */
@@ -102,21 +138,21 @@ index 996ca36..5e10890 100644
 +    }
 +}
 diff --git a/src/asio.c b/src/asio.c
-index 3cf8c5d..bc0f4f7 100644
+index 82db75d..610134c 100644
 --- a/src/asio.c
 +++ b/src/asio.c
-@@ -3135,6 +3135,27 @@ configure_driver(IPipeASIOImpl *This)
+@@ -3134,6 +3134,29 @@ configure_driver(IPipeASIOImpl *This)
                           sizeof(environment_variable)))
          This->pipeasio_allow_quantum_mismatch
-                 = pipeasio_env_on_off(environment_variable) == 1 ? TRUE : FALSE;
-+    /* PIPEASIO_REALTIME=on/off toggles the data-loop scheduling class for
-+     * one launch.  The backend reads the same variable at acquire time
-+     * through the same parser, so the two halves cannot disagree
+                 = pipeasio_env_bool(environment_variable) == 1 ? TRUE : FALSE;
++    /* PIPEASIO_REALTIME toggles the data-loop scheduling class for one
++     * launch.  The backend reads the same variable at acquire time through
++     * the same strict parser, so the two halves cannot disagree
 +     * (pipeasio-honest-realtime).  The shipped default stays realtime=off. */
 +    if (read_environment("PIPEASIO_REALTIME", environment_variable,
 +                         sizeof(environment_variable)))
 +    {
-+        switch (pipeasio_env_on_off(environment_variable))
++        switch (pipeasio_env_bool(environment_variable))
 +        {
 +        case 0:
 +            This->pipeasio_realtime = FALSE;
@@ -125,7 +161,9 @@ index 3cf8c5d..bc0f4f7 100644
 +            This->pipeasio_realtime = TRUE;
 +            break;
 +        default:
-+            WARN("PIPEASIO_REALTIME \"%s\" is neither on nor off; keeping %s\n",
++            WARN("PIPEASIO_REALTIME \"%s\" is not a recognised boolean "
++                 "(expected 1/0, true/false, yes/no, on/off, or enabled/disabled); "
++                 "keeping %s\n",
 +                 environment_variable, This->pipeasio_realtime ? "on" : "off");
 +            break;
 +        }
@@ -134,31 +172,35 @@ index 3cf8c5d..bc0f4f7 100644
                           sizeof(environment_variable)))
      {
 diff --git a/src/audio.c b/src/audio.c
-index 308c995..f644914 100644
+index 6221786..d57c661 100644
 --- a/src/audio.c
 +++ b/src/audio.c
-@@ -180,6 +180,17 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+@@ -93,7 +93,7 @@ struct audio_rt_state
+     DWORD       win_tid;
+     pthread_t   ptid;            /* captured inside the spawned thread */
+     int         rt_priority;     /* current SCHED_FIFO priority, 0 = none */
+-    bool        want_realtime;   /* from config.ini, PIPEASIO_RT_PRIORITY wins */
++    bool        want_realtime;   /* config value; environment resolved at start */
+     atomic_bool ready;           /* released once ptid is captured */
+     void *(*user_entry)(void *); /* PipeWire-provided entry */
+     void *user_arg;
+@@ -179,22 +179,58 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+     struct audio_rt_state *s = data;
      (void)thread;
 
-     bool realtime = s->want_realtime;
-+    switch (pipeasio_realtime_env_override())
-+    {
-+    case 0:
-+        realtime = false;
-+        break;
-+    case 1:
-+        realtime = true;
-+        break;
-+    default:
-+        break;
-+    }
-     switch (pipeasio_rt_env_override())
-     {
-     case 0:
-@@ -192,9 +203,56 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
-         break;
-     }
-
+-    bool realtime = s->want_realtime;
+-    switch (pipeasio_rt_env_override())
+-    {
+-    case 0:
+-        realtime = false;
+-        break;
+-    case 1:
+-        realtime = true;
+-        break;
+-    default:
+-        break;
++    bool realtime = pipeasio_realtime_effective(s->want_realtime);
++
 +    /* What the thread actually runs right now: under a launcher that starts
 +     * the whole process realtime (chrt -r 10 wine), glibc's default
 +     * PTHREAD_INHERIT_SCHED hands every created thread that class, so
@@ -173,8 +215,8 @@ index 308c995..f644914 100644
 +        WARN("cannot inspect audio-thread scheduling before acquire: %s\n",
 +             strerror(inspect_err));
 +        return -1;
-+    }
-+
+     }
+
      if (!realtime)
      {
 -        TRACE("rt thread left SCHED_OTHER (realtime disabled)\n");
@@ -213,7 +255,7 @@ index 308c995..f644914 100644
          return 0;
      }
 
-@@ -225,7 +283,9 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
+@@ -225,7 +261,9 @@ audio_rt_acquire(void *data, struct spa_thread *thread, int priority)
          return -1;
      }
      s->rt_priority = priority;
@@ -224,7 +266,7 @@ index 308c995..f644914 100644
      return 0;
  }
 
-@@ -235,8 +295,22 @@ audio_rt_drop(void *data, struct spa_thread *thread)
+@@ -235,8 +273,22 @@ audio_rt_drop(void *data, struct spa_thread *thread)
      struct audio_rt_state *s = data;
      (void)thread;
 
@@ -248,7 +290,7 @@ index 308c995..f644914 100644
 
      int err = pthread_setschedparam(s->ptid, SCHED_OTHER,
                                      &(struct sched_param){ .sched_priority = 0 });
-@@ -245,6 +319,18 @@ audio_rt_drop(void *data, struct spa_thread *thread)
+@@ -245,6 +297,18 @@ audio_rt_drop(void *data, struct spa_thread *thread)
          WARN("pthread_setschedparam(SCHED_OTHER) failed: %s\n", strerror(err));
          return -1;
      }
@@ -267,8 +309,43 @@ index 308c995..f644914 100644
      s->rt_priority = 0;
      return 0;
  }
+@@ -928,7 +992,11 @@ audio_activate(audio_client_t *c)
+     pw_thread_loop_unlock(c->loop);
+
+     /* Start the data loop after add_port/connect; those need the thread-loop
+-     * context while the data loop is stopped. */
++     * context while the data loop is stopped.  PipeWire ignores acquire_rt's
++     * return, so verify the actual policy after start instead. */
++#ifndef PIPEASIO_AUDIO_UNIXLIB
++    bool require_other = !pipeasio_realtime_effective(c->rt.want_realtime);
++#endif
+     pw_thread_loop_lock(c->loop);
+     if (pw_data_loop_start(c->data_loop) < 0)
+     {
+@@ -936,6 +1004,21 @@ audio_activate(audio_client_t *c)
+         ERR("pw_data_loop_start failed\n");
+         goto fail;
+     }
++#ifndef PIPEASIO_AUDIO_UNIXLIB
++    int                policy = -1;
++    struct sched_param actual = { 0 };
++    int inspect_err = require_other ? pthread_getschedparam(c->rt.ptid, &policy, &actual) : 0;
++    if (!pipeasio_rt_start_allows_activation(!require_other, inspect_err, policy,
++                                             actual.sched_priority))
++    {
++        pw_thread_loop_unlock(c->loop);
++        ERR("audio_activate: realtime-off scheduling normalization failed "
++            "(read=%s policy=%s priority=%d)\n",
++            inspect_err ? strerror(inspect_err) : "ok", pipeasio_sched_policy_name(policy),
++            actual.sched_priority);
++        goto fail;
++    }
++#endif
+     pw_thread_loop_unlock(c->loop);
+
+     /* Wait until the async pw_filter_connect bind publishes a node id. */
 diff --git a/src/wow64/audio_unix.c b/src/wow64/audio_unix.c
-index eb7d2e1..fb1356a 100644
+index fce5c79..2f7a7bc 100644
 --- a/src/wow64/audio_unix.c
 +++ b/src/wow64/audio_unix.c
 @@ -31,6 +31,7 @@
@@ -279,19 +356,16 @@ index eb7d2e1..fb1356a 100644
  #include <stdlib.h>
  #include <string.h>
  #include <sys/stat.h>
-@@ -957,16 +958,55 @@ wow64_wait_callback(void *args)
+@@ -964,16 +965,49 @@ wow64_wait_callback(void *args)
 
      if (!cc->rt_raised)
      {
 -        cc->rt_raised      = true; /* one attempt per pump-thread lifetime */
-         bool      realtime = cc->want_realtime;
+-        bool      realtime = cc->want_realtime;
 -        const int env      = pipeasio_rt_env_override();
-+        const int rt_env   = pipeasio_realtime_env_override();
-+        if (rt_env != -1)
-+            realtime = (rt_env != 0);
-+        const int env = pipeasio_rt_env_override();
-         if (env != PIPEASIO_RT_ENV_UNSET)
-             realtime = (env != 0);
+-        if (env != PIPEASIO_RT_ENV_UNSET)
+-            realtime = (env != 0);
++        bool realtime = pipeasio_realtime_effective(cc->want_realtime);
 +        int                policy  = -1;
 +        struct sched_param current = { 0 };
 +        int sched_err = pthread_getschedparam(pthread_self(), &policy, &current);
@@ -339,6 +413,236 @@ index eb7d2e1..fb1356a 100644
      }
 
      pthread_mutex_lock(&cc->mutex);
+diff --git a/tests/asio_loopback/run.sh b/tests/asio_loopback/run.sh
+index a875a7e..a7a279f 100755
+--- a/tests/asio_loopback/run.sh
++++ b/tests/asio_loopback/run.sh
+@@ -110,6 +110,7 @@ export PIPEASIO_CONNECT_TO_HARDWARE=off
+ export PIPEASIO_FIXED_BUFFERSIZE=off
+ export PIPEASIO_FOLLOW_DEVICE_CLOCK=off
+ export PIPEASIO_ALLOW_QUANTUM_MISMATCH=off
++export PIPEASIO_REALTIME=off
+ export PIPEASIO_NUMBER_INPUTS=2
+ export PIPEASIO_NUMBER_OUTPUTS=2
 
+diff --git a/tests/asio_probe/CMakeLists.txt b/tests/asio_probe/CMakeLists.txt
+index 389a351..e3703ee 100644
+--- a/tests/asio_probe/CMakeLists.txt
++++ b/tests/asio_probe/CMakeLists.txt
+@@ -97,7 +97,8 @@ if(PIPEASIO_ASAN)
+     set_tests_properties(asio_probe PROPERTIES FIXTURES_REQUIRED sanitizer_artifacts)
+ endif()
+
+-# Three scheduling-topology legs (default / config-on / env-off) in one prefix.
++# Five scheduling-topology legs, including realtime-off under an inherited RR
++# launcher policy, in one prefix.
+ add_test(NAME asio_probe_rt
+     COMMAND "${CMAKE_CURRENT_BINARY_DIR}/run_rt.sh"
+             "${CMAKE_CURRENT_BINARY_DIR}/run.sh" 2 native)
+diff --git a/tests/asio_probe/run.sh b/tests/asio_probe/run.sh
+index bd4d950..1770c17 100755
+--- a/tests/asio_probe/run.sh
++++ b/tests/asio_probe/run.sh
+@@ -109,7 +109,7 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+                 PIPEASIO_CONNECT_TO_HARDWARE \
+-                PIPEASIO_ALLOW_QUANTUM_MISMATCH; do
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH PIPEASIO_REALTIME; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/asio_probe/run32.sh b/tests/asio_probe/run32.sh
+index c043ba9..8320ba0 100755
+--- a/tests/asio_probe/run32.sh
++++ b/tests/asio_probe/run32.sh
+@@ -94,7 +94,7 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+                 PIPEASIO_CONNECT_TO_HARDWARE \
+-                PIPEASIO_ALLOW_QUANTUM_MISMATCH; do
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH PIPEASIO_REALTIME; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/asio_probe/run_rt.sh b/tests/asio_probe/run_rt.sh
+index bb25604..5b68c7a 100755
+--- a/tests/asio_probe/run_rt.sh
++++ b/tests/asio_probe/run_rt.sh
+@@ -14,7 +14,10 @@
+ #
+ #   default    no config.ini, no RT env    -> cb SCHED_OTHER, worker SCHED_OTHER
+ #   config-on  config.ini realtime = 1     -> cb SCHED_FIFO,  worker SCHED_OTHER
+-#   env-off    same file + RT env off      -> cb SCHED_OTHER, worker SCHED_OTHER
++#   env-off    same file + REALTIME=disabled -> cb SCHED_OTHER, worker SCHED_OTHER
++#   env-on     no config + REALTIME=1      -> cb SCHED_FIFO,  worker SCHED_OTHER
++#   env-off-inherited  config on + REALTIME=disabled under inherited SCHED_RR
++#                      -> cb SCHED_OTHER, worker SCHED_RR
+ #
+ # Xruns: pw-top ERR is per pw-top instance, not a global counter.  One long-lived
+ # `pw-top -b` stream is kept across baseline → stall/window → after, and the
+@@ -29,6 +32,7 @@ set -euo pipefail
+
+ SCHED_OTHER=0
+ SCHED_FIFO=1
++SCHED_RR=2
+ cb_comm=pa-probe-cb
+ worker_comm=pa-probe-wrk
+ probe_node=pipeasio-rt-probe
+@@ -43,7 +47,7 @@ if (( $# > 3 )); then
+     shift 3
+     legs=("$@")
+ else
+-    legs=(default config-on env-off)
++    legs=(default config-on env-off env-on env-off-inherited)
+ fi
+
+ if [[ ! -x "$runner" ]]; then
+@@ -69,6 +73,16 @@ if [[ "$self_policy" != "$SCHED_OTHER" ]]; then
+     command -v chrt >/dev/null || { echo "[rt] chrt unavailable" >&2; exit 77; }
+     exec chrt --other 0 "$0" "$runner" "$seconds" "$label" "${legs[@]}"
+ fi
++for leg in "${legs[@]}"; do
++    if [[ "$leg" == env-off-inherited ]]; then
++        command -v chrt >/dev/null || { echo "[rt] chrt unavailable" >&2; exit 77; }
++        if ! chrt --rr 1 true 2>/dev/null; then
++            echo "[rt] cannot launch the inherited SCHED_RR control" >&2
++            exit 77
++        fi
++        break
++    fi
++done
+
+ base=${PROBE_PREFIX:-"$HOME/.cache/pipeasio-probe"}
+ export PROBE_PREFIX="${base}-rt-${label}"
+@@ -76,12 +90,13 @@ export PIPEASIO_CLIENT_NAME="$probe_node"
+ export PIPEASIO_FOLLOW_DEVICE_CLOCK=on
+ # These (plus the per-leg RT_PRIORITY) are deliberate. The runners' ambient-env
+ # scrub keeps anything not listed here.
+-export PROBE_ENV_KEEP="PIPEASIO_CLIENT_NAME PIPEASIO_FOLLOW_DEVICE_CLOCK PIPEASIO_RT_PRIORITY PROBE_RT_WORKER PROBE_RT_SCAN_FILE PROBE_XRUN_ARM_FILE PROBE_XRUN_STALL_MS"
++export PROBE_ENV_KEEP="PIPEASIO_CLIENT_NAME PIPEASIO_FOLLOW_DEVICE_CLOCK PIPEASIO_RT_PRIORITY PIPEASIO_REALTIME PROBE_RT_WORKER PROBE_RT_SCAN_FILE PROBE_XRUN_ARM_FILE PROBE_XRUN_STALL_MS"
+ # Autoconnect stays off (WoW64 CreateBuffers fails when it is on).
+ # Manual pw-link + follow-device puts the probe in a profiled follower graph.
+ config_dir="$PROBE_PREFIX/xdg/pipeasio"
+ config="$config_dir/config.ini"
+ rt_env_override=${PIPEASIO_RT_PRIORITY-}
++unset PIPEASIO_REALTIME
+
+ workdir=$(mktemp -d)
+ probe_pid=
+@@ -362,9 +377,10 @@ run_leg() {
+     local status=0 pid='' cb='' worker='' i
+     local nid='' before='' after='' err0=0 q0=0 err1=0 delta=0
+     local tables0=0 tables1=0
++    local -a launch=("$runner" "$seconds")
+
+     mkdir -p "$config_dir"
+-    if [[ "$leg" == default ]]; then
++    if [[ "$leg" == default || "$leg" == env-on ]]; then
+         rm -f -- "$config"
+     else
+         printf '[pipeasio]\nrealtime = 1\n' >"$config"
+@@ -372,11 +388,17 @@ run_leg() {
+
+     if [[ -n "$rt_env_override" ]]; then
+         export PIPEASIO_RT_PRIORITY="$rt_env_override"
+-    elif [[ "$leg" == env-off ]]; then
+-        export PIPEASIO_RT_PRIORITY=off
+     else
+         unset PIPEASIO_RT_PRIORITY
+     fi
++    case "$leg" in
++        env-off|env-off-inherited) export PIPEASIO_REALTIME=disabled ;;
++        env-on)  export PIPEASIO_REALTIME=1 ;;
++        *)       unset PIPEASIO_REALTIME ;;
++    esac
++    if [[ "$leg" == env-off-inherited ]]; then
++        launch=(chrt --rr 1 "$runner" "$seconds")
++    fi
+
+     export PROBE_RT_WORKER=1
+     unset PROBE_XRUN_ARM_FILE || true
+@@ -384,7 +406,7 @@ run_leg() {
+     echo "[rt] leg $leg ($label): running probe for ${seconds}s"
+     rm -f -- "$ack"
+     export PROBE_RT_SCAN_FILE="Z:${ack}"
+-    "$runner" "$seconds" >"$log" 2>&1 &
++    "${launch[@]}" >"$log" 2>&1 &
+     probe_pid=$!
+
+     local ready=0
+@@ -492,6 +514,8 @@ for leg in "${legs[@]}"; do
+         default)   run_leg default "$SCHED_OTHER" "$SCHED_OTHER" ;;
+         config-on) run_leg config-on "$SCHED_FIFO" "$SCHED_OTHER" ;;
+         env-off)   run_leg env-off "$SCHED_OTHER" "$SCHED_OTHER" ;;
++        env-on)    run_leg env-on "$SCHED_FIFO" "$SCHED_OTHER" ;;
++        env-off-inherited) run_leg env-off-inherited "$SCHED_OTHER" "$SCHED_RR" ;;
+         *)
+             echo "[rt] unknown leg: $leg" >&2
+             exit 1
+diff --git a/tests/unit/test_config.c b/tests/unit/test_config.c
+index 52f24ab..9e9db9a 100644
+--- a/tests/unit/test_config.c
++++ b/tests/unit/test_config.c
+@@ -8,6 +8,7 @@
+ #define _GNU_SOURCE
+ #include "pipeasio_config.h"
+ #include "pipeasio_parse.h"
++#include "pipeasio_rt_priority.h"
+ #include "test_helpers.h"
+
+ #include <stdio.h>
+@@ -199,6 +200,51 @@ main(void)
+         EXPECT_TRUE(!unchanged);
+     }
+
++    TEST_GROUP("legacy realtime-priority environment tokens")
++    {
++        static const struct
++        {
++            const char *text;
++            int         expected;
++        } cases[] = {
++            { "on", 1 },   { "ON", 1 },      { "default", 1 }, { "DEFAULT", 1 },
++            { "1", 1 },    { "off", 0 },     { "OFF", 0 },     { "none", 0 },
++            { "NONE", 0 }, { "0", 0 },        { "true", -1 },  { "false", -1 },
++            { "bogus", -1 },
++        };
++        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i)
++        {
++            EXPECT_EQ(setenv("PIPEASIO_RT_PRIORITY", cases[i].text, 1), 0);
++            EXPECT_EQ(pipeasio_rt_env_override(), cases[i].expected);
++        }
++        EXPECT_EQ(unsetenv("PIPEASIO_RT_PRIORITY"), 0);
++        EXPECT_EQ(pipeasio_rt_env_override(), PIPEASIO_RT_ENV_UNSET);
++    }
++
++    TEST_GROUP("realtime override precedence and activation gate")
++    {
++        EXPECT_EQ(unsetenv("PIPEASIO_REALTIME"), 0);
++        EXPECT_EQ(unsetenv("PIPEASIO_RT_PRIORITY"), 0);
++        EXPECT_TRUE(!pipeasio_realtime_effective(false));
++        EXPECT_TRUE(pipeasio_realtime_effective(true));
++
++        EXPECT_EQ(setenv("PIPEASIO_REALTIME", "on", 1), 0);
++        EXPECT_TRUE(pipeasio_realtime_effective(false));
++        EXPECT_EQ(setenv("PIPEASIO_RT_PRIORITY", "off", 1), 0);
++        EXPECT_TRUE(!pipeasio_realtime_effective(true));
++        EXPECT_EQ(setenv("PIPEASIO_REALTIME", "off", 1), 0);
++        EXPECT_EQ(setenv("PIPEASIO_RT_PRIORITY", "on", 1), 0);
++        EXPECT_TRUE(pipeasio_realtime_effective(false));
++        EXPECT_EQ(unsetenv("PIPEASIO_REALTIME"), 0);
++        EXPECT_EQ(unsetenv("PIPEASIO_RT_PRIORITY"), 0);
++
++        EXPECT_TRUE(pipeasio_rt_start_allows_activation(true, EIO, SCHED_RR, 10));
++        EXPECT_TRUE(pipeasio_rt_start_allows_activation(false, 0, SCHED_OTHER, 0));
++        EXPECT_TRUE(!pipeasio_rt_start_allows_activation(false, EIO, SCHED_OTHER, 0));
++        EXPECT_TRUE(!pipeasio_rt_start_allows_activation(false, 0, SCHED_RR, 10));
++        EXPECT_TRUE(!pipeasio_rt_start_allows_activation(false, 0, SCHED_OTHER, 1));
++    }
++
+     /* A cached foreign node remains alive while node.force-quantum changes.
+      * The aggregate counter must follow 0 -> Q -> Q -> 0 without relying on
+      * registry removal to clear the state. */
 --
-2.43.0
+2.55.0

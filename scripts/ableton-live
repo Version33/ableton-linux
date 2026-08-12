@@ -131,7 +131,7 @@ export WINESERVER="$WINE_ROOT/bin/wineserver"
 # stack loads them. winemenubuilder.exe is deliberately absent here: setup-prefix.sh
 # already disables it registry-side, and that form stays canonical.
 export WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
-# Opt-in A/B against the open Learn View flicker (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md):
+# Opt-in A/B against the Learn View flicker fix:
 # ABLETON_DCOMP=off disables DirectComposition outright. Off contradicts the d2d1-dcomp
 # stack this runtime ships (WINED3D_DCOMP_FORCE_FULL_REDRAW above), so it is no default.
 if [ "${ABLETON_DCOMP:-on}" = "off" ]; then
@@ -149,7 +149,7 @@ export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGU
 # target stock wine and the wrong prefix. Online authorisation then never
 # reaches this install. install.sh stages the canonical entries; missing or
 # winemenubuilder-signed copies are replaced and the defaults re-pinned.
-# Hand-edited entries stay. See notes/ABLETON-WINE-ONLINE-AUTH.md.
+# Hand-edited entries stay.
 repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     local staged d repaired=0
@@ -902,7 +902,7 @@ fi
 require_live() {
     [ -n "$EXE" ] && return 0
     echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
-    echo "ableton-live: rerun the ableton-wine-setup .run with your Ableton download (any edition) next to it, or install Live manually: see the README" >&2
+    echo "ableton-live: run the ableton-wine-setup .run with the install command and your Ableton download next to it, or install Live manually: see the README" >&2
     exit 1
 }
 
@@ -911,7 +911,7 @@ run=("$WINE_ROOT/bin/wine")
 # but some distributions (CachyOS among them) grant them out of the box, so RR
 # can be active without any opt-in here. SCHED_RR covers the whole process, GUI
 # threads included; ABLETON_RT=off exists for A/B runs and low-core machines
-# where that is a net loss. See notes/ABLETON-WINE-RT-SCHEDULING.md.
+# where that is a net loss.
 if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
     && chrt -r 10 true >/dev/null 2>&1; then
     run=(chrt -r 10 "$WINE_ROOT/bin/wine")
@@ -943,7 +943,7 @@ fi
 # The daemon is session-scoped: it exits on its own after 15 minutes with no
 # peers (ABLETON_LINKD_LINGER overrides; the user unit runs --linger 0 for an
 # always-on anchor). Daemon mode logs under XDG_STATE_HOME/ableton-wine/logs/.
-# ABLETON_LINKD overrides the binary path. See notes/ABLETON-WINE-LINK.md.
+# ABLETON_LINKD overrides the binary path.
 linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
 if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
     "$linkctl" start || echo "ableton-live: configured Link anchor failed to start" >&2
@@ -957,8 +957,8 @@ if [ "${ABLETON_TOPBAR_MODE:-live}" = live ] && [ -n "$EXE" ] && [ -n "${want_li
     disown
 fi
 
-# Auto-heal the Learn View / doc sidebar WebView2 fossil-on-open
-# (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md): a resident helper nudges each
+# Auto-heal the Learn View / doc sidebar WebView2 fossil-on-open: a resident
+# helper nudges each
 # settled lesson pane once, replacing the manual splitter nudge. It waits for
 # a pane to hold a stable rect before poking (bind-time pokes leave Chromium
 # resize-deaf) and exits on its own after Live is gone. No-op when the helper

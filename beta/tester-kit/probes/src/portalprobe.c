@@ -1,4 +1,4 @@
-/* Interactive 64-bit GetOpenFileNameW portal smoke probe.
+/* Interactive 64-bit GetOpenFileNameW portal check.
  *
  * The tester should identify the native desktop portal and press Cancel.
  * The output records success/cancel/error only; it never records a path.

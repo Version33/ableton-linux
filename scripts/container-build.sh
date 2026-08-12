@@ -10,6 +10,21 @@ JOBS="${JOBS:-$(nproc)}"
 VERSION="$(cat "$SRC/VERSION")"
 NAME="wine-d2d1-nspa-11.13"
 CONFIGURE_PREFIX="${INSTALL_PREFIX:?build.sh must pass INSTALL_PREFIX}"
+SOURCE_TREE_SHA="${SOURCE_TREE_SHA:-}"
+[[ "$SOURCE_TREE_SHA" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "!! SOURCE_TREE_SHA must be supplied by build.sh" >&2
+    exit 1
+}
+CABEXTRACT_STATIC_SHA="${CABEXTRACT_STATIC_SHA:-}"
+ABLETON_LINKD_SHA="${ABLETON_LINKD_SHA:-}"
+[[ "$CABEXTRACT_STATIC_SHA" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "!! build.sh must supply the cabextract-static hash" >&2
+    exit 1
+}
+[[ "$ABLETON_LINKD_SHA" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "!! build.sh must supply the ableton-linkd hash" >&2
+    exit 1
+}
 [ "$(basename "$CONFIGURE_PREFIX")" = "$NAME" ] || {
     echo "!! INSTALL_PREFIX must end in /$NAME" >&2
     exit 2
@@ -17,6 +32,94 @@ CONFIGURE_PREFIX="${INSTALL_PREFIX:?build.sh must pass INSTALL_PREFIX}"
 DESTDIR="$WORK/stage"
 PREFIX_ROOT="$DESTDIR$CONFIGURE_PREFIX"
 npatch="$(ls "$SRC"/patches/00*.patch | wc -l)"
+
+# TSan reserves a fixed shadow address range. High-entropy ASLR can collide
+# with that range, and newer runtimes may be unable to request process-local
+# ADDR_NO_RANDOMIZE under a container's default seccomp policy. Probe this
+# before the expensive Wine build. Official builds remain fail-closed; auto
+# and skip are explicit local, non-release modes.
+PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-require}"
+# shellcheck source=scripts/lib/tsan.sh
+source "$SRC/scripts/lib/tsan.sh"
+pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {
+    echo "!! PIPEASIO_TSAN_MODE must be require, auto, or skip" >&2
+    exit 2
+}
+
+tsan_enabled=1
+tsan_record=""
+if [ "$PIPEASIO_TSAN_MODE" = skip ]; then
+    tsan_enabled=0
+    tsan_record='TSan unit skipped (explicit mode; non-release build)'
+    echo "== [preflight] TSan explicitly skipped; artifact will be marked non-release =="
+else
+    echo "== [preflight] verify TSan can start under this host/container policy =="
+    tsan_canary_dir="$(mktemp -d /tmp/pipeasio-tsan-canary.XXXXXX)"
+    tsan_canary_source="$tsan_canary_dir/canary.c"
+    tsan_canary_binary="$tsan_canary_dir/canary"
+    tsan_canary_log="$tsan_canary_dir/canary.log"
+    printf '%s\n' \
+        '#include <pthread.h>' \
+        '#include <stdint.h>' \
+        'static void *worker(void *arg) { return arg; }' \
+        'int main(void) {' \
+        '    pthread_t thread;' \
+        '    void *result = 0;' \
+        '    void *expected = (void *)(uintptr_t)0x1234;' \
+        '    if (pthread_create(&thread, 0, worker, expected)) return 2;' \
+        '    if (pthread_join(thread, &result)) return 3;' \
+        '    return result != expected;' \
+        '}' > "$tsan_canary_source"
+    if ! gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fno-omit-frame-pointer \
+            -fsanitize=thread -pthread "$tsan_canary_source" \
+            -fsanitize=thread -pthread -o "$tsan_canary_binary"; then
+        echo "!! failed to compile the mandatory TSan canary" >&2
+        case "$tsan_canary_dir" in
+            /tmp/pipeasio-tsan-canary.*) rm -rf -- "${tsan_canary_dir:?}" ;;
+            *) echo "!! refusing to remove unexpected TSan canary path" >&2 ;;
+        esac
+        exit 1
+    fi
+
+    tsan_canary_failed=0
+    for ((tsan_attempt = 1; tsan_attempt <= 3; ++tsan_attempt)); do
+        if ! TSAN_OPTIONS=halt_on_error=1 "$tsan_canary_binary" >> "$tsan_canary_log" 2>&1; then
+            tsan_canary_failed=1
+            break
+        fi
+    done
+    if [ "$tsan_canary_failed" -eq 1 ]; then
+        cat "$tsan_canary_log" >&2
+        if pipeasio_tsan_log_is_infrastructure_failure "$tsan_canary_log"; then
+            if [ "$PIPEASIO_TSAN_MODE" = auto ]; then
+                tsan_enabled=0
+                tsan_record='TSan unit skipped (host ASLR/seccomp incompatibility; auto mode; non-release build)'
+                echo "!! TSan cannot start under this host/container policy; auto mode marks this build non-release" >&2
+            else
+                echo "!! mandatory TSan cannot start under this host/container policy" >&2
+                echo "!! use PIPEASIO_TSAN_MODE=auto only for a local non-release build" >&2
+                case "$tsan_canary_dir" in
+                    /tmp/pipeasio-tsan-canary.*) rm -rf -- "${tsan_canary_dir:?}" ;;
+                    *) echo "!! refusing to remove unexpected TSan canary path" >&2 ;;
+                esac
+                exit 1
+            fi
+        else
+            echo "!! TSan canary failed for an unknown reason; refusing to skip it" >&2
+            case "$tsan_canary_dir" in
+                /tmp/pipeasio-tsan-canary.*) rm -rf -- "${tsan_canary_dir:?}" ;;
+                *) echo "!! refusing to remove unexpected TSan canary path" >&2 ;;
+            esac
+            exit 1
+        fi
+    else
+        echo "   TSan startup canary passed three times"
+    fi
+    case "$tsan_canary_dir" in
+        /tmp/pipeasio-tsan-canary.*) rm -rf -- "${tsan_canary_dir:?}" ;;
+        *) echo "!! refusing to remove unexpected TSan canary path" >&2; exit 1 ;;
+    esac
+fi
 
 echo "== [1/8] unpack pristine Wine base (giang17 d2d1-dcomp-11.13 @ 5c23dd1c) =="
 mkdir -p "$WORK/wine-src"
@@ -104,7 +207,7 @@ fi
 # configure also silently drops ntsync without linux/ntsync.h; every NT sync
 # wait then becomes a wineserver round trip (~1.3 cores with Live running).
 # Shipped unnoticed twice in 2026-07. Check BOTH halves: the 07-12 build lost
-# only the wineserver one. notes/ABLETON-WINE-NTSYNC-REGRESSION.md
+# only the wineserver one.
 if ! grep -q '^#define HAVE_LINUX_NTSYNC_H 1' "$WORK/build/include/config.h"; then
     echo "!! HAVE_LINUX_NTSYNC_H not set; linux/ntsync.h not seen at configure time" >&2
     exit 1
@@ -153,7 +256,7 @@ export PATH="$PREFIX_ROOT/bin:$PATH"          # this Wine's winegcc/winebuild ta
 #     prefix=/usr, so PKG_CONFIG_SYSROOT_DIR rewrites every -I/-L under
 #     /opt/pipewire-sdk. Link-time only: the .so records DT_NEEDED
 #     libpipewire-0.3.so.0 and resolves against the host PipeWire at runtime
-#     (declared floor 1.4.2, upstream's build-time minimum; the SDK is 1.6.2).
+#     (required client/daemon floor 1.4.2; the SDK is 1.6.2).
 #   - --allow-shlib-undefined (native test executables only): the SDK's .so
 #     wants glibc 2.38 (__isoc23_*) and this container has 2.35, so the
 #     default no-allow-shlib-undefined check would fail the pw_probe and
@@ -210,9 +313,9 @@ fi
 # tests the helper's loader/API/output path without pretending to contact a
 # daemon. Also run that path under ASan+UBSan. The no-argument daemon path is a
 # release-machine integration test.
-probe_stub_dir="$(mktemp -d /tmp/pipewire-probe-smoke.XXXXXX)"
+probe_stub_dir="$(mktemp -d /tmp/pipewire-probe-check.XXXXXX)"
 printf '%s\n' \
-    'const char *pw_get_library_version(void) { return "probe-smoke-1.0.5"; }' \
+    'const char *pw_get_library_version(void) { return "probe-check-1.0.5"; }' \
     > "$probe_stub_dir/stub.c"
 nm -D "$pipewire_probe" \
     | awk '$1 == "U" && $2 ~ /^pw_/ && $2 != "pw_get_library_version" { print "void " $2 "(void) {}" }' \
@@ -220,7 +323,7 @@ nm -D "$pipewire_probe" \
 gcc -shared -fPIC -Wl,-soname,libpipewire-0.3.so.0 \
     -o "$probe_stub_dir/libpipewire-0.3.so.0" "$probe_stub_dir/stub.c"
 test "$(LD_LIBRARY_PATH="$probe_stub_dir" "$pipewire_probe" --client)" = \
-    'client=probe-smoke-1.0.5'
+    'client=probe-check-1.0.5'
 
 probe_sanitized="$probe_stub_dir/pipewire-version-probe-sanitized"
 gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fPIE -fno-omit-frame-pointer \
@@ -234,12 +337,12 @@ test "$(
     ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
     UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
         "$probe_sanitized" --client
-)" = 'client=probe-smoke-1.0.5'
+)" = 'client=probe-check-1.0.5'
 case "$probe_stub_dir" in
-    /tmp/pipewire-probe-smoke.*) rm -rf -- "${probe_stub_dir:?}" ;;
-    *) echo "!! refusing to remove unexpected probe smoke path: $probe_stub_dir" >&2; exit 1 ;;
+    /tmp/pipewire-probe-check.*) rm -rf -- "${probe_stub_dir:?}" ;;
+    *) echo "!! refusing to remove unexpected probe check path: $probe_stub_dir" >&2; exit 1 ;;
 esac
-echo "   pipewire-version-probe: client stub + ASan/UBSan smoke passed"
+echo "   pipewire-version-probe: client stub + ASan/UBSan verification passed"
 
 pipeasio_cmake_configure() {
     local build_dir="$1"
@@ -279,13 +382,15 @@ pipeasio_ctest_units() {
     local stub_dir
     stub_dir="$(mktemp -d /tmp/pipeasio-ctest.XXXXXX)"
     pipeasio_make_test_stub "$build_dir" "$stub_dir"
+    local ctest_status=0
     env LD_LIBRARY_PATH="$stub_dir" "$@" \
         ctest --test-dir "$build_dir" -L '^unit$' \
-            --no-tests=error --output-on-failure
+            --no-tests=error --output-on-failure --stop-on-failure || ctest_status=$?
     case "$stub_dir" in
         /tmp/pipeasio-ctest.*) rm -rf -- "${stub_dir:?}" ;;
         *) echo "!! refusing to remove unexpected test stub path: $stub_dir" >&2; exit 1 ;;
     esac
+    return "$ctest_status"
 }
 
 pipeasio_unit_targets() {
@@ -392,20 +497,48 @@ if [ -x build-asan/gui/pipeasio-settings ]; then
     asan_panel_state="passed"
 fi
 
-pipeasio_cmake_configure build-tsan \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
-    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -Wl,--allow-shlib-undefined" \
-    -DBUILD_SETTINGS_PANEL=OFF \
-    -DBUILD_TESTS=ON
-mapfile -t tsan_unit_targets < <(pipeasio_unit_targets build-tsan)
-[ "${#tsan_unit_targets[@]}" -gt 0 ] || {
-    echo "!! no unit-labelled CTest targets found in the TSan build" >&2
-    exit 1
-}
-cmake --build build-tsan -j "$JOBS" --target "${tsan_unit_targets[@]}"
-pipeasio_ctest_units build-tsan TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
-echo "   sanitizers: ASan+UBSan unit/panel=$asan_panel_state; TSan unit passed"
+if [ "$tsan_enabled" -eq 1 ]; then
+    pipeasio_cmake_configure build-tsan \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
+        -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -Wl,--allow-shlib-undefined" \
+        -DBUILD_SETTINGS_PANEL=OFF \
+        -DBUILD_TESTS=ON
+    mapfile -t tsan_unit_targets < <(pipeasio_unit_targets build-tsan)
+    [ "${#tsan_unit_targets[@]}" -gt 0 ] || {
+        echo "!! no unit-labelled CTest targets found in the TSan build" >&2
+        exit 1
+    }
+    cmake --build build-tsan -j "$JOBS" --target "${tsan_unit_targets[@]}"
+    tsan_test_log="$(mktemp /tmp/pipeasio-tsan-ctest.XXXXXX)"
+    if pipeasio_ctest_units build-tsan \
+            TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1 \
+            > "$tsan_test_log" 2>&1; then
+        cat "$tsan_test_log"
+        tsan_record='TSan unit passed'
+    else
+        tsan_test_status=$?
+        cat "$tsan_test_log" >&2
+        if [ "$PIPEASIO_TSAN_MODE" = auto ] \
+           && pipeasio_tsan_log_is_infrastructure_failure "$tsan_test_log"; then
+            tsan_record='TSan unit skipped (host ASLR/seccomp incompatibility; auto mode; non-release build)'
+            echo "!! TSan CTest hit a recognized startup incompatibility; auto mode marks this build non-release" >&2
+        else
+            echo "!! TSan CTest failed; races, test failures, and unknown errors are never auto-skipped" >&2
+            case "$tsan_test_log" in
+                /tmp/pipeasio-tsan-ctest.*) rm -f -- "${tsan_test_log:?}" ;;
+                *) echo "!! refusing to remove unexpected TSan log path" >&2 ;;
+            esac
+            exit "$tsan_test_status"
+        fi
+    fi
+    case "$tsan_test_log" in
+        /tmp/pipeasio-tsan-ctest.*) rm -f -- "${tsan_test_log:?}" ;;
+        *) echo "!! refusing to remove unexpected TSan log path" >&2; exit 1 ;;
+    esac
+fi
+[ -n "$tsan_record" ] || { echo "!! internal error: missing TSan result" >&2; exit 1; }
+echo "   sanitizers: ASan+UBSan unit/panel=$asan_panel_state; $tsan_record"
 
 # Install through upstream CMake so its layout, Qt data files and Wine alias
 # contract are exercised. The project has its own atomic registration path, so
@@ -480,6 +613,14 @@ pipeasio_unix_sha="$(sha256sum "$pipeasio_unix" | awk '{print $1}')"
 echo "   PipeASIO: PE $pipeasio_pe_sha / Unix $pipeasio_unix_sha"
 
 echo "== [6/8] package =="
+# Keep the resolved package closure beside BUILD-INFO so its digest is useful
+# for more than equality testing. This makes a toolchain change inspectable and
+# prevents a same-source rebuild from silently claiming the same builder.
+builder_packages="$PREFIX_ROOT/ABLETON-WINE-BUILD-PACKAGES.txt"
+test -s /opt/build-env-packages.txt
+install -m644 /opt/build-env-packages.txt "$builder_packages"
+LC_ALL=C sort -c -u "$builder_packages"
+builder_packages_sha="$(sha256sum "$builder_packages" | awk '{print $1}')"
 # Stamp per-patch sha256s into the tree; build-audit.sh diffs this against patches/SERIES.sha256.
 stack_stamp="$PREFIX_ROOT/ABLETON-WINE-PATCH-STACK.txt"
 ( cd "$SRC/patches" && sha256sum 00*.patch pipeasio/*.patch ) > "$stack_stamp"
@@ -495,8 +636,12 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "pipeasio-patches: $nasio"
     echo "patch-head:   $patch_head"
     echo "patch-stack:  $stack_sha"
+    echo "source-tree:  $SOURCE_TREE_SHA"
+    echo "builder-packages: $builder_packages_sha"
+    echo "cabextract-static: $CABEXTRACT_STATIC_SHA"
+    echo "ableton-linkd: $ABLETON_LINKD_SHA"
     echo "pipeasio:     1.5.0"
-    echo "pipewire-floor: 1.4.2 (upstream's build-time minimum; Ubuntu 24.04/Mint 22 ship 1.0.5, below it)"
+    echo "pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)"
     echo "pipewire-version-probe: $pipewire_probe_sha"
     echo "pipewire-version-probe-tests: client-stub+ASan+UBSan passed"
     if [ "$panel_state" = built ]; then
@@ -513,9 +658,9 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     fi
     echo "pipeasio-no-qt: CMake driver build/install + non-integration CTest passed"
     if [ "$asan_panel_state" = passed ]; then
-        echo "pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed"
+        echo "pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); $tsan_record"
     else
-        echo "pipeasio-sanitizers: ASan+UBSan unit passed (driver imports verified; panel unavailable); TSan unit passed"
+        echo "pipeasio-sanitizers: ASan+UBSan unit passed (driver imports verified; panel unavailable); $tsan_record"
     fi
     echo "ntsync:       yes (vendored linux/ntsync.h $ntsync_hdr_sha)"
     echo "libusb-pe:    $bridge_pe_sha"
@@ -563,7 +708,7 @@ rm -rf "$reloc"
 echo "   relocation + registration gate passed (cmd.exe ran, PipeASIO registered)"
 
 echo "== [8/8] build audit: every patch verified against the shipped tarball =="
-bash "$SRC/scripts/build-audit.sh" "$tarball"
+bash "$SRC/scripts/build-audit.sh" --source-tree-sha "$SOURCE_TREE_SHA" "$tarball"
 
 echo
 echo "OK: $(basename "$tarball") ($(du -h "$tarball" | cut -f1))"

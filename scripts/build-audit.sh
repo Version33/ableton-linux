@@ -10,9 +10,41 @@ SERIES="$root/patches/SERIES.sha256"
 say()  { printf '%s\n' "$*"; }
 fail() { printf '!! %s\n' "$*" >&2; exit 1; }
 
+readonly REQUIRED_WINE_TAIL='0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch'
+readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch'
+
+check_required_series_tails()
+{
+    local manifest="${1:?series manifest required}" wine_tail pipeasio_tail
+    [ -r "$manifest" ] || fail "series manifest is missing or unreadable: $manifest"
+    wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' "$manifest" | sort | tail -1)"
+    pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$manifest" | sort | tail -1)"
+    [ "$wine_tail" = "$REQUIRED_WINE_TAIL" ] ||
+        fail "Wine series must end at $REQUIRED_WINE_TAIL (found ${wine_tail:-none})"
+    [ "$pipeasio_tail" = "$REQUIRED_PIPEASIO_TAIL" ] ||
+        fail "PipeASIO series must end at $REQUIRED_PIPEASIO_TAIL (found ${pipeasio_tail:-none})"
+}
+
+if [ "${1:-}" = --check-series-policy ]; then
+    [ "$#" -eq 2 ] || fail "usage: $0 --check-series-policy MANIFEST"
+    check_required_series_tails "$2"
+    say "OK: required Wine and PipeASIO series tails are present."
+    exit 0
+fi
+
+expected_source_tree=""
+if [ "${1:-}" = --source-tree-sha ]; then
+    [ "$#" -ge 2 ] || fail "usage: $0 --source-tree-sha SHA256 [TARBALL_OR_TREE]"
+    expected_source_tree="$2"
+    [[ "$expected_source_tree" =~ ^[0-9a-f]{64}$ ]] || \
+        fail "--source-tree-sha must be one SHA-256 digest"
+    shift 2
+fi
+
 # --- --freeze: (re)generate the frozen series manifest ------------------------
 if [ "${1:-}" = --freeze ]; then
     new="$(cd "$root/patches" && sha256sum 00*.patch pipeasio/*.patch)"
+    check_required_series_tails <(printf '%s\n' "$new")
     if [ -f "$SERIES" ]; then
         say "== freeze diff (old -> new) =="
         diff -u "$SERIES" <(printf '%s\n' "$new") && say "   (no changes)"
@@ -25,6 +57,7 @@ if [ "${1:-}" = --freeze ]; then
 fi
 
 [ -f "$SERIES" ] || fail "patches/SERIES.sha256 missing — run: ./scripts/build-audit.sh --freeze (then commit it)"
+check_required_series_tails "$SERIES"
 grep -qP 'x' <<<'x' 2>/dev/null || fail "grep -P not supported on this system (needed for UTF-16 fingerprints)"
 
 # --- resolve the artifact: tarball (unpack to tmp) or tree --------------------
@@ -64,10 +97,11 @@ while read -r sum file; do
         sha_ok["$file"]=0
     fi
 done < "$SERIES"
-extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
+extras="$(cd "$root/patches" && printf '%s\n' 00*.patch pipeasio/*.patch \
+    | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch
-# titles and notes/); a gap is fine if documented here, a dropped patch is not.
+# titles and release history); a gap is fine if documented here, a dropped patch is not.
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
@@ -81,6 +115,9 @@ declare -A SERIES_GAPS=(
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
     num="${f%%-*}"
+    if [ -n "${SERIES_GAPS[$num]:-}" ]; then
+        bad "series numbering" "$num is a declared gap but patch is present ($f)"
+    fi
     printf -v want '%04d' "$seq_expect"
     while [ "$num" != "$want" ] && [ -n "${SERIES_GAPS[$want]:-}" ]; do
         ok "series numbering" "$want gap documented (${SERIES_GAPS[$want]})"
@@ -101,6 +138,9 @@ asio_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep '^pipeasio/' | sort); do
     base="${f#pipeasio/}"
     num="${base%%-*}"
+    if [ -n "${PIPEASIO_GAPS[$num]:-}" ]; then
+        bad "pipeasio numbering" "$num is a declared gap but patch is present ($f)"
+    fi
     printf -v want '%04d' "$asio_expect"
     while [ "$num" != "$want" ] && [ -n "${PIPEASIO_GAPS[$want]:-}" ]; do
         ok "pipeasio numbering" "$want gap documented (${PIPEASIO_GAPS[$want]})"
@@ -133,6 +173,21 @@ if [ -f "$binfo" ] && grep -q "^patches: *$n_series$" "$binfo"; then
 else
     bad "BUILD-INFO patch count" "missing or != $n_series (see $binfo)"
 fi
+source_tree_record="$(sed -n 's/^source-tree:  *//p' "$binfo" 2>/dev/null || true)"
+source_tree_count="$(grep -c '^source-tree:' "$binfo" 2>/dev/null || true)"
+if [ -n "$expected_source_tree" ]; then
+    source_tree_actual="$expected_source_tree"
+else
+    source_tree_actual="$("$root/scripts/source-tree-digest.sh")"
+fi
+if [ "$source_tree_count" -eq 1 ] \
+   && [[ "$source_tree_record" =~ ^[0-9a-f]{64}$ ]] \
+   && [ "$source_tree_record" = "$source_tree_actual" ]; then
+    ok "BUILD-INFO source tree" "matches current source candidate"
+else
+    bad "BUILD-INFO source tree" \
+        "recorded=${source_tree_record:-missing} current=$source_tree_actual"
+fi
 
 # The Qt panel is optional, but its provenance is not. A normal value starts
 # with the shipped binary's sha256; a no-Qt/driver-only build says why it was
@@ -143,6 +198,13 @@ panel_hash=""
 panel_record=""
 panel_mode=""
 pipewire_probe_hash=""
+builder_packages_hash=""
+declare -A recorded_binary_hashes=()
+readonly RECORDED_BINARIES='libusb-pe|lib/wine/x86_64-windows/libusb-1.0.dll
+libusb-unix|lib/wine/x86_64-unix/libusb-1.0.so
+portal-unix|lib/wine/x86_64-unix/comdlg32.so
+pipeasio-pe|lib/wine/x86_64-windows/pipeasio64.dll
+pipeasio-unix|lib/wine/x86_64-unix/pipeasio64.dll.so'
 if [ -f "$binfo" ]; then
     panel_mode="$(sed -n 's/^pipeasio-panel: *//p' "$binfo")"
     panel_record="$(sed -n 's/^pipeasio-settings: *//p' "$binfo")"
@@ -167,11 +229,17 @@ if [ -f "$binfo" ]; then
     fi
     if grep -q '^pipeasio-sanitizers: ASan+UBSan .*; TSan unit passed$' "$binfo"; then
         ok "PipeASIO sanitizer gate" "ASan+UBSan and TSan recorded passed"
+    elif grep -Eq \
+            '^pipeasio-sanitizers: ASan\+UBSan .*; TSan unit skipped \((explicit mode|host ASLR/seccomp incompatibility; auto mode); non-release build\)$' \
+            "$binfo"; then
+        ok "PipeASIO sanitizer gate" \
+            "ASan+UBSan passed; TSan explicitly skipped (non-release build)"
     else
         bad "PipeASIO sanitizer gate" "missing/incomplete in BUILD-INFO"
     fi
     pipewire_probe_hash="$(sed -n 's/^pipewire-version-probe: *//p' "$binfo")"
-    if [[ "$pipewire_probe_hash" =~ ^[0-9a-f]{64}$ ]]; then
+    pipewire_probe_count="$(grep -c '^pipewire-version-probe:' "$binfo" || true)"
+    if [ "$pipewire_probe_count" -eq 1 ] && [[ "$pipewire_probe_hash" =~ ^[0-9a-f]{64}$ ]]; then
         ok "PipeWire probe provenance" "binary hash recorded"
     else
         bad "PipeWire probe provenance" "missing/malformed hash in BUILD-INFO"
@@ -183,6 +251,34 @@ if [ -f "$binfo" ]; then
     else
         bad "PipeWire probe test gate" "missing/incomplete in BUILD-INFO"
     fi
+    builder_packages_count="$(grep -c '^builder-packages:' "$binfo" || true)"
+    builder_packages_hash="$(sed -n 's/^builder-packages: *//p' "$binfo")"
+    if [ "$builder_packages_count" -eq 1 ] \
+       && [[ "$builder_packages_hash" =~ ^[0-9a-f]{64}$ ]]; then
+        ok "BUILD-INFO builder packages" "manifest hash recorded"
+    else
+        bad "BUILD-INFO builder packages" "missing, duplicate, or malformed hash"
+    fi
+    for helper_spec in cabextract-static ableton-linkd; do
+        helper_count="$(grep -c "^${helper_spec}:" "$binfo" || true)"
+        helper_hash="$(sed -n "s/^${helper_spec}: *//p" "$binfo")"
+        if [ "$helper_count" -eq 1 ] && [[ "$helper_hash" =~ ^[0-9a-f]{64}$ ]]; then
+            ok "BUILD-INFO $helper_spec" "installer helper hash recorded"
+        else
+            bad "BUILD-INFO $helper_spec" "missing, duplicate, or malformed hash"
+        fi
+    done
+    while IFS='|' read -r record_key artifact_path; do
+        [ -n "$record_key" ] || continue
+        record_count="$(grep -c "^${record_key}:" "$binfo" || true)"
+        record_value="$(sed -n "s/^${record_key}: *//p" "$binfo")"
+        if [ "$record_count" -eq 1 ] && [[ "$record_value" =~ ^[0-9a-f]{64}$ ]]; then
+            recorded_binary_hashes["$record_key"]="$record_value"
+            ok "BUILD-INFO $record_key" "binary hash recorded"
+        else
+            bad "BUILD-INFO $record_key" "missing, duplicate, or malformed hash"
+        fi
+    done <<< "$RECORDED_BINARIES"
 else
     bad "BUILD-INFO PipeASIO gates" "missing $binfo"
 fi
@@ -285,14 +381,14 @@ STAMP_ONLY='
 0046|logic-only (frame-latency-as-semaphore fix; no new string literal)
 0047|logic-only (round_dpi() wrap; no new string literal)
 0048|configure/build-gate fix only; effect verified structurally (libusb-1.0.dll presence) and by 0032 fingerprint, not by a literal of its own
-0049|logic-only (grayed-menu-item bevel dropped entirely; no new string literal)
-0050|logic-only (per-process sys-color cache reset on WM_SYSCOLORCHANGE; no new string literal)
+0049|logic-only (greyed-menu-item bevel dropped entirely; no new string literal)
+0050|logic-only (per-process system-colour cache reset on WM_SYSCOLORCHANGE; no new string literal)
 0051|logic-only (RDW_FRAME added to the SetSysColors redraw flags; no new string literal)
 0052|logic-only (DT_HIDEPREFIX on the menu bar DrawTextW call; no new string literal)
 0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 0054|logic-only (per-string SystemLink font fallback in draw_menu_item, plus the calc_menu_item_size CJK-measurement fix; no new string literal)
 0070|logic-only (break Alt/F10 menu-bar arming when the app consumes the chord key; no new string literal)
-0077|logic-only (minimize/maximize Motif functions advertised unconditionally; extends 0037, no new string literal)
+0077|logic-only (minimise/maximise Motif functions advertised unconditionally; extends 0037, no new string literal)
 0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
 0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
 '
@@ -383,6 +479,39 @@ must lib/wine/x86_64-unix/pipeasio64.dll.so
 must lib/wine/x86_64-windows/pipeasio.dll
 must lib/wine/x86_64-unix/pipeasio.dll.so
 must bin/pipewire-version-probe
+must ABLETON-WINE-BUILD-PACKAGES.txt
+
+builder_packages="$tree/ABLETON-WINE-BUILD-PACKAGES.txt"
+actual_builder_packages_hash="$(
+    sha256sum "$builder_packages" 2>/dev/null | awk '{print $1}' || true
+)"
+if [ -n "$builder_packages_hash" ] \
+   && [ "$actual_builder_packages_hash" = "$builder_packages_hash" ]; then
+    ok "builder package manifest sha256" "matches BUILD-INFO"
+else
+    bad "builder package manifest sha256" \
+        "BUILD-INFO=${builder_packages_hash:-missing} artifact=${actual_builder_packages_hash:-missing}"
+fi
+if [ -s "$builder_packages" ] \
+   && LC_ALL=C sort -c -u "$builder_packages" 2>/dev/null \
+   && awk 'NF != 2 { malformed = 1 } END { exit malformed || NR == 0 }' \
+        "$builder_packages"; then
+    ok "builder package manifest format" "sorted unique package/version records"
+else
+    bad "builder package manifest format" "empty, unsorted, duplicate, or malformed"
+fi
+
+while IFS='|' read -r record_key artifact_path; do
+    [ -n "$record_key" ] || continue
+    actual_hash="$(sha256sum "$tree/$artifact_path" 2>/dev/null | awk '{print $1}' || true)"
+    recorded_hash="${recorded_binary_hashes[$record_key]:-}"
+    if [ -n "$recorded_hash" ] && [ "$actual_hash" = "$recorded_hash" ]; then
+        ok "$record_key sha256" "matches BUILD-INFO"
+    else
+        bad "$record_key sha256" \
+            "BUILD-INFO=${recorded_hash:-missing} artifact=${actual_hash:-missing}"
+    fi
+done <<< "$RECORDED_BINARIES"
 
 if [ -x "$tree/bin/pipewire-version-probe" ]; then
     ok "pipewire-version-probe mode" "executable"

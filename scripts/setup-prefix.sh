@@ -42,7 +42,7 @@ kit_root_or_die() {
     echo "!! prefix maintenance must run from the installer kit: either:" >&2
     echo "!!     sh install-ableton-latest.run update" >&2
     echo "!!   or extract the kit and run it from there:" >&2
-    echo "!!     sh install-ableton-latest.run --extract /tmp/ableton-kit" >&2
+    echo "!!     sh install-ableton-latest.run extract /tmp/ableton-kit" >&2
     echo "!!     bash /tmp/ableton-kit/scripts/installer.sh prefix update" >&2
     exit 1
 }
@@ -517,8 +517,7 @@ check_mutter_knob() {  # warn when mutter's xwayland-native-scaling disagrees wi
 # thread. Under playback the uncoalesced APCs flood the wineserver and starve the
 # PipeASIO callback: choppy, slowed-down audio (issue #29). Strip the line from
 # every prefs copy: including hand-added ones, since the old changelog entry
-# advertised it. The idle CPU cost is back until the Wine-side fix lands; see
-# notes/ABLETON-WINE-APC-COALESCING.md.
+# advertised it. The idle CPU cost is back until the Wine-side fix lands.
 strip_options_txt() {
     local line="$1" prefs f tmp
     shopt -s nullglob
@@ -724,7 +723,6 @@ fi
 # CreateFontIndirect and never enters EnumFontFamilies, which is what Max
 # matches against; and copied-in files stay invisible until registered, Wine's
 # font list being registry-driven. Idempotent, and runs under --refresh too.
-# See notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md.
 install_maxplug_fallback_fonts() {
     local winfonts="$WINEPREFIX/drive_c/windows/Fonts"
     local src="" d n entry missing=0
@@ -1087,7 +1085,6 @@ strip_options_txt "-DontCombineAPCs"
 # -_ForceGdiBackend disables Live's GPU renderer. Early prefixes carried it
 # (inherited from pre-repo setups); with the d2d1 base fork Live's GPU
 # renderer works, removes the WebView2 pane flicker, and drops idle CPU.
-# See notes/ABLETON-WINE-GPU-RENDERER.md.
 echo "== [5c/5] remove -_ForceGdiBackend so Live uses its GPU renderer =="
 strip_options_txt "-_ForceGdiBackend"
 

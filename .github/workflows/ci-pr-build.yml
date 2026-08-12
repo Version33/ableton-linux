@@ -35,6 +35,7 @@ on:
       - tools/**
       - vendor/**
       - .github/workflows/ci-pr-build.yml
+      - .github/workflows/release.yml
   push:
     branches: [main]
     paths:
@@ -48,6 +49,7 @@ on:
       - tools/**
       - vendor/**
       - .github/workflows/ci-pr-build.yml
+      - .github/workflows/release.yml
   workflow_dispatch: {}
 
 # A new push to the same PR (or a re-run against main) makes the previous,
@@ -100,7 +102,7 @@ jobs:
 
       # GitHub-hosted runners have Docker preinstalled, not podman.
       - name: Build Wine + PipeASIO + ableton-linkd
-        run: ENGINE=docker JOBS="$(nproc)" ./build.sh
+        run: ENGINE=docker JOBS="$(nproc)" PIPEASIO_TSAN_MODE=require ./build.sh
 
       # container-build.sh writes dist/ and .ccache/ (mode 600) as the
       # container's user, which under plain `docker run` (unlike rootless

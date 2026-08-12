@@ -220,9 +220,12 @@ ableton_txn_target_allowed()
         "$ABLETON_STATE_HOME/install-prestate/"*)
             relative="${path#"$ABLETON_STATE_HOME/install-prestate/"}"
             [[ "$relative" =~ ^[0-9a-f]{64}$ ]] || return 1
-            [ "$(ableton_realpath_m "$(dirname "$path")")" \
-                = "$(ableton_realpath_m "$ABLETON_STATE_HOME/install-prestate")" ]
-            return ;;
+            parent_real="$(ableton_realpath_m "$(dirname "$path")")" || return 1
+            root_real="$(ableton_realpath_m "$ABLETON_STATE_HOME/install-prestate")" || return 1
+            if [ "$parent_real" = "$root_real" ]; then
+                return 0
+            fi
+            return 1 ;;
     esac
 
     # User-facing rollback writes only these three metadata members inside a

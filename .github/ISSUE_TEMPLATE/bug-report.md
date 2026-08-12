@@ -3,25 +3,30 @@ name: Bug report
 about: Report a problem with Ableton Live on Linux
 ---
 
-## What happened
+## System
 
-<!-- Describe the problem and what you expected instead. -->
+- Ableton Live edition and version:
+- Ableton Linux project release:
+- Linux distribution and version:
+- Desktop and session type, such as GNOME on Wayland:
+
+## Problem
+
+Describe the exact action you took, what you expected, and what happened. Copy any error message exactly.
 
 ## Steps to reproduce
 
 1.
+2.
+3.
 
-## System summary
+## Relevant diagnostics
 
-Run the profiler on the affected machine from the root of this repository. It
-prints a redacted system summary and copies it when a supported clipboard tool
-is available.
+Paste only the relevant parts of the installed launcher log or audio report:
 
-If the same setup works on macOS or Windows, add that profiler's output for
-comparison.
+- Launcher log: `~/.local/state/ableton-wine/logs/live.log`
+- Audio report: run `~/.local/share/ableton-wine/audio-report.sh`
 
-- Linux: `./beta/scripts/ableton-linux-profiler.sh`
-- macOS: `./beta/scripts/ableton-macos-profiler.sh`
-- Windows: `powershell -ExecutionPolicy Bypass -File beta\scripts\ableton-windows-profiler.ps1`
+These files may contain usernames, file paths, device names, environment variables, logs, and journal messages. Inspect the text and remove private information before sharing it.
 
-Review the summary, then paste it here:
+Keep Ableton installers, authorisation or licence data, Ableton projects, and plug-in credentials private. Never attach them to an issue.

@@ -5,21 +5,25 @@ prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocat
 patches:      90
 wine-patches: 81
 pipeasio-patches: 9
-patch-head:   4f4fa012e4fde0756b1c2f1be8a85d509fcec1d4
-patch-stack:  b8ef3ae674307a397edebfd6d4a32506b177a3ee2bdcfdc7fd5d8b97df4ccf43
+patch-head:   cd1356b9c5221c5ec991ef3303a6379af88f01c9
+patch-stack:  8897eeac754ea67812a8bed89af1b946a4b3708e2fe1b8754903d50a96ad9341
+source-tree:  6d86a11a9ba293e290e9bfd2dcb927185eb28df8bddc462f27b989e17a8e88ef
+builder-packages: 1dcd332ce0fa5ccbf47b1a26d6288e11c6de0584571d7239e7e63ba641a4187c
+cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
+ableton-linkd: 1b86024677247115d046dcf66682f297a3a53d000f275c5bdfb2549662a1b3c4
 pipeasio:     1.5.0
-pipewire-floor: 1.4.2 (upstream's build-time minimum; Ubuntu 24.04/Mint 22 ship 1.0.5, below it)
+pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)
 pipewire-version-probe: 4ea7a631decb71c0c9dfa562c916efeb82df8b5d7187b06e942f74dbbb63c31f
 pipewire-version-probe-tests: client-stub+ASan+UBSan passed
 pipeasio-panel: built
-pipeasio-settings: f9ca6e4b846976caab3ca23e6be6563394cd09564383cc4f2117a70935c97455 (Qt 6.2 link)
+pipeasio-settings: 8e8304ac13baa19d9c78c1a7f3baa96264f8e5fc4005cde71477e78c3ba9c44c (Qt 6.2 link)
 pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, ABI, panel)
 pipeasio-no-qt: CMake driver build/install + non-integration CTest passed
 pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    b67f4c3b79dc602a0fc31ab41e5b4c7381bf6c50a47d0119b9afba75457c00ac
+libusb-pe:    471efcd9b9483b1c03f3a9c4983021f1c6eedf41bac36dbea8249d40a7d21e98
 libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
 portal-unix:  2bc1af44d3aa5452d8ecee3c1cea3fd948cd1019222ac46eb00b17b251b8fa57
 pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: 95cab5ef360c5267baaa49169037c8ccd68f6cfba6ec2cc5562e388d51191016
+pipeasio-unix: b58d31ff3075669c015cdee79e6201dc9f33144ceb976fd521080a56e156fff0
 built-on:     Ubuntu 22.04 (glibc 2.35)

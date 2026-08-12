@@ -17,11 +17,13 @@ short_help()
 Ableton-on-Wine installer
 
 Commands:
-  install, update, runtime install, prefix create|update,
+  install, update, runtime install, prefix create|update|repair-live11,
   link enable|disable|status, uninstall, extract DIR, plan COMMAND ...
 
-Run `installer COMMAND --help` from an extracted kit for the complete option
-list. Compatibility flags remain temporarily available with warnings.
+After extracting the kit, run `bash DIR/scripts/installer.sh --help`, replacing
+DIR with the extraction directory, for the complete command and option list.
+Compatibility flags remain temporarily
+available with warnings.
 EOF
 }
 

@@ -39,8 +39,8 @@ index 85161e2f..6a84639b 100644
 + * window manager grants only scale-aligned physical geometry, so a request
 + * with an off-grid edge comes back one pixel off.  Feeding that back to
 + * Win32 makes an app whose layout is also scale-aligned (Ableton Live 12,
-+ * per-monitor aware) re-request endlessly, growing 2px per cycle
-+ * (notes/ABLETON-WINE-DPI-SCALE-100.md).  When a grant differs from our
++ * per-monitor aware) re-request endlessly, growing 2px per cycle. When a
++ * grant differs from our
 + * request only by sub-scale deltas on scale-aligned edges, alias the
 + * granted host rect to the requested Win32 rect and do not tell Win32.
 + * Adapted from ENCORE's encore-wine.patch (github.com/wowitsjack/ENCORE). */

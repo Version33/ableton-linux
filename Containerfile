@@ -17,21 +17,31 @@ ARG LLVM_VERSION=21
 ARG LLVM_PKG_VERSION=1:21.1.8~++20251221032842+2078da43e25a-1~exp1~20251221153008.77
 # Ubuntu archive state used for every jammy package below (snapshot.ubuntu.com).
 ARG UBUNTU_SNAPSHOT=20260718T000000Z
+ARG CA_CERTIFICATES_VERSION=20260601~22.04.1
 
-# 1. Bootstrap tools + LLVM apt repo. This step alone installs from the live
-# archive: apt needs ca-certificates before it can reach the https snapshot
-# service. Tools only (ca-certificates/curl/gnupg) — nothing here is linked
-# into shipped artifacts.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg \
+# 1. Establish every package source before the first apt operation. The pinned
+# base image carries Ubuntu's archive key but not a CA bundle. The one bootstrap
+# transaction therefore relies on apt's signed InRelease metadata while TLS
+# peer checking is temporarily unavailable; it can install only the
+# ca-certificates bytes named by the dated Ubuntu snapshot. Every later fetch
+# uses normal TLS verification. The LLVM repository key is vendored and
+# sha256-pinned rather than fetched from a moving URL during the build.
+COPY vendor/llvm-apt-key.asc vendor/llvm-apt-key.sha256 /tmp/llvm-key/
+RUN cd /tmp/llvm-key \
+ && sha256sum -c llvm-apt-key.sha256 \
  && install -d -m0755 /etc/apt/keyrings \
- && curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/keyrings/llvm.asc \
- && echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_VERSION} main" \
-      > /etc/apt/sources.list.d/llvm.list \
- # From here on, jammy resolves against the pinned snapshot only.
+ && install -m0644 llvm-apt-key.asc /etc/apt/keyrings/llvm.asc \
  && for suite in jammy jammy-updates jammy-security; do \
         echo "deb https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} $suite main restricted universe multiverse"; \
-    done > /etc/apt/sources.list
+    done > /etc/apt/sources.list \
+ && rm -f /etc/apt/sources.list.d/* \
+ && apt-get -o Acquire::https::Verify-Peer=false update \
+ && apt-get -o Acquire::https::Verify-Peer=false install -y --no-install-recommends \
+      ca-certificates=${CA_CERTIFICATES_VERSION} \
+ && apt-get update \
+ && echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_VERSION} main" \
+      > /etc/apt/sources.list.d/llvm.list \
+ && rm -rf /tmp/llvm-key /var/lib/apt/lists/*
 
 # 2. toolchain + Wine build dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -91,7 +101,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  # PATH (below) covers clang/clang++ too. ccache itself resolves the *real*
  # compiler by searching PATH past its own directory — no wrapper scripts or
  # --cc-cmd changes needed. A local build with nothing mounted at /ccache
- # just gets an empty, container-local cache: harmless, no behavior change.
+ # just gets an empty, container-local cache: harmless, no behaviour change.
  && mkdir -p /usr/lib/ccache-shims \
  && for t in gcc g++ clang clang++; do \
         ln -sf "$(command -v ccache)" "/usr/lib/ccache-shims/$t"; \
@@ -109,8 +119,7 @@ ENV CCACHE_MAXSIZE=5G
 
 # 3. ntsync UAPI header: jammy's linux-libc-dev is 5.15, but Wine needs
 # linux/ntsync.h (kernel >= 6.14) or configure silently drops ntsync and every
-# NT sync wait becomes a wineserver round trip. Vendored and sha256-pinned;
-# see notes/ABLETON-WINE-NTSYNC-REGRESSION.md.
+# NT sync wait becomes a wineserver round trip. Vendored and sha256-pinned.
 COPY vendor/ntsync-uapi/linux/ntsync.h /opt/ntsync-uapi/linux/ntsync.h
 
 # 4. PipeWire SDK for PipeASIO: headers, .pc files + link-time .so, vendored

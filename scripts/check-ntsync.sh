@@ -27,7 +27,6 @@ done
 # and survives stripping. ntdll's ntsync strings are debug info, so a good
 # stripped ntdll has zero; the dynamic check below proves the client half
 # (the server only opens the device when a client uses in-process syncs).
-# See notes/ABLETON-WINE-NTSYNC-REGRESSION.md.
 srv=$(strings "$WINE_ROOT/bin/wineserver" 2>/dev/null | grep -c ntsync)
 ntd=$(strings "$WINE_ROOT/lib/wine/x86_64-unix/ntdll.so" 2>/dev/null | grep -c ntsync)
 echo "== static: wineserver ntsync refs: $srv (ntdll.so: $ntd, informational; 0 on stripped builds)"

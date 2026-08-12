@@ -40,25 +40,31 @@ with a bounded loop when the quantum exceeds the host size, so the
 transport advances at real speed and DSP stays at 1x.
 
 PIPEASIO_ALLOW_QUANTUM_MISMATCH=on restores warn-and-play-on. Both
-halves parse it (and every shared on/off variable) with one
-case-insensitive helper, pipeasio_env_on_off: the old lstrcmpiA-vs-strcmp
-split made '=ON' mute one half only.
+halves parse it (and every shared boolean variable) with one strict
+case-insensitive helper, pipeasio_env_bool. It accepts 1/0,
+true/false, yes/no, on/off and enabled/disabled; the old
+lstrcmpiA-vs-strcmp split made '=ON' mute one half only.
 
 Port buffers range up to the accepted maximum so a larger foreign
 quantum always has a buffer to land in. The WoW64 proxy gains the four
 calls (PAU_GLOBAL_FORCE_QUANTUM/QUANTUM_MUTED/FORCER_PRESENT/
 DROP_FORCE_QUANTUM) and the ABI layout guard is extended to cover them.
 ---
- include/audio.h               |  29 +++-
- include/pipeasio_parse.h      |  38 +++++
+ include/audio.h               |  29 ++-
+ include/pipeasio_offsets.h    |  17 ++
+ include/pipeasio_parse.h      |  80 +++++++-
  include/pipeasio_unix_abi.h   |   4 +
- src/asio.c                    | 352 +++++++++++++++++++++++++++++++++++++-----
- src/audio.c                   | 217 ++++++++++++++++++++++++--
+ src/asio.c                    | 418 ++++++++++++++++++++++++++++++++++++++----
+ src/audio.c                   | 223 ++++++++++++++++++++--
  src/wow64/audio_proxy.c       |  24 +++
- src/wow64/audio_unix.c        |  65 ++++++++
- tests/unit/test_config.c      |  20 +++
+ src/wow64/audio_unix.c        | 134 +++++++++++---
+ tests/asio_loopback/run.sh    |   1 +
+ tests/asio_probe/run.sh       |   3 +-
+ tests/asio_probe/run32.sh     |   3 +-
+ tests/unit/test_config.c      |  84 +++++++++
+ tests/unit/test_offsets.c     |  11 ++
  tests/wow64/unix_abi_layout.c |   6 +-
- 9 files changed, 702 insertions(+), 53 deletions(-)
+ 14 files changed, 955 insertions(+), 82 deletions(-)
 
 diff --git a/include/audio.h b/include/audio.h
 index f1abc75..85def7a 100644
@@ -103,41 +109,13 @@ index f1abc75..85def7a 100644
   * 0 before the first cycle. Feeds the ASIO host's systemTime. */
  uint64_t audio_get_time_nsec(audio_client_t *client);
 diff --git a/include/pipeasio_parse.h b/include/pipeasio_parse.h
-index e44668a..50cf082 100644
+index e44668a..d2015e3 100644
 --- a/include/pipeasio_parse.h
 +++ b/include/pipeasio_parse.h
-@@ -7,6 +7,9 @@
- #include <stdbool.h>
- #include <stdlib.h>
- #include <string.h>
-+#include <strings.h> /* strcasecmp: glibc and mingw-w64 both declare it here;
-+                      * the unix objects build with
-+                      * -Werror=implicit-function-declaration */
-
- #define PIPEASIO_CONFIG_LINE_MAX 1024
-
-@@ -46,6 +49,86 @@ pipeasio_ascii_equal_ci(const char *left, const char *right)
+@@ -46,12 +46,74 @@ pipeasio_ascii_equal_ci(const char *left, const char *right)
      return !*left && !*right;
  }
 
-+/* Case-insensitive on/off toggle for PIPEASIO_* environment variables.
-+ * Returns 1 for "on", 0 for "off", -1 for anything else (unset included).
-+ * One parser for BOTH the PE and unix halves: an env var checked with
-+ * lstrcmpiA on one side and strcmp on the other splits on "=ON", and for
-+ * PIPEASIO_ALLOW_QUANTUM_MISMATCH that split mutes one half only
-+ * (permanent silence). */
-+static inline int
-+pipeasio_env_on_off(const char *value)
-+{
-+    if (!value)
-+        return -1;
-+    if (!strcasecmp(value, "on"))
-+        return 1;
-+    if (!strcasecmp(value, "off"))
-+        return 0;
-+    return -1;
-+}
-+
 +/* Update one cached node.force-quantum state from a complete PipeWire node
 + * property dictionary.  The return value is the delta for the aggregate
 + * foreign-forcer count: +1 for 0 -> Q, -1 for Q -> 0 (or absent/invalid),
@@ -203,6 +181,44 @@ index e44668a..50cf082 100644
  static inline bool
  pipeasio_parse_bool(const char *text, bool *result)
  {
+     const char *end;
+     size_t      length;
+-    char        value[8];
++    char        value[9];
+     if (!text || !result)
+         return false;
+     while (isspace((unsigned char)*text))
+@@ -65,16 +127,28 @@ pipeasio_parse_bool(const char *text, bool *result)
+     memcpy(value, text, length);
+     value[length] = '\0';
+     if (!strcmp(value, "1") || pipeasio_ascii_equal_ci(value, "true")
+-        || pipeasio_ascii_equal_ci(value, "on") || pipeasio_ascii_equal_ci(value, "yes"))
++        || pipeasio_ascii_equal_ci(value, "on") || pipeasio_ascii_equal_ci(value, "yes")
++        || pipeasio_ascii_equal_ci(value, "enabled"))
+     {
+         *result = true;
+         return true;
+     }
+     if (!strcmp(value, "0") || pipeasio_ascii_equal_ci(value, "false")
+-        || pipeasio_ascii_equal_ci(value, "off") || pipeasio_ascii_equal_ci(value, "no"))
++        || pipeasio_ascii_equal_ci(value, "off") || pipeasio_ascii_equal_ci(value, "no")
++        || pipeasio_ascii_equal_ci(value, "disabled"))
+     {
+         *result = false;
+         return true;
+     }
+     return false;
+ }
++
++/* Strict boolean toggle for PIPEASIO_* environment variables.  One parser
++ * serves the PE and Unix halves so case and token handling cannot diverge.
++ * Returns 1/0, or -1 when value is unset or not a recognised boolean. */
++static inline int
++pipeasio_env_bool(const char *value)
++{
++    bool result;
++    return pipeasio_parse_bool(value, &result) ? (result ? 1 : 0) : -1;
++}
 diff --git a/include/pipeasio_offsets.h b/include/pipeasio_offsets.h
 index 7fa36f5..eaf2226 100644
 --- a/include/pipeasio_offsets.h
@@ -778,12 +794,12 @@ index f3d9d9e..299566d 100644
          && pipeasio_parse_bool(environment_variable, &flag))
          This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
 +    /* The backend checks the same variable in audio.c; both halves go
-+     * through the one case-insensitive parser (pipeasio_env_on_off) because
++     * through the one strict boolean parser (pipeasio_env_bool) because
 +     * the two sides disagreeing splits the mute from the adopt path. */
 +    if (read_environment("PIPEASIO_ALLOW_QUANTUM_MISMATCH", environment_variable,
 +                         sizeof(environment_variable)))
 +        This->pipeasio_allow_quantum_mismatch
-+                = pipeasio_env_on_off(environment_variable) == 1 ? TRUE : FALSE;
++                = pipeasio_env_bool(environment_variable) == 1 ? TRUE : FALSE;
      if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
                           sizeof(environment_variable)))
      {
@@ -846,7 +862,7 @@ index 06d82c2..b609985 100644
 +     * keeps this half in step with the PE side reading the same variable
 +     * (pipeasio-quantum-converge). */
 +    c->allow_quantum_mismatch
-+            = pipeasio_env_on_off(getenv("PIPEASIO_ALLOW_QUANTUM_MISMATCH")) == 1;
++            = pipeasio_env_bool(getenv("PIPEASIO_ALLOW_QUANTUM_MISMATCH")) == 1;
 +
      const size_t bsize_samples = c->buffer_size;
      const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
@@ -1366,14 +1382,84 @@ index 8674abe..f3b0a09 100644
  };
  _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0])
                         == PAU_CALL_COUNT,
+diff --git a/tests/asio_loopback/run.sh b/tests/asio_loopback/run.sh
+index 3bccb80..a875a7e 100755
+--- a/tests/asio_loopback/run.sh
++++ b/tests/asio_loopback/run.sh
+@@ -109,6 +109,7 @@ export PIPEASIO_CLIENT_NAME="$node"
+ export PIPEASIO_CONNECT_TO_HARDWARE=off
+ export PIPEASIO_FIXED_BUFFERSIZE=off
+ export PIPEASIO_FOLLOW_DEVICE_CLOCK=off
++export PIPEASIO_ALLOW_QUANTUM_MISMATCH=off
+ export PIPEASIO_NUMBER_INPUTS=2
+ export PIPEASIO_NUMBER_OUTPUTS=2
+
+diff --git a/tests/asio_probe/run.sh b/tests/asio_probe/run.sh
+index 4d3de8f..bd4d950 100755
+--- a/tests/asio_probe/run.sh
++++ b/tests/asio_probe/run.sh
+@@ -108,7 +108,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_PREFERRED_BUFFERSIZE PIPEASIO_SAMPLE_RATE \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+-                PIPEASIO_CONNECT_TO_HARDWARE; do
++                PIPEASIO_CONNECT_TO_HARDWARE \
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/asio_probe/run32.sh b/tests/asio_probe/run32.sh
+index 377338e..c043ba9 100755
+--- a/tests/asio_probe/run32.sh
++++ b/tests/asio_probe/run32.sh
+@@ -93,7 +93,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_PREFERRED_BUFFERSIZE PIPEASIO_SAMPLE_RATE \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+-                PIPEASIO_CONNECT_TO_HARDWARE; do
++                PIPEASIO_CONNECT_TO_HARDWARE \
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
 diff --git a/tests/unit/test_config.c b/tests/unit/test_config.c
-index 04b7f63..912b303 100644
+index 04b7f63..af6c7e8 100644
 --- a/tests/unit/test_config.c
 +++ b/tests/unit/test_config.c
-@@ -169,6 +169,60 @@ main(void)
+@@ -169,6 +169,90 @@ main(void)
          }
      }
 
++    TEST_GROUP("strict shared environment booleans")
++    {
++        static const struct
++        {
++            const char *text;
++            int         expected;
++        } cases[] = {
++            { "1", 1 },        { "true", 1 },     { "TRUE", 1 },
++            { "yes", 1 },      { "YeS", 1 },      { "on", 1 },
++            { "ON", 1 },       { "enabled", 1 },  { "ENABLED", 1 },
++            { " enabled ", 1 },
++            { "0", 0 },        { "false", 0 },    { "FALSE", 0 },
++            { "no", 0 },       { "No", 0 },       { "off", 0 },
++            { "OFF", 0 },      { "disabled", 0 }, { "DISABLED", 0 },
++            { " disabled ", 0 },
++            { NULL, -1 },       { "", -1 },        { "   ", -1 },
++            { "2", -1 },       { "enable", -1 },  { "disable", -1 },
++            { "truthy", -1 },  { "onward", -1 },  { "disabledx", -1 },
++        };
++        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i)
++            EXPECT_EQ(pipeasio_env_bool(cases[i].text), cases[i].expected);
++
++        bool unchanged = true;
++        EXPECT_TRUE(!pipeasio_parse_bool("invalid", &unchanged));
++        EXPECT_TRUE(unchanged);
++        unchanged = false;
++        EXPECT_TRUE(!pipeasio_parse_bool("invalid", &unchanged));
++        EXPECT_TRUE(!unchanged);
++    }
++
 +    /* A cached foreign node remains alive while node.force-quantum changes.
 +     * The aggregate counter must follow 0 -> Q -> Q -> 0 without relying on
 +     * registry removal to clear the state. */

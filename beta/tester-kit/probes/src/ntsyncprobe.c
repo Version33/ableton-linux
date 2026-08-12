@@ -5,7 +5,7 @@
  * abandoned mutexes, APC delivery, cross-process named objects. Then
  * measures event ping-pong and semaphore churn, which proxy Live's
  * per-buffer audio-worker wakeups; a build without ntsync lands an order
- * of magnitude lower (notes/ABLETON-WINE-NTSYNC-REGRESSION.md).
+ * of magnitude lower.
  *
  * output: ntsyncprobe.txt in cwd, "ok"/"FAIL"/"info" lines + SUMMARY.
  * exit code: number of failed assertions.  "--child": cross-process helper.

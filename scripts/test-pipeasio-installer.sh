@@ -115,8 +115,12 @@ preflight_fails()
 
 preflight_ok 1.4.2 1.4.2 || fail "exact PipeWire floor was refused"
 preflight_ok 1.4.2-1 1.4.2+distribution || fail "valid PipeWire version suffix was refused"
+preflight_ok 1.4.2-1~ubuntu 1.4.2+distribution || fail "distro suffix at the PipeWire floor was refused"
+preflight_ok 1.4.3~rc1 1.5.0~beta1 || fail "prerelease above the PipeWire floor was refused"
 preflight_ok 1.4.11 1.6.8 || fail "supported PipeWire versions were refused"
 preflight_ok 2.0.0 2.1.3 || fail "later PipeWire major versions were refused"
+preflight_fails 1.4.2~rc1 1.6.8 || fail "loaded-client prerelease at the final floor was accepted"
+preflight_fails 1.6.8 1.4.2~rc1 || fail "daemon prerelease at the final floor was accepted"
 preflight_fails 1.4.1 1.6.8 || fail "old loaded client was accepted"
 preflight_fails 1.6.8 1.4.1 || fail "old daemon was accepted"
 preflight_fails 1.0.5 1.0.5 || fail "Ubuntu/Mint PipeWire 1.0.5 was accepted"
@@ -1205,23 +1209,21 @@ run_user_rollback()
         "$@" bash "$here/rollback.sh"
 }
 
-reverse_target_authorised_on_exit()
+transaction_target_authorised_on_exit()
 {
-    local base="$1" candidate
-    candidate="$base/runtime-rollback-check"
+    local base="$1" target="$2"
     run_isolated "$base" env \
         ABLETON_WINE_ROOT="$base/runtime" \
         ABLETON_WINEPREFIX="$base/prefix" \
-        CANDIDATE="$candidate" bash -c '
+        TRANSACTION_TARGET="$target" bash -c '
         set -euo pipefail
         . "$1/lib/config.sh"
         ableton_config_init
         . "$1/lib/manifest.sh"
-        target="$CANDIDATE/.ableton-linux-rollback/metadata"
         check_on_exit()
         {
             trap - EXIT
-            ableton_txn_target_allowed present "$target" /unused || exit 1
+            ableton_txn_target_allowed present "$TRANSACTION_TARGET" /unused || exit 1
             exit 0
         }
         trap check_on_exit EXIT
@@ -1233,13 +1235,26 @@ base="$(new_env reverse-target-exit)"
 candidate="$base/runtime-rollback-check"
 mkdir -p -- "$candidate/.ableton-linux-rollback"
 printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$candidate/.ableton-linux-runtime"
-reverse_target_authorised_on_exit "$base" \
+transaction_target_authorised_on_exit \
+    "$base" "$candidate/.ableton-linux-rollback/metadata" \
     || fail "valid reverse-runtime metadata target was refused during failure recovery"
 printf 'format=1\nmalformed=yes\n' > "$candidate/.ableton-linux-runtime"
-if reverse_target_authorised_on_exit "$base"; then
+if transaction_target_authorised_on_exit \
+    "$base" "$candidate/.ableton-linux-rollback/metadata"; then
     fail "malformed reverse-runtime marker authorised a recovery target"
 fi
 ok "failure recovery accepts only metadata inside an exactly marked reverse runtime"
+
+base="$(new_env prestate-target-exit)"
+prestate="$base/xdg/state/ableton-wine/install-prestate"
+mkdir -p -- "$prestate"
+valid_prestate="$prestate/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+transaction_target_authorised_on_exit "$base" "$valid_prestate" \
+    || fail "valid pre-install backup target was refused during failure recovery"
+if transaction_target_authorised_on_exit "$base" "$prestate/not-a-digest"; then
+    fail "malformed pre-install backup target was authorised during failure recovery"
+fi
+ok "failure recovery accepts only exact pre-install backup slots from an EXIT trap"
 
 base="$(new_env staged-prefix-register)"
 make_registry_runtime "$base"
