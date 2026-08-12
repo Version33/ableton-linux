@@ -61,24 +61,42 @@ find_live_exe()
         done | sort -V
     fi
 }
-mapfile -t live_candidates < <(find_live_exe "${ABLETON_LIVE_VERSION:-}") || exit $?
-[ "${#live_candidates[@]}" -gt 0 ] || {
-    echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
-    exit 1
-}
-live_exe_unix="${live_candidates[-1]}"
-live_count="${#live_candidates[@]}"
-exe_base="$(basename "$live_exe_unix")"
-if [ "$live_count" -gt 1 ] && [ -z "${ABLETON_LIVE_EXE:-}" ]; then
-    live_majors="$(printf '%s\n' "${live_candidates[@]}" | while IFS= read -r f; do basename "$f"; done | awk '{print $3}' | sort -u | paste -sd' ' -)"
-    if [ "$(printf '%s' "$live_majors" | wc -w)" -eq 1 ]; then
-        echo "ableton-live: multiple Live $live_majors editions are installed; set ABLETON_LIVE_EXE explicitly:" >&2
-        printf 'ableton-live:   %s\n' "${live_candidates[@]}" >&2
-        exit 1
-    fi
+# Protocol and licence callbacks belong to the prefix registry.  They do not
+# need launcher-side Live discovery, and discovery must not block them when a
+# prefix contains more than one edition of the same major version.
+callback_kind=""
+if [ "$#" -eq 1 ]; then
+    case "$1" in
+        [aA][bB][lL][eE][tT][oO][nN]:*) callback_kind=protocol ;;
+        *.[aA][uU][zZ]) [ -f "$1" ] && callback_kind=auz ;;
+    esac
 fi
-rel="${live_exe_unix#"$WINEPREFIX/drive_c/"}"
-if [ "$rel" != "$live_exe_unix" ]; then EXE="C:\\${rel//\//\\}"; else EXE="$live_exe_unix"; fi
+
+live_candidates=()
+live_exe_unix=""
+live_count=0
+exe_base=""
+EXE=""
+if [ -z "$callback_kind" ]; then
+    mapfile -t live_candidates < <(find_live_exe "${ABLETON_LIVE_VERSION:-}") || exit $?
+    [ "${#live_candidates[@]}" -gt 0 ] || {
+        echo "ableton-live: no Ableton Live installation found in $WINEPREFIX" >&2
+        exit 1
+    }
+    live_exe_unix="${live_candidates[-1]}"
+    live_count="${#live_candidates[@]}"
+    exe_base="$(basename "$live_exe_unix")"
+    if [ "$live_count" -gt 1 ] && [ -z "${ABLETON_LIVE_EXE:-}" ]; then
+        live_majors="$(printf '%s\n' "${live_candidates[@]}" | while IFS= read -r f; do basename "$f"; done | awk '{print $3}' | sort -u | paste -sd' ' -)"
+        if [ "$(printf '%s' "$live_majors" | wc -w)" -eq 1 ]; then
+            echo "ableton-live: multiple Live $live_majors editions are installed; set ABLETON_LIVE_EXE explicitly:" >&2
+            printf 'ableton-live:   %s\n' "${live_candidates[@]}" >&2
+            exit 1
+        fi
+    fi
+    rel="${live_exe_unix#"$WINEPREFIX/drive_c/"}"
+    if [ "$rel" != "$live_exe_unix" ]; then EXE="C:\\${rel//\//\\}"; else EXE="$live_exe_unix"; fi
+fi
 
 caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 
@@ -142,34 +160,53 @@ fi
 # mandatory: nothing under Wine can sandbox the renderer. User-supplied flags come first.
 export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:+$WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS }--use-gl=angle --use-angle=swiftshader --disable-gpu-compositing --disable-gpu-rasterization --disable-direct-composition --disable-features=ForceSWDCompWhenDCompFallbackRequired --edge-webview-foreground-boost-opt-out --no-sandbox"
 
-# Reinstate the authorisation handler entries when a foreign prefix took them
-# over: winemenubuilder (disabled in kit prefixes, live everywhere else, e.g.
-# in a scratch prefix holding a Live beta) exports handlers under the same
-# canonical names with `env WINEPREFIX=<prefix> wine start` Exec lines, which
-# target stock wine and the wrong prefix. Online authorisation then never
-# reaches this install. install.sh stages the canonical entries; missing or
-# winemenubuilder-signed copies are replaced and the defaults re-pinned.
-# Hand-edited entries stay. See notes/ABLETON-WINE-ONLINE-AUTH.md.
+# Reinstate the project-owned authorisation handlers and pin their defaults on
+# every launch.  The reverse-DNS desktop IDs cannot collide with Wine's global
+# wine-protocol-*.desktop exports.  install.sh stages authoritative copies so a
+# missing or changed entry can be repaired before the next browser round trip.
 repair_handler_entries() {
     local apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    local staged d repaired=0
-    for d in wine-protocol-ableton wine-extension-auz; do
-        staged="$ABLETON_DATA_HOME/$d.desktop"
-        [ -f "$staged" ] || continue
-        if [ ! -f "$apps/$d.desktop" ] \
-            || grep -qE '^Exec=env .*WINEPREFIX=.* wine start ' "$apps/$d.desktop"; then
-            echo "ableton-live: reinstating $d.desktop (a foreign wine prefix took the handler over)" >&2
-            mkdir -p "$apps"
-            cp "$staged" "$apps/$d.desktop"
+    local staged id type current i repaired=0
+    local -a ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
+    local -a types=(x-scheme-handler/ableton application/x-wine-extension-auz)
+    for id in "${ids[@]}"; do
+        staged="$ABLETON_DATA_HOME/$id"
+        if [ ! -f "$staged" ]; then
+            echo "ableton-live: cannot repair $id: staged handler is missing at $staged" >&2
+            continue
+        fi
+        if ! cmp -s -- "$staged" "$apps/$id"; then
+            echo "ableton-live: reinstating project handler $id" >&2
+            if ! mkdir -p -- "$apps" || ! cp -- "$staged" "$apps/$id"; then
+                echo "ableton-live: failed to install $apps/$id" >&2
+                continue
+            fi
             repaired=1
         fi
     done
-    [ "$repaired" -eq 1 ] || return 0
-    update-desktop-database "$apps" 2>/dev/null || true
-    if command -v xdg-mime >/dev/null 2>&1; then
-        xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton 2>/dev/null || true
-        xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz 2>/dev/null || true
+    if [ "$repaired" -eq 1 ]; then
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database "$apps" || \
+                echo "ableton-live: failed to refresh the desktop application database at $apps" >&2
+        else
+            echo "ableton-live: update-desktop-database is unavailable; repaired handlers may not be visible yet" >&2
+        fi
     fi
+    if ! command -v xdg-mime >/dev/null 2>&1; then
+        echo "ableton-live: xdg-mime is unavailable; cannot verify the Ableton callback defaults" >&2
+        return 0
+    fi
+    for ((i=0; i<${#ids[@]}; i++)); do
+        id="${ids[i]}"; type="${types[i]}"
+        if ! xdg-mime default "$id" "$type"; then
+            echo "ableton-live: failed to set $type to $id" >&2
+            continue
+        fi
+        current="$(xdg-mime query default "$type" 2>/dev/null || true)"
+        if [ "$current" != "$id" ]; then
+            echo "ableton-live: $type still resolves to '${current:-no handler}', expected $id" >&2
+        fi
+    done
 }
 repair_handler_entries
 
@@ -1008,7 +1045,11 @@ launch_command()
     wait "$child"
 }
 
-if [ -n "${ABLETON_VDESK:-}" ]; then
+if [ "$callback_kind" = protocol ]; then
+    launch_command "${run[@]}" start /w "$1"
+elif [ "$callback_kind" = auz ]; then
+    launch_command "${run[@]}" start /w /unix "$1"
+elif [ -n "${ABLETON_VDESK:-}" ]; then
     require_live
     launch_command "${run[@]}" explorer "/desktop=AbletonLive,${ABLETON_VDESK}" "$EXE"
 elif [ "$#" -gt 0 ]; then

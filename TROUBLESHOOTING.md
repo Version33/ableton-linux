@@ -24,6 +24,76 @@ setup used to wait for it. Releases newer than 2026.08.04.1 stop the
 helper themselves and remove its autostart entry, so the wait clears after
 about half a minute and the stop does not come back.
 
+## Online authorisation does not return to Live
+
+First, download
+[the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and update the project:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+Start Live once from the applications menu, then try online authorisation
+again. If the browser still does not return to Live, check these in order:
+
+1. Confirm that this project's handler is active:
+
+   ```bash
+   xdg-mime query default x-scheme-handler/ableton
+   ```
+
+   The command should print
+   `io.github.shibco.ableton-linux.protocol.desktop`.
+
+2. Test the launcher with a fake address:
+
+   ```bash
+   ableton-live 'ableton://invalid-ableton-linux-probe'
+   ```
+
+3. Test the desktop handoff with the same fake address:
+
+   ```bash
+   xdg-open 'ableton://invalid-ableton-linux-probe'
+   ```
+
+The fake address cannot authorise Live. Both test commands should open it. If
+the first works and the second fails, log out and back in, then repeat both
+tests. If both work but the browser still fails, try a fresh browser profile.
+You can also compare the browser supplied by your distribution with its
+Flatpak or Snap package.
+
+Never share a real authorisation address or `.auz` file. When you
+[open an issue](https://github.com/shibco/ableton-linux/issues), include the
+handler result, your browser package, and whether each fake-address test
+opened Live.
+
+## Live cannot save a clip or track in the Browser
+
+First, drag the same clip or track into the User Library. If that works, Live
+cannot write to the original folder. Check it with:
+
+```bash
+test -w "/path/to/folder" && echo writable || echo not-writable
+stat -f -c 'filesystem=%T' -- "/path/to/folder"
+```
+
+Choose another folder or correct its ownership if the first command prints
+`not-writable`. System folders and read-only mounts cannot accept new Live
+files. The Nix store at `/nix/store` is also read-only.
+
+If the folder is writable and the User Library also fails, run the Linux
+profiler from a repository checkout:
+
+```bash
+env ABLETON_LIBRARY_PATH="/path/to/folder" ./beta/scripts/ableton-linux-profiler.sh
+```
+
+The profiler does not print the folder path. When you
+[open an issue](https://github.com/shibco/ableton-linux/issues), include its
+output, your Live version and edition, and whether the User Library worked.
+
 ## Live has no sound
 
 Open **Settings > Audio** and select:
@@ -189,19 +259,20 @@ at realtime priority, and tells the system to avoid moving Live's memory to
 swap. Log out and back in after it completes. Run
 `env ABLETON_RT=off ableton-live` to compare normal scheduling.
 
-While Live runs, the launcher also holds the computer in its fastest power
-mode, and releases it when Live exits, so battery use stays normal while
+While Live runs, the launcher will set your computer to its fastest power
+mode, and release that mode when Live exits, so battery use stays normal while
 Live is closed. This uses the `power-profiles-daemon` service, which GNOME
-and KDE ship by default. Run `env ABLETON_POWER=off ableton-live` to
-compare a launch without it.
+and KDE ship by default. If you're having issues with this, you can run
+Live without this feature: `env ABLETON_POWER=off ableton-live`.
+
+You will
 
 On Pop!_OS and other System76 computers, do not install the
 `power-profiles-daemon` package. The package manager removes the System76
-power management tools to make room for it. Use the power settings in your
-desktop instead.
+power management tools to make room for it. For now, you will need to manually set the performance profile yourself.
 
 Earlier releases kept the CPU at full speed from every boot instead.
-Remove that old boot setting with:
+If this is happening to you, you can remove that old boot setting with:
 
 ```bash
 sudo systemctl disable ableton-cpufreq-performance.service
@@ -254,7 +325,7 @@ Start Live with this command:
 env ABLETON_SHORTCUTS=take ableton-live
 ```
 
-The launcher turns off only the exact Ctrl+Alt entries in conflict. It keeps
+The launcher turns off the Ctrl+Alt entries in conflict. It keeps
 other keys and modifiers in the same settings. It restores the saved entries
 after all Live sessions exit. It can also restore them after a crash. If you
 change a shortcut while Live runs, it keeps your change.

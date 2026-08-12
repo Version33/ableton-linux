@@ -56,8 +56,12 @@ ableton_legacy_owned_path()
         "$ABLETON_DATA_HOME/ableton-linkctl") grep -qF 'Project-owned Ableton Link lifecycle controller' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/ableton-linkd.service") grep -qF 'ableton-linkd' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/VERSION") grep -Eq '^20[0-9]{2}[.]' "$path" 2>/dev/null ;;
-        "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|"$ABLETON_DATA_HOME/wine-extension-auz.desktop")
+        "$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
+        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID")
             grep -Eqi 'ableton|auz' "$path" 2>/dev/null ;;
+        "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|\
+        "$ABLETON_DATA_HOME/wine-extension-auz.desktop")
+            grep -Eq '^Exec=.*/ableton-live (%u|%f)$' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/detect-scale.sh") grep -qF 'Sourceable display-scale detection' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/detect-theme.sh") grep -qF 'Sourceable theme detection helpers' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/shortcut-hold.sh") grep -qF 'GNOME shortcut hold' "$path" 2>/dev/null ;;
@@ -66,10 +70,13 @@ ableton_legacy_owned_path()
         "$ABLETON_BIN_HOME/max9") grep -qF 'Max 9 launcher' "$path" 2>/dev/null ;;
         "$data_root/applications/ableton-live.desktop"|\
         "$data_root/applications/max9.desktop"|\
-        "$data_root/applications/wine-protocol-ableton.desktop"|\
-        "$data_root/applications/wine-extension-auz.desktop"|\
+        "$data_root/applications/$ABLETON_PROTOCOL_DESKTOP_ID"|\
+        "$data_root/applications/$ABLETON_AUZ_DESKTOP_ID"|\
         "$data_root/applications/wine-protocol-c74max.desktop")
             grep -Eqi 'ableton|c74max' "$path" 2>/dev/null ;;
+        "$data_root/applications/wine-protocol-ableton.desktop"|\
+        "$data_root/applications/wine-extension-auz.desktop")
+            grep -Eq '^Exec=.*/ableton-live (%u|%f)$' "$path" 2>/dev/null ;;
         "$data_root/mime/packages/x-wine-extension-auz.xml"|\
         "$data_root/mime/packages/application-ableton-live.xml")
             grep -qF 'ableton' "$path" 2>/dev/null ;;
@@ -132,6 +139,9 @@ ableton_remove_managed_file()
     local target="$1"
     ableton_txn_snapshot "$target"
     rm -f -- "$target"
+    # Mark the path as touched so an older ownership record is retired when
+    # the new manifest is written.
+    ableton_record_owned "$target"
 }
 
 ableton_write_ownership_manifest()

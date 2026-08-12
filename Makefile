@@ -17,6 +17,7 @@ uninstall:                    ## remove installed Wine tree + launcher
 
 test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-shortcut-hold.sh
+	./scripts/test-desktop-integration.sh
 	./scripts/test-installer-lifecycle.sh
 
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup
