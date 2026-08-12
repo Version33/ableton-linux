@@ -123,11 +123,9 @@ confirmed failure mode.
 ## Live's "Enable GPU Renderer" setting is greyed out
 
 If you're experiencing performance issues or high CPU usage when idle, Live
-may not be using your GPU. By default, Live will always offload the UI to
-your GPU for maximum performance, but will only do so when it recognises
-the name of your GPU. On Linux, GPUs will 'tell' Live their name without
-any external interference, and because Live is anticipating that interference,
-it may not recognise the GPU's name and refuse to use the GPU.
+may not be using your GPU. Live only uses graphics chips it recognises, and
+when this project cannot identify your chip, Live sees an old model it
+refuses to use.
 
 To confirm this problem, open **Settings > Display & Input**. 
 If **Enable GPU Renderer** is greyed out, and the note under it names a 
@@ -148,9 +146,18 @@ Start Live, open **Settings > Display & Input**, and turn on **Enable GPU
 Renderer**. Live now names your real graphics card, and the setting stays
 on.
 
-If the setting is still greyed out on 2026.08.01.1 or newer,
-[open an issue](https://github.com/shibco/ableton-linux/issues) and
-include your graphics card model.
+If the setting is still greyed out, start Live with:
+
+```bash
+env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live
+```
+
+Please note: while you use this flag, any report you send to Ableton names
+a different graphics card model than yours. Start Live without the flag to
+go back.
+
+If problems continue, [open an issue](https://github.com/shibco/ableton-linux/issues)
+and include your graphics card model.
 
 ## CPU spikes when moving your mouse
 

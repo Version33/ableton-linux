@@ -18,6 +18,18 @@
   package manager removes the System76 power tools to install it.
 - ableton-linkd rejects fractional `--linger` values instead of
   truncating them toward the never-exit setting.
+- Live's GPU renderer is available on the Intel graphics built into 2015
+  through 2019 processors (Wine patch 0066). Wine's device table skipped 24
+  of those models, among them the UHD Graphics 630, and reported each as a
+  2012 model Live refuses.
+- Graphics cards missing from Wine's device table keep their real identity
+  even when the driver reports no video memory, instead of falling back to
+  that refused 2012 model (Wine patch 0067).
+- Added `WINE_D3D_FORCE_GPU_RENDERING=1`, which offers Live's GPU renderer
+  on the older Intel graphics Live refuses by model (Wine patch 0068). Run
+  `env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live` to try it. Reports sent
+  to Ableton then name a different GPU model, and the device name Live
+  shows marks the substitution.
 
 ## 2026.08.08.1
 

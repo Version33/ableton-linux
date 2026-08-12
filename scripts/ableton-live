@@ -12,7 +12,9 @@
 #            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
 #            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix).
+#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
+#            WINE_D3D_FORCE_GPU_RENDERING=1 (offer Live's GPU renderer on Intel models its
+#              list refuses; the device name Live shows discloses the substitution).
 set -u
 
 # Immutable preflight.  Nothing above the success boundary below creates a
