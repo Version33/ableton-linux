@@ -115,6 +115,11 @@ jobs:
             [ ! -e "$path" ] || sudo chown -R "$owner" "$path"
           done
 
+      - name: Install installer test requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cabextract
+
       - name: Test installer and launcher lifecycle
         run: make test
 
