@@ -14,12 +14,17 @@
  *   down / up              pen tip press / release at current pos
  *   click <fx> <fy>        move + tap
  *   dblclick <fx> <fy>     move + double tap
+ *   rel <dx> <dy>          move the relative mouse
+ *   btn <action> [button]  hold, release, or click left/middle/right
+ *                          (action: down, up, or click; default: left)
+ *   wheel <notches>        vertical physical wheel (+ is up)
+ *   hwheel <notches>       horizontal physical wheel (+ is right)
  *   key <spec>             e.g. "key ctrl+q", "key f", "key enter"
  *   keydown <name> / keyup <name>
  *   sleep <ms>
  *   quit                   destroy devices and exit (EOF works too)
  *
- * build: gcc -O2 -o uclick uclick.c
+ * build: gcc -O2 -Wall -Wextra -Werror -o uclick uclick.c
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +32,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <limits.h>
 #include <linux/uinput.h>
 
 static int pen_fd = -1, kbd_fd = -1, mouse_fd = -1;
@@ -106,6 +112,7 @@ static int make_mouse( void )
     ioctl( fd, UI_SET_RELBIT, REL_X );
     ioctl( fd, UI_SET_RELBIT, REL_Y );
     ioctl( fd, UI_SET_RELBIT, REL_WHEEL );
+    ioctl( fd, UI_SET_RELBIT, REL_HWHEEL );
 
     memset( &us, 0, sizeof(us) );
     us.id.bustype = BUS_USB; us.id.vendor = 0x1234; us.id.product = 0x567a;
@@ -160,6 +167,26 @@ static int keycode( const char *name )
     for (i = 0; KEYS[i].name; i++)
         if (!strcmp( KEYS[i].name, name )) return KEYS[i].code;
     return -1;
+}
+
+static int mouse_button_code( const char *name )
+{
+    if (!name[0] || !strcmp( name, "left" )) return BTN_LEFT;
+    if (!strcmp( name, "middle" )) return BTN_MIDDLE;
+    if (!strcmp( name, "right" )) return BTN_RIGHT;
+    return -1;
+}
+
+static int parse_int( const char *text, int *value )
+{
+    char *end;
+    long parsed;
+
+    errno = 0;
+    parsed = strtol( text, &end, 10 );
+    if (errno || !text[0] || *end || parsed < INT_MIN || parsed > INT_MAX) return 0;
+    *value = parsed;
+    return 1;
 }
 
 /* "ctrl+shift+t" → press mods+key, release in reverse */
@@ -231,8 +258,13 @@ int main( void )
             msleep( 30 );
         }
         else if (!strcmp( cmd, "btn" ) && arg1[0])
-        {   /* btn down|up|click [right] */
-            int code = !strcmp( arg2, "right" ) ? BTN_RIGHT : BTN_LEFT;
+        {   /* btn down|up|click [left|middle|right] */
+            int code = mouse_button_code( arg2 );
+            if (code < 0)
+            {
+                fprintf( stderr, "unknown mouse button '%s'\n", arg2 );
+                continue;
+            }
             if (!strcmp( arg1, "down" )) { emit_ev( mouse_fd, EV_KEY, code, 1 ); syn( mouse_fd ); }
             else if (!strcmp( arg1, "up" )) { emit_ev( mouse_fd, EV_KEY, code, 0 ); syn( mouse_fd ); }
             else if (!strcmp( arg1, "click" ))
@@ -240,6 +272,25 @@ int main( void )
                 emit_ev( mouse_fd, EV_KEY, code, 1 ); syn( mouse_fd ); msleep( 70 );
                 emit_ev( mouse_fd, EV_KEY, code, 0 ); syn( mouse_fd );
             }
+            else
+            {
+                fprintf( stderr, "unknown mouse button action '%s'\n", arg1 );
+                continue;
+            }
+            msleep( 50 );
+        }
+        else if ((!strcmp( cmd, "wheel" ) || !strcmp( cmd, "hwheel" )) && arg1[0])
+        {
+            int notches;
+            int code = cmd[0] == 'h' ? REL_HWHEEL : REL_WHEEL;
+
+            if (!parse_int( arg1, &notches ) || !notches)
+            {
+                fprintf( stderr, "wheel notches must be a non-zero integer: '%s'\n", arg1 );
+                continue;
+            }
+            emit_ev( mouse_fd, EV_REL, code, notches );
+            syn( mouse_fd );
             msleep( 50 );
         }
         else if (!strcmp( cmd, "key" ) && arg1[0])   key_combo( arg1 );
@@ -255,6 +306,11 @@ int main( void )
 
     /* release pen proximity before teardown */
     emit_ev( pen_fd, EV_KEY, BTN_TOOL_PEN, 0 ); syn( pen_fd );
+    emit_ev( mouse_fd, EV_KEY, BTN_LEFT, 0 );
+    emit_ev( mouse_fd, EV_KEY, BTN_MIDDLE, 0 );
+    emit_ev( mouse_fd, EV_KEY, BTN_RIGHT, 0 );
+    syn( mouse_fd );
+    msleep( 50 );
     ioctl( pen_fd, UI_DEV_DESTROY ); close( pen_fd );
     ioctl( kbd_fd, UI_DEV_DESTROY ); close( kbd_fd );
     ioctl( mouse_fd, UI_DEV_DESTROY ); close( mouse_fd );

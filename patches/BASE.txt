@@ -11,10 +11,10 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 84 files, numbered 0001 through 0089.
-Patches 0027 and 0044 are intentionally absent. Numbers 0072 through 0074
-are reserved by open pull requests and will enter this branch as those
-merge.
+The current Wine series contains 93 files, numbered 0001 through 0095.
+Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
+once numbered 0066 and 0067 now appear after the gesture patches as 0093
+and 0094, because 0066 through 0068 were held for this GPU series.
 
 ## Applying the series
 
@@ -283,6 +283,16 @@ Apply them in sequence with the rest of the series.
   an unconditional MESSAGE line, and prints a one-line summary when the
   swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0072`: add six pointer settings and middle-button drag navigation. Keep
+  normal middle clicks and correct the pointer position after a drag. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0073`: report vertical and horizontal wheel movement at the pointer's screen
+  position. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0074`: convert touchpad pinch to Ctrl+wheel without Ctrl key events and
+  keep the zoom at the window and point where it began. Limit each update to
+  one wheel step and stop it while a mouse button is held. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
   raised EXCEPTION_WINE_STUB during exit teardown. Fakes success to
@@ -385,3 +395,37 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
+- `0090`: add fine vertical and horizontal scrolling. Keep each update at its
+  starting point, ignore large jumps, and clear saved movement when the focus,
+  window, pointer control, or device changes. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0091`: add bounded continued movement after a fast scroll or middle-button
+  drag. Keep it at its starting point and stop it on new input or a window
+  change.
+  See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0092`: stop old scroll, zoom, or continued movement from reaching a control
+  after a button press. Keep ignored movement from catching up after release
+  and limit middle-button navigation to its own held button. Add the
+  `update_driver_button` request, grow `union message_data` from 48 to 56 bytes,
+  regenerate the protocol files, and raise `SERVER_PROTOCOL_VERSION` from 957
+  to 961. Patch 0095 restores normal wheel use while a button is held without
+  weakening the checks for older movement. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0093`: clear old pointer state when a Max for Live window loses focus. This
+  stops the device from sending false pointer positions to Live after loading
+  (issue 122). Ported from ClickSentinel commit `ddea297054`; see
+  `notes/ABLETON-WINE-M4L-INPUT-INJECTION.md`.
+- `0094`: add an optional XWayland repair for faders and knobs that move farther
+  than the pointer. It stays off by default and automatic mode waits until it
+  sees the fault twice. Focus, pointer control, device, thread, and button
+  changes stop the repair. Reworked from ClickSentinel commit `d2996582b5`; see
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0095`: give fine-scroll inertia and middle-drag throw separate controls and
+  enable both by default. Continued movement slows more gradually. A short or
+  curved middle-button drag can throw when released. Add the 100 ms scroll
+  fallback. Keep normal wheel steps during a button hold, except
+  during middle-button navigation, while blocking smooth scrolling, pinch and
+  earlier continued movement. Stop continued movement when its input or target
+  changes, and disable it if timing setup fails. Named values ignore letter
+  case; `off` and `0` mean `disabled` where supported. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.

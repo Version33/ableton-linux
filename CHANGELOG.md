@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
+  navigation. A plain middle click remains a click.
+- Touchpad scrolling and pinch zoom cannot move a control while a mouse button
+  is held. A mouse wheel still works except during middle-button navigation,
+  and pressing a button stops earlier continued movement.
+- Added scrolling inertia and middle-drag throw. Both are on by default and
+  have separate off switches. Movement slows gradually after release, and a
+  short or curved middle-button drag can throw. New input or a window change
+  stops it. Live does not replay missed movement after a pause.
+- Added a repair for fader jumps after loading a Max for Live device. Testing
+  on the affected Fedora computer remains open.
+- Added an off-by-default XWayland repair for faders and knobs that move farther
+  than the pointer. Desktop testing remains open.
+- Named pointer values ignore letter case. `off` and `0` work wherever
+  `disabled` works. Invalid settings appear in the normal launch log.
+
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.

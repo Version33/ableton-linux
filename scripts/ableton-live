@@ -14,7 +14,14 @@
 #            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
 #            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
 #            WINE_D3D_FORCE_GPU_RENDERING=1 (offer Live's GPU renderer on Intel models its
-#              list refuses; the device name Live shows discloses the substitution).
+#              list refuses; the device name Live shows discloses the substitution),
+#            WINE_X11_SMOOTH_SCROLLING / WINE_X11_PINCH_ZOOM / WINE_X11_MIDDLE_DRAG /
+#            WINE_X11_TOUCHPAD_INERTIA / WINE_X11_MIDDLE_DRAG_THROW /
+#            WINE_X11_WHEEL_WHILE_BUTTON_HELD / WINE_X11_INERTIA_CURVE /
+#            WINE_X11_INERTIA_RATE / WINE_X11_WARP_EMULATION
+#              (pointer overrides for one launch; registry values hold the persistent
+#              settings, see notes/ABLETON-WINE-POINTER-GESTURES.md; this launcher
+#              exports none of them).
 set -u
 
 # Immutable preflight.  Nothing above the success boundary below creates a

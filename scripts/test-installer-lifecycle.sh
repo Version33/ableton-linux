@@ -18,6 +18,27 @@ fail()
     exit 1
 }
 
+# The suite installs the real build artifacts: the runtime tarball from the
+# runtime-plan check onwards and dist/ableton-linkd from the link-prestate
+# check.  Without this gate a fresh clone dies mid-suite on set -e, the
+# component's message stays in a discarded log, and the terminal shows a few
+# ok lines with no failure line.
+. "$here/lib/config.sh"
+missing=0
+find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
+    ! -name '*-debug.tar.zst' -print -quit 2>/dev/null | grep -q . || {
+    echo "!! missing build artifact: dist/$ABLETON_RUNTIME_NAME-<version>.tar.zst" >&2
+    missing=1
+}
+[ -f "$root/dist/ableton-linkd" ] || [ -f "$root/bin/ableton-linkd" ] || {
+    echo "!! missing build artifact: dist/ableton-linkd" >&2
+    missing=1
+}
+if [ "$missing" -eq 1 ]; then
+    echo "!! run ./build.sh first" >&2
+    fail "prerequisite build artifacts are present"
+fi
+
 new_env()
 {
     local name="$1"
@@ -38,6 +59,26 @@ base="$(new_env help)"
 run_isolated "$base" bash "$here/installer.sh" --help > "$base/out"
 grep -q 'runtime install' "$base/out" || fail "help exposes subcommands"
 ok "help exposes subcommands"
+
+# make-installer's own [5/5] self-check runs --help, which returns before the
+# delegation, so only this case guards the header's exit path.
+base="$(new_env run-header)"
+kit="$base/kit"
+mkdir -p "$kit/scripts"
+printf '#!/bin/sh\nexit "${STUB_EXIT:-0}"\n' > "$kit/scripts/installer.sh"
+tar -cf "$base/payload.tar" -C "$kit" .
+sed -e 's/@VERSION@/suite-check/g' \
+    -e "s/@PAYLOAD_SHA@/$(sha256sum "$base/payload.tar" | awk '{print $1}')/g" \
+    "$here/setup-run-header.sh" > "$base/kit.run"
+cat "$base/payload.tar" >> "$base/kit.run"
+run_isolated "$base" env STUB_EXIT=0 sh "$base/kit.run" >"$base/out" 2>"$base/err" \
+    || fail "a successful delegated install exits zero through the .run header"
+status=0
+run_isolated "$base" env STUB_EXIT=42 sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
+[ "$status" -eq 42 ] || fail "a delegated install failure code passes through the .run header"
+! find "$base/tmp" -mindepth 1 -maxdepth 1 -name 'ableton-installer.*' 2>/dev/null | grep -q . \
+    || fail "the .run header removes its work directory"
+ok "the .run header propagates the delegated installer exit code"
 
 base="$(new_env noninteractive)"
 if run_isolated "$base" bash "$here/installer.sh" >"$base/out" 2>"$base/err"; then
@@ -94,13 +135,15 @@ fi
 ok "runtime-only rejects unrelated Link options before mutation"
 
 base="$(new_env compat-plan)"
-run_isolated "$base" bash "$here/installer.sh" install --no-launch --no-link \
-    --runtime-root "$base/runtime" --prefix "$base/prefix" --live-major 12 --dry-run >"$base/out" 2>"$base/err"
+run_isolated "$base" bash "$here/installer.sh" --no-launch --dry-run >"$base/out" 2>"$base/err"
 grep -q 'write launcher:' "$base/out" || fail "no-launch still means skip Live payload only"
-grep -q 'final Link policy: off' "$base/out" || fail "no-link maps to off"
-! grep -q 'write Link binary:' "$base/out" || fail "link off installs no Link assets"
+grep -q 'final Link policy: off' "$base/out" || fail "no-launch defaults Link off"
+! grep -Eq 'write Link binary:|write Link controller/setup/unit assets:' "$base/out" \
+    || fail "no-launch stages Link assets"
+! grep -Eq 'write ownership-marked user unit|launchers start session daemon|enable/start the owned user unit' "$base/out" \
+    || fail "no-launch plans a Link service action"
 grep -q 'deprecated' "$base/err" || fail "compatibility warning is printed"
-ok "compatibility flags map deterministically to the new contract"
+ok "no-launch compatibility excludes Link assets and service enablement"
 
 base="$(new_env update-policy)"
 mkdir -p "$base/config/ableton-wine" "$base/prefix"
@@ -118,6 +161,15 @@ run_isolated "$base" env ABLETON_DPI_MODE=preserve bash "$here/installer.sh" upd
 grep -q 'final Link policy: off' "$base/out" || fail "update preserves Link opt-out"
 ! grep -q 'write Link binary:' "$base/out" || fail "opted-out update excludes Link assets"
 ok "update preserves the persistent Link opt-out"
+
+base="$(new_env update-no-prefix)"
+if run_isolated "$base" bash "$here/installer.sh" update --dry-run >"$base/out" 2>"$base/err"; then
+    fail "update without an existing prefix fails"
+fi
+grep -q 'update needs an existing prefix' "$base/err" || fail "update without a prefix names the remedy"
+! grep -q -- '--refresh' "$base/err" || fail "update failure avoids the component --refresh flag"
+[ ! -e "$base/config" ] && [ ! -e "$base/state" ] || fail "update without a prefix mutates state"
+ok "update without a prefix fails fast in installer vocabulary"
 
 base="$(new_env mismatch)"
 printf 'Ableton Live 11 installer\n' > "$base/Ableton_Live_11_Installer.exe"
