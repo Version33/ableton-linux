@@ -64,12 +64,18 @@ settings.
 
 ## Run the checks
 
-Run the shortcut and installer lifecycle checks:
+Run the repository checks:
 
 ```bash
+make check
+make verify
 scripts/test-shortcut-hold.sh
 scripts/test-installer-lifecycle.sh
 ```
+
+`make check` inspects the pointer changes and tests their limits with difficult
+input. `make verify` also checks the pinned source files. Neither command starts
+Wine or Live.
 
 Build the Wine menu test with all compiler warnings enabled. Then run its two
 modes:
@@ -80,8 +86,8 @@ winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
 ./altnum-menu-repro.exe pass
 ```
 
-The GNOME test uses temporary data and does not change the desktop settings.
-The Wine test sends keys to its own window. It needs a working Wine display.
+The GNOME check uses temporary data and does not change the desktop settings.
+The Wine check sends keys to its own window. It needs a working Wine display.
 Each mode returns a non-zero status when a required result fails.
 
 ## Configure Ableton Link
@@ -107,26 +113,12 @@ The result is `dist/ableton-wine-setup-<version>.run`. The installer includes
 the runtime, launchers, Ableton Link support, setup scripts, and corresponding
 source required by bundled licences.
 
-Run the pointer safety checks with:
-
-```bash
-make check
-```
-
-These checks inspect the pointer changes and test their limits with difficult
-input. They do not start Wine or Live.
-
-Verify the pinned source inputs and run the same pointer checks with:
-
-```bash
-make verify
-```
-
 ## Environment variables
 
-Command-line options override these variables. Exported variables override the
-persistent XDG configuration, and the persistent configuration overrides the
-compatibility defaults.
+For installer and launcher settings, command-line options override exported
+variables, exported variables override saved XDG settings, and saved settings
+override the defaults. The `WINE_X11_*` values below override saved Wine
+settings for one launch.
 
 - `ABLETON_WINE_ROOT` selects the Wine runtime. The default is
   `~/.local/opt/wine-d2d1-nspa-11.13`.
