@@ -10,7 +10,7 @@ By default, Live provides:
 - pinch zoom;
 - middle-button drag navigation;
 - scrolling inertia after a quick release;
-- continued movement after a quick middle-button drag; and
+- continued movement after releasing a moving middle-button drag; and
 - normal mouse-wheel clicks while another button is held, except during
   middle-button navigation.
 
@@ -32,7 +32,7 @@ KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 | `MiddleDragThrow` | `WINE_X11_MIDDLE_DRAG_THROW` | `enabled` | `disabled`, `enabled` |
 | `WheelWhileButtonHeld` | `WINE_X11_WHEEL_WHILE_BUTTON_HELD` | `enabled` | `disabled`, `enabled` |
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` | `exponential` | `exponential`, `linear` |
-| `InertiaRate` | `WINE_X11_INERTIA_RATE` | `4.0` | 0.5 to 16.0 |
+| `InertiaRate` | `WINE_X11_INERTIA_RATE` | `3.0` | 0.5 to 16.0 |
 | `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `disabled` | `disabled`, `auto`, `enabled` |
 
 The launcher sets none of these variables. A launch variable overrides a saved
@@ -41,6 +41,8 @@ choice for that launch. Named values ignore letter case. `off` and `0` mean
 log, then tries the saved choice or default.
 
 `TouchpadInertia=auto` currently behaves like `disabled` on X11.
+Lower `InertiaRate` values keep continued movement going for longer. Higher
+values stop it sooner.
 
 ## Safety rules
 
@@ -72,19 +74,20 @@ log, then tries the saved choice or default.
 | Maximum starting speed | 1,200 units per second |
 | Largest continued update | 15 units per axis |
 | Maximum continued travel | 480 units per axis, 960 units in total |
-| Maximum continued updates sent to Live | 192 |
+| Maximum continued updates sent to Live | 224 |
 | Maximum continued time | 4 seconds |
-| Movement used to judge a middle-drag throw | Latest 80 ms |
-| Longest pause before middle-button release | 40 ms |
-| Shortest middle drag that can throw | 4 ms |
-| Required movement in the throw direction | 65% |
+| Movement used to judge a middle-drag throw | Latest 120 ms |
+| Longest pause before middle-button release | 80 ms |
+| Time assigned when movement arrives as one update | 24 ms |
+| Minimum end-to-end movement | 4 pixels |
 
 If Wine receives no clear end report, `TouchpadInertia=enabled` may begin
 inertia after 100 ms without more scrolling. This requires the higher start
 speed shown above.
 
-Middle-drag throw starts only when the user releases the middle button. A
-pause, reversal, cancelled drag or extra button press stops it.
+Middle-drag throw starts when the final movement covers at least 4 pixels end
+to end and the user releases within 80 ms. It accepts a short or curved final
+movement. A cancelled drag or extra button press stops it.
 
 ## Source checks
 
@@ -112,14 +115,15 @@ with Live's Master fader low.
 4. Hold the left or right mouse button and turn a physical mouse wheel. The
    wheel must work with the default setting. Repeat with
    `WheelWhileButtonHeld=disabled`; the wheel must stop.
-5. Make a fast smooth scroll. The view must keep moving after release and stay
+5. Make a fast smooth scroll. The view must keep moving, slow gradually and stay
    within the limits above. New input must stop it. Repeat with
    `TouchpadInertia=disabled`; direct scrolling must feel the same but stop with
    the touchpad or wheel.
-6. Release a fast, straight middle-button drag. The view must keep moving only
-   after release. A click, slow drag, pause, reversal or extra button press
-   must not start a throw. Repeat with `MiddleDragThrow=disabled`; direct
-   navigation must remain unchanged and stop at release.
+6. Release a moving middle-button drag. Repeat with a short drag and a gentle
+   curve. The view must keep moving only after release. A click, a drag held
+   still for more than 80 ms, a cancelled drag or an extra button press must
+   not start a throw. Repeat with `MiddleDragThrow=disabled`; direct navigation
+   must remain unchanged and stop at release.
 7. Pinch in and out, including while holding Ctrl. Live must zoom and leave the
    physical Ctrl state unchanged. A cancelled pinch must stop zooming.
 8. If Live pauses while loading a plug-in or browser folder during a fast

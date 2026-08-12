@@ -1,41 +1,39 @@
-From b31ed99d652d47d7d2e58b3c7058f4f6f2ea4c1e Mon Sep 17 00:00:00 2001
+From 8225f3fb0fadde8f64fc68234ed2837a098a77af Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
-Date: Wed, 12 Aug 2026 21:52:00 +0200
-Subject: [PATCH 95/95] winex11: separate fine-scroll inertia and middle-drag
+Date: Wed, 12 Aug 2026 22:58:52 +0200
+Subject: [PATCH 95/95] winex11: improve scrolling inertia and middle-drag
  throw
 
-Keep direct fine scrolling and middle-button navigation enabled. Enable inertia
-and throw by default, with a separate switch for each.
+Keep direct fine scrolling and middle-button navigation enabled. Enable
+inertia and throw by default, with a separate switch for each.
 
-Fine-scroll inertia starts after an end report or after 100 ms without a new
-report. The 100 ms fallback requires twice the normal starting speed.
-Middle-drag throw starts only when the user releases the middle button.
-Pauses, reversals, cancelled drags and extra button presses stop it.
+Start fine-scroll inertia after an end report or after 100 ms without a new
+report. Judge a middle-drag throw from its latest moving release, including
+coalesced movement reports.
 
-Limit each continued message to 15 units, each axis to 480 units, the total to
-960 units and each run to 192 messages. Limit the starting speed to 1,200 units
-per second. Do not replay missed movement after a pause.
+Use a slower default decay of 3.0. Limit each continued message to 15 units,
+each axis to 480 units, the total to 960 units and each run to 224 messages.
+Do not replay missed movement after a pause.
 
 Keep normal wheel clicks working while a user holds a button, except during
 middle-button navigation. Continue to block smooth scrolling, pinch and
-delayed movement during a drag. Ignore duplicate smooth-scroll input.
+delayed movement during a drag.
 
-Accept named values without regard to case. Treat `off` and `0` as `disabled`
-where supported. Report invalid values in the normal log.
+Accept named values without regard to case. Treat off and 0 as disabled where
+supported. Report invalid values in the normal log.
 
-Initialise timing once. Turn continued movement off if setup fails. Keep at
-most one waiting update for each movement and ignore older updates. Stop
-waiting movement when its window changes or closes.
-
+Initialise timing once and turn continued movement off if setup fails. Keep at
+most one waiting update for each movement. Stop it when its input or window
+changes.
 ---
- dlls/winex11.drv/mouse.c       | 731 +++++++++++++++++++++++++--------
+ dlls/winex11.drv/mouse.c       | 730 +++++++++++++++++++++++++--------
  dlls/winex11.drv/window.c      |   5 +-
  dlls/winex11.drv/x11drv.h      |  40 +-
- dlls/winex11.drv/x11drv_main.c |  32 +-
- 4 files changed, 637 insertions(+), 171 deletions(-)
+ dlls/winex11.drv/x11drv_main.c |  34 +-
+ 4 files changed, 637 insertions(+), 172 deletions(-)
 
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 03c06fb..13b4f19 100644
+index 03c06fb..729ec0b 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -338,6 +338,124 @@ static void update_relative_valuators( XIAnyClassInfo **classes, int num_classes
@@ -445,17 +443,17 @@ index 03c06fb..13b4f19 100644
 +#define INERTIA_DEADLINE_MS  100     /* conservative XI2 inactivity end fallback */
  #define INERTIA_RELEASE_GATE_MS 70   /* reject an end marker after movement has rested */
 +#define INERTIA_MIN_SPAN_MS 10       /* minimum timed fine-scroll history */
-+#define MIDDLE_THROW_HISTORY_MS 80   /* recent raw pointer path used at Button2 release */
-+#define MIDDLE_THROW_MAX_GAP_MS 40   /* a pause starts a new terminal-motion suffix */
-+#define MIDDLE_THROW_MIN_SPAN_MS 4   /* reject effectively untimed coalesced motion */
-+#define MIDDLE_THROW_MIN_COHERENCE 0.65 /* reject jitter and reversals near release */
++#define MIDDLE_THROW_HISTORY_MS 120  /* terminal raw pointer path used at Button2 release */
++#define MIDDLE_THROW_MAX_GAP_MS 80   /* a longer pause ends the terminal-motion suffix */
++#define MIDDLE_THROW_FALLBACK_SPAN_MS 24 /* time assigned to an untimed coalesced sample */
++#define MIDDLE_THROW_MIN_DISTANCE 4.0 /* reject a terminal path shorter than four pixels */
  #define INERTIA_TICK_MS      8
  #define INERTIA_MAX_FRAME_MS 16      /* discard movement from older missed frames */
  #define INERTIA_MAX_PACKET   (WHEEL_DELTA / 8)
 -#define INERTIA_MAX_TRAVEL   WHEEL_DELTA
 -#define INERTIA_MAX_MESSAGES 16
 +#define INERTIA_MAX_TRAVEL   (4 * WHEEL_DELTA)
-+#define INERTIA_MAX_MESSAGES 192
++#define INERTIA_MAX_MESSAGES 224
  #define INERTIA_CAP_MS       3000    /* longest coast before the decay is forced steeper */
  #define INERTIA_CAP_RATE     14.0    /* decay rate used after the three-second cap */
  #define INERTIA_START_SPEED  240.0   /* wheel units per second, vector magnitude */
@@ -539,13 +537,13 @@ index 03c06fb..13b4f19 100644
 +         * initialise the condition exactly once, before its only waiter
 +         * exists. Fail closed unless the clock and condition both succeed. */
 +        if ((ret = pthread_condattr_init( &attr )))
-         {
--            pthread_cond_init( &inertia_nudge_cond, &attr );
++        {
 +            WARN( "failed to initialise inertia condition attributes (%d), inertia disabled\n", ret );
 +            inertia_nudge.failed = TRUE;
 +        }
 +        else
-+        {
+         {
+-            pthread_cond_init( &inertia_nudge_cond, &attr );
 +            if ((ret = pthread_condattr_setclock( &attr, CLOCK_MONOTONIC )) ||
 +                (ret = pthread_cond_init( &inertia_nudge_cond, &attr )))
 +            {
@@ -739,7 +737,7 @@ index 03c06fb..13b4f19 100644
              used++;
              continue;
          }
-@@ -3295,18 +3544,117 @@ static void pointer_inertia_evaluate( struct x11drv_thread_data *data, UINT now
+@@ -3295,18 +3544,116 @@ static void pointer_inertia_evaluate( struct x11drv_thread_data *data, UINT now
          used++;
      }
  
@@ -759,60 +757,59 @@ index 03c06fb..13b4f19 100644
 +static BOOL pointer_middle_throw_velocity( struct x11drv_scroll_inertia *si, UINT release_time,
 +                                           double *vx, double *vy )
 +{
-+    double sum_x = 0.0, sum_y = 0.0, path = 0.0, distance, coherence;
-+    UINT first = 0, last = 0, previous = 0, span;
-+    unsigned int i, start = si->count, used = 0;
++    double sum_x = 0.0, sum_y = 0.0, distance;
++    UINT first, last, previous, span;
++    unsigned int i, j, start;
++    BOOL timed_anchor;
 +
-+    /* Measure the terminal window back from the explicit release, so a pause
-+     * ages old movement out. Include one sample immediately before it. Its
-+     * movement is ignored, but its timestamp can time the first in-window
-+     * delta. This also retains the press anchor for a short coalesced flick. */
-+    for (i = 0; i < si->count; i++)
++    if (!si->count)
 +    {
-+        unsigned int j = (si->pos + i) % INERTIA_HISTORY_SIZE;
-+
-+        if (release_time - si->history[j].time <= MIDDLE_THROW_HISTORY_MS)
-+        {
-+            start = i ? i - 1 : i;
-+            break;
-+        }
-+    }
-+    if (start == si->count)
-+    {
-+        TRACE( "middle throw rejected: no recent raw motion\n" );
++        TRACE( "middle throw rejected: no raw motion\n" );
 +        return FALSE;
 +    }
-+
-+    /* Use only the latest contiguous suffix. A pause discards the earlier
-+     * burst, and net/path coherence rejects a last-moment reversal or jitter. */
-+    for (i = start; i < si->count; i++)
-+    {
-+        unsigned int j = (si->pos + i) % INERTIA_HISTORY_SIZE;
-+        UINT sample_time = si->history[j].time;
-+
-+        if (!used || sample_time - previous > MIDDLE_THROW_MAX_GAP_MS)
-+        {
-+            first = last = previous = sample_time;
-+            sum_x = sum_y = path = 0.0;
-+            used = 1;
-+            continue;
-+        }
-+
-+        last = previous = sample_time;
-+        sum_x += si->history[j].dx;
-+        sum_y += si->history[j].dy;
-+        path += hypot( si->history[j].dx, si->history[j].dy );
-+        used++;
-+    }
  
++    /* Walk backward from the latest sample. This preserves a final burst even
++     * when a long hold or compositor coalescing separated it from the press. */
++    start = si->count - 1;
++    j = (si->pos + start) % INERTIA_HISTORY_SIZE;
++    last = previous = si->history[j].time;
++    if (release_time - last > MIDDLE_THROW_MAX_GAP_MS)
++    {
++        TRACE( "middle throw rejected: no raw motion in the last %u ms\n",
++               MIDDLE_THROW_MAX_GAP_MS );
++        return FALSE;
++    }
++    while (start)
++    {
++        j = (si->pos + start - 1) % INERTIA_HISTORY_SIZE;
++        if (release_time - si->history[j].time > MIDDLE_THROW_HISTORY_MS ||
++            previous - si->history[j].time > MIDDLE_THROW_MAX_GAP_MS) break;
++        previous = si->history[j].time;
++        start--;
++    }
++
++    j = (si->pos + start) % INERTIA_HISTORY_SIZE;
++    first = si->history[j].time;
++    timed_anchor = first != last && !si->history[j].dx && !si->history[j].dy;
      span = last - first;
 -    if (used < 2 || span < 10) return;
-+    distance = hypot( sum_x, sum_y );
-+    coherence = path > 0.0 ? distance / path : 0.0;
-+    if (used < 2 || span < MIDDLE_THROW_MIN_SPAN_MS || coherence < MIDDLE_THROW_MIN_COHERENCE)
++    if (!timed_anchor) span += MIDDLE_THROW_FALLBACK_SPAN_MS;
++
++    /* A zero press sample is a real time anchor and contributes no movement.
++     * Otherwise include the complete terminal suffix and assign its first,
++     * possibly coalesced delta one conservative input frame. */
++    for (i = start + timed_anchor; i < si->count; i++)
 +    {
-+        TRACE( "middle throw rejected: %u samples over %u ms, coherence %.3f\n",
-+               used, span, coherence );
++        j = (si->pos + i) % INERTIA_HISTORY_SIZE;
++        sum_x += si->history[j].dx;
++        sum_y += si->history[j].dy;
++    }
++
++    distance = hypot( sum_x, sum_y );
++    if (distance < MIDDLE_THROW_MIN_DISTANCE)
++    {
++        TRACE( "middle throw rejected: terminal distance %.3f pixels over %u ms\n",
++               distance, span );
 +        return FALSE;
 +    }
 +
@@ -820,7 +817,9 @@ index 03c06fb..13b4f19 100644
 +    *vy = sum_y * 1000.0 * WHEEL_DELTA / (span * MIDDLE_DRAG_STEP);
 +    return TRUE;
 +}
-+
+ 
+-    vx = sum_x * 1000.0 / span;
+-    vy = sum_y * 1000.0 / span;
 +/***********************************************************************
 + *           pointer_inertia_evaluate
 + *
@@ -848,9 +847,7 @@ index 03c06fb..13b4f19 100644
 +               pointer_inertia_end_name( reason ) );
 +        return;
 +    }
- 
--    vx = sum_x * 1000.0 / span;
--    vy = sum_y * 1000.0 / span;
++
 +    /* Silence is necessarily ambiguous in XI2. Require twice the explicit
 +     * marker speed before the inactivity fallback fabricates motion. */
 +    if (reason == POINTER_INERTIA_END_XI2_INACTIVITY) start_speed *= 2.0;
@@ -864,7 +861,7 @@ index 03c06fb..13b4f19 100644
          return;
      }
      if (speed > INERTIA_MAX_SPEED)
-@@ -3323,63 +3671,79 @@ static void pointer_inertia_evaluate( struct x11drv_thread_data *data, UINT now
+@@ -3323,63 +3670,79 @@ static void pointer_inertia_evaluate( struct x11drv_thread_data *data, UINT now
      si->message_count = 0;
      si->start_time = si->last_tick = now;
  
@@ -971,7 +968,7 @@ index 03c06fb..13b4f19 100644
  }
  
  /***********************************************************************
-@@ -3387,8 +3751,9 @@ static void pointer_inertia_stop_marker( struct x11drv_thread_data *data, int so
+@@ -3387,8 +3750,9 @@ static void pointer_inertia_stop_marker( struct x11drv_thread_data *data, int so
   *
   * Bound one axis independently. Whole-unit output beyond the packet cap is
   * discarded instead of becoming debt for a later tick; only its sub-unit
@@ -983,7 +980,7 @@ index 03c06fb..13b4f19 100644
   */
  static int pointer_inertia_packet( double *remainder, double *velocity, int *travel )
  {
-@@ -3417,13 +3782,13 @@ static int pointer_inertia_packet( double *remainder, double *velocity, int *tra
+@@ -3417,13 +3781,13 @@ static int pointer_inertia_packet( double *remainder, double *velocity, int *tra
  /***********************************************************************
   *           pointer_inertia_tick
   *
@@ -1003,7 +1000,7 @@ index 03c06fb..13b4f19 100644
  {
      struct x11drv_thread_data *data = x11drv_thread_data();
      struct x11drv_scroll_inertia *si;
-@@ -3435,8 +3800,17 @@ void pointer_inertia_tick(void)
+@@ -3435,8 +3799,17 @@ void pointer_inertia_tick(void)
      if (!data) return;
      si = &data->scroll_inertia;
  
@@ -1023,7 +1020,7 @@ index 03c06fb..13b4f19 100644
      {
          si->state = INERTIA_IDLE;
          si->count = 0;
-@@ -3449,22 +3823,43 @@ void pointer_inertia_tick(void)
+@@ -3449,22 +3822,43 @@ void pointer_inertia_tick(void)
      case INERTIA_IDLE:
          return;
      case INERTIA_TRACKING:
@@ -1073,7 +1070,7 @@ index 03c06fb..13b4f19 100644
      frame_ms = elapsed_ms > INERTIA_MAX_FRAME_MS ? INERTIA_MAX_FRAME_MS : elapsed_ms;
      elapsed_dt = elapsed_ms / 1000.0;
      frame_dt = frame_ms / 1000.0;
-@@ -3558,10 +3953,16 @@ void pointer_inertia_tick(void)
+@@ -3558,10 +3952,16 @@ void pointer_inertia_tick(void)
          hypot( si->vx, si->vy ) < INERTIA_STOP_SPEED ||
          now - si->start_time > INERTIA_CAP_MS + 1000)  /* backstop after the raised decay rate */
      {
@@ -1091,7 +1088,7 @@ index 03c06fb..13b4f19 100644
  }
  
  /***********************************************************************
-@@ -3587,7 +3988,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3587,7 +3987,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      UINT time = EVENT_x11_time_to_win32_time( event->time );
      BOOL emulated = event->flags & XIPointerEmulated;
      double value_x = 0, value_y = 0;
@@ -1101,7 +1098,7 @@ index 03c06fb..13b4f19 100644
      BOOL discontinuity = FALSE;
      BOOL quantize, buttons_down;
      int delta_x = 0, delta_y = 0;
-@@ -3601,7 +4003,7 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3601,7 +4002,7 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      {
          int button = event->detail - 1;
  
@@ -1110,7 +1107,7 @@ index 03c06fb..13b4f19 100644
          if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
  
          /* A native XI wheel button is direct input from a device without
-@@ -3609,11 +4011,6 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3609,11 +4010,6 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
          notify_button_transition( hwnd, event->detail, TRUE );
          pinch_button_press( event->display, event->detail );
          pointer_inertia_cancel();
@@ -1122,7 +1119,7 @@ index 03c06fb..13b4f19 100644
          if ((win_data = get_win_data( hwnd )))
          {
              /* user-time feeds focus-stealing arbitration only; pushing the
-@@ -3623,8 +4020,9 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3623,8 +4019,9 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
                  window_set_user_time( win_data, event->time, FALSE );
              release_win_data( win_data );
          }
@@ -1134,7 +1131,7 @@ index 03c06fb..13b4f19 100644
          pinch_button_release( event->detail );
          return TRUE;
      }
-@@ -3635,29 +4033,32 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3635,29 +4032,32 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
           * once, when first seen; its axes and baselines stay cached */
          query_scroll_valuators( event->display, event->sourceid );
          if (!(src = find_scroll_source( data, event->sourceid, FALSE )))
@@ -1171,7 +1168,7 @@ index 03c06fb..13b4f19 100644
  
      /* A clickpad thumb-hold with a moving finger can classify as two-finger
       * scroll. Reseed held-button reports instead of emitting wheel input into
-@@ -3665,10 +4066,13 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3665,10 +4065,13 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      buttons_down = xinput2_any_button_down( event );
      quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED;
  
@@ -1186,7 +1183,7 @@ index 03c06fb..13b4f19 100644
      if (have_x) { src->scroll_x.last_value = value_x; src->scroll_x.last_value_valid = TRUE; }
      if (have_y) { src->scroll_y.last_value = value_y; src->scroll_y.last_value_valid = TRUE; }
  
-@@ -3684,16 +4088,18 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -3684,16 +4087,18 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      if (buttons_down || discontinuity)
      {
          /* Held input and discontinuities reseed without output. Neither can
@@ -1210,7 +1207,7 @@ index 03c06fb..13b4f19 100644
      }
      else pointer_inertia_cancel();
  
-@@ -3731,6 +4137,7 @@ static BOOL X11DRV_HierarchyChanged( XGenericEventCookie *xev )
+@@ -3731,6 +4136,7 @@ static BOOL X11DRV_HierarchyChanged( XGenericEventCookie *xev )
      int i;
  
      if (!(event->flags & (XISlaveRemoved | XIDeviceDisabled))) return TRUE;
@@ -1361,7 +1358,7 @@ index f540c8b..ad53b50 100644
  
  /* _NET_WM_STATE properties that we keep track of */
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index d606b44..c655e55 100644
+index d606b44..2b8d8ad 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
 @@ -31,6 +31,7 @@
@@ -1372,7 +1369,7 @@ index d606b44..c655e55 100644
  #include <sys/time.h>
  #include <unistd.h>
  #include <assert.h>
-@@ -421,6 +422,8 @@ struct x11drv_pointer_config pointer_config =
+@@ -421,9 +422,11 @@ struct x11drv_pointer_config pointer_config =
      .touchpad_inertia = POINTER_INERTIA_ENABLED,
      .pinch_zoom       = POINTER_PINCH_LEGACY_WHEEL,
      .middle_drag      = POINTER_MIDDLE_DRAG_NAVIGATE,
@@ -1380,7 +1377,11 @@ index d606b44..c655e55 100644
 +    .wheel_while_button_held = POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED,
      .inertia_curve    = POINTER_INERTIA_CURVE_EXPONENTIAL,
      .warp_emulation   = POINTER_WARP_DISABLED,
-     .inertia_rate     = 4.0,
+-    .inertia_rate     = 4.0,
++    .inertia_rate     = 3.0,
+ };
+ 
+ /* Earlier development builds of these features read different names, and
 @@ -514,13 +517,20 @@ static void pointer_option_enum( HKEY defkey, HKEY appkey, const char *name, con
                                      buffer, sizeof(buffer), &source )) continue;
          for (i = 0; i < count; i++)
@@ -1444,3 +1445,4 @@ index d606b44..c655e55 100644
          else
 -- 
 2.55.0
+

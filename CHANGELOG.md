@@ -7,10 +7,10 @@
 - Touchpad scrolling and pinch zoom cannot move a control while a mouse button
   is held. A mouse wheel still works except during middle-button navigation,
   and pressing a button stops earlier continued movement.
-- Added scrolling inertia and middle-drag throw. Both are on by default. Users
-  can switch either one off without changing the other. New input or a window
-  change stops continued movement. Live does not replay missed movement after
-  a pause.
+- Added scrolling inertia and middle-drag throw. Both are on by default and
+  have separate off switches. Movement slows gradually after release, and a
+  short or curved middle-button drag can throw. New input or a window change
+  stops it. Live does not replay missed movement after a pause.
 - Added a repair for fader jumps after loading a Max for Live device. Testing
   on the affected Fedora computer remains open.
 - Added an off-by-default XWayland repair for faders and knobs that move farther

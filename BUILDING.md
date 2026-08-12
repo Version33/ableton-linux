@@ -158,16 +158,17 @@ settings for one launch.
   after a quick smooth scroll. It defaults to `enabled`. `auto` currently
   behaves like `disabled` on X11. Turning inertia off leaves direct scrolling
   unchanged.
-- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls whether a quick
-  middle-button drag keeps moving after release. It defaults to `enabled`.
-  `disabled` leaves direct middle-button navigation unchanged.
+- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls whether movement
+  continues after the user releases a middle-button drag. It defaults to
+  `enabled`. `disabled` leaves direct middle-button navigation unchanged.
 - `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
   mouse-wheel clicks while another button is held. It defaults to `enabled`.
   The wheel stays blocked during middle-button navigation. Touchpad scrolling,
   pinch and continued movement stay blocked during a drag.
-- `WINE_X11_INERTIA_CURVE=exponential|linear` and
-  `WINE_X11_INERTIA_RATE=<0.5..16.0>` change how quickly continued movement
-  slows down.
+- `WINE_X11_INERTIA_CURVE=exponential|linear` selects how continued movement
+  slows. `WINE_X11_INERTIA_RATE=<0.5..16.0>` selects how soon it stops. The
+  default rate is `3.0`. Lower values keep movement going for longer. Higher
+  values stop it sooner.
 - `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
   for faders and knobs that move farther than the pointer. It defaults to
   `disabled`. `auto` waits until it sees the fault twice. `enabled` forces the

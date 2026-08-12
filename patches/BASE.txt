@@ -406,9 +406,10 @@ Apply them in sequence with the rest of the series.
   sees the fault twice. Focus, pointer control, device, thread, and button
   changes stop the repair. Reworked from ClickSentinel commit `d2996582b5`; see
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0095`: separate fine-scroll inertia from middle-drag throw and enable both
-  by default. Add the 100 ms scroll fallback and start throw only on
-  middle-button release. Keep normal wheel steps during a button hold, except
+- `0095`: give fine-scroll inertia and middle-drag throw separate controls and
+  enable both by default. Continued movement slows more gradually. A short or
+  curved middle-button drag can throw when released. Add the 100 ms scroll
+  fallback. Keep normal wheel steps during a button hold, except
   during middle-button navigation, while blocking smooth scrolling, pinch and
   earlier continued movement. Stop continued movement when its input or target
   changes, and disable it if timing setup fails. Named values ignore letter

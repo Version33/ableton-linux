@@ -21,8 +21,15 @@
 #define MAX_FRAME_MS_VALUE 16
 #define MAX_PACKET_VALUE (WHEEL_DELTA_VALUE / 8)
 #define MAX_TRAVEL_VALUE (4 * WHEEL_DELTA_VALUE)
-#define MAX_MESSAGES_VALUE 192
+#define MAX_MESSAGES_VALUE 224
 #define MAX_SPEED_VALUE 1200.0
+#define START_SPEED_VALUE 240.0
+#define DEFAULT_INERTIA_RATE_VALUE 3.0
+#define MIDDLE_THROW_HISTORY_MS_VALUE 120
+#define MIDDLE_THROW_MAX_GAP_MS_VALUE 80
+#define MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE 24
+#define MIDDLE_THROW_MIN_DISTANCE_VALUE 4.0
+#define MIDDLE_DRAG_STEP_VALUE 24.0
 #define MAX_TOTAL_VALUE \
     ((MAX_MESSAGES_VALUE * MAX_PACKET_VALUE < 2 * MAX_TRAVEL_VALUE) ? \
      MAX_MESSAGES_VALUE * MAX_PACKET_VALUE : 2 * MAX_TRAVEL_VALUE)
@@ -271,6 +278,8 @@ static void check_pointer_setting_fallback(const char *stack, const char *safety
                        ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_ENABLED");
     ok &= require_text("physical wheel input while held remains enabled by default", final,
                        ".wheel_while_button_held=POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED");
+    ok &= require_text("the default decay rate is three per second", final,
+                       ".inertia_rate=3.0,");
     if (ok) pass("all eight named settings plus InertiaRate preserve safe source fallback");
 }
 
@@ -598,19 +607,34 @@ static void check_continuation_sources(const char *final)
                        "pointer_inertia_release(data,POINTER_INERTIA_KIND_MIDDLE_DRAG,"
                        "INERTIA_SOURCE_MIDDLE_DRAG,hwnd,time,"
                        "POINTER_INERTIA_END_MIDDLE_RELEASE);");
-    ok &= require_text("fine and middle estimators have distinct minimum spans", final,
+    ok &= require_text("fine estimator retains its ten-millisecond timing floor", final,
                        "#defineINERTIA_MIN_SPAN_MS10");
-    ok &= require_text("middle estimator accepts a short but timed terminal flick", final,
-                       "#defineMIDDLE_THROW_MIN_SPAN_MS4");
-    ok &= require_text("middle estimator measures its window from physical release", final,
-                       "if(release_time-si->history[j].time<=MIDDLE_THROW_HISTORY_MS)"
-                       "{start=i?i-1:i;break;}");
-    ok &= require_text("middle estimator discards motion before a terminal pause", final,
-                       "if(!used||sample_time-previous>MIDDLE_THROW_MAX_GAP_MS)");
-    ok &= require_text("middle estimator rejects a jittering or reversed suffix", final,
-                       "coherence=path>0.0?distance/path:0.0;"
-                       "if(used<2||span<MIDDLE_THROW_MIN_SPAN_MS||"
-                       "coherence<MIDDLE_THROW_MIN_COHERENCE)");
+    ok &= require_text("middle estimator retains 120 ms of terminal history", final,
+                       "#defineMIDDLE_THROW_HISTORY_MS120");
+    ok &= require_text("middle estimator permits at most an 80 ms terminal gap", final,
+                       "#defineMIDDLE_THROW_MAX_GAP_MS80");
+    ok &= require_text("untimed coalesced middle motion receives a 24 ms span", final,
+                       "#defineMIDDLE_THROW_FALLBACK_SPAN_MS24");
+    ok &= require_text("middle throw requires four pixels of net terminal motion", final,
+                       "#defineMIDDLE_THROW_MIN_DISTANCE4.0");
+    ok &= require_text("middle estimator starts at the newest raw sample", final,
+                       "start=si->count-1;j=(si->pos+start)%INERTIA_HISTORY_SIZE;"
+                       "last=previous=si->history[j].time;");
+    ok &= require_text("middle estimator rejects release after its terminal gap", final,
+                       "if(release_time-last>MIDDLE_THROW_MAX_GAP_MS)");
+    ok &= require_text("middle estimator walks backward through one contiguous suffix", final,
+                       "if(release_time-si->history[j].time>MIDDLE_THROW_HISTORY_MS||"
+                       "previous-si->history[j].time>MIDDLE_THROW_MAX_GAP_MS)break;"
+                       "previous=si->history[j].time;start--;");
+    ok &= require_text("only a distinct zero sample supplies a measured time anchor", final,
+                       "timed_anchor=first!=last&&!si->history[j].dx&&!si->history[j].dy;"
+                       "span=last-first;if(!timed_anchor)span+=MIDDLE_THROW_FALLBACK_SPAN_MS;");
+    ok &= require_text("middle estimator sums the complete untimed terminal suffix", final,
+                       "for(i=start+timed_anchor;i<si->count;i++){"
+                       "j=(si->pos+i)%INERTIA_HISTORY_SIZE;sum_x+=si->history[j].dx;"
+                       "sum_y+=si->history[j].dy;}");
+    ok &= require_text("middle estimator rejects short net motion after reversals", final,
+                       "distance=hypot(sum_x,sum_y);if(distance<MIDDLE_THROW_MIN_DISTANCE)");
     ok &= require_text("raw middle motion converts to wheel units only after estimation", final,
                        "*vx=sum_x*1000.0*WHEEL_DELTA/(span*MIDDLE_DRAG_STEP);"
                        "*vy=sum_y*1000.0*WHEEL_DELTA/(span*MIDDLE_DRAG_STEP);");
@@ -879,8 +903,33 @@ static void check_inertia_limits(const char *stack, const char *safety, const ch
                        "#defineINERTIA_MAX_PACKET(WHEEL_DELTA/8)");
     ok &= require_text("each coast axis is limited to four notches", final,
                        "#defineINERTIA_MAX_TRAVEL(4*WHEEL_DELTA)");
-    ok &= require_text("one coast is limited to 192 messages total", final,
-                       "#defineINERTIA_MAX_MESSAGES192");
+    ok &= require_text("one coast is limited to 224 messages total", final,
+                       "#defineINERTIA_MAX_MESSAGES224");
+    ok &= require_text("both continuation sources use the configured decay rate directly", stack,
+                       "doubleelapsed_dt,frame_dt,k=pointer_config.inertia_rate;");
+    ok &= require_text("the final policy selects the shared rate-three default", final,
+                       ".inertia_rate=3.0,");
+    ok &= forbid_text("middle throw has no hidden decay-scale constant", final,
+                      "MIDDLE_THROW_DECAY_SCALE");
+    ok &= forbid_text_between("middle throw has no direct conditional rate multiplier", final,
+                              "voidpointer_inertia_tick(LONGinput_serial){"
+                              "structx11drv_thread_data*data=x11drv_thread_data();",
+                              "BOOLstop_marker=FALSE,scroll_changed=FALSE;",
+                              "POINTER_INERTIA_KIND_MIDDLE_DRAG?k");
+    ok &= forbid_text_between("middle throw has no conditional rate-assignment block", final,
+                              "voidpointer_inertia_tick(LONGinput_serial){"
+                              "structx11drv_thread_data*data=x11drv_thread_data();",
+                              "BOOLstop_marker=FALSE,scroll_changed=FALSE;",
+                              "POINTER_INERTIA_KIND_MIDDLE_DRAG){k");
+    if (count_occurrences_between(final, "voidpointer_inertia_tick(LONGinput_serial){"
+                                  "structx11drv_thread_data*data=x11drv_thread_data();",
+                                  "BOOLstop_marker=FALSE,scroll_changed=FALSE;",
+                                  "si->kind==POINTER_INERTIA_KIND_MIDDLE_DRAG") != 3)
+    {
+        fail("the final tick has no extra middle-specific decay branch",
+             "expected only tracking and diagnostic middle-kind checks");
+        ok = 0;
+    }
     ok &= require_text("the final policy retains the bounded packet helper", final,
                        "staticintpointer_inertia_packet(double*remainder,double*velocity,int*travel)");
     ok &= require_text("the final policy retains the guarded timer tick", final,
@@ -1352,6 +1401,145 @@ static void check_default_continuation_matrix(void)
         pass("default continuation matrix enables fine inertia and middle throw; auto stays inert");
 }
 
+struct reference_middle_sample
+{
+    double dx;
+    double dy;
+    unsigned int time;
+};
+
+/* Chronological-array version of the final backward terminal-suffix estimator. */
+static int reference_middle_throw_velocity(const struct reference_middle_sample *samples,
+                                           size_t count, unsigned int release_time,
+                                           double *vx, double *vy, unsigned int *measured_span)
+{
+    double sum_x = 0.0, sum_y = 0.0;
+    unsigned int first, last, previous, span;
+    size_t i, start;
+    int timed_anchor;
+
+    if (!count) return 0;
+    start = count - 1;
+    last = previous = samples[start].time;
+    if (release_time - last > MIDDLE_THROW_MAX_GAP_MS_VALUE) return 0;
+    while (start)
+    {
+        const struct reference_middle_sample *sample = &samples[start - 1];
+
+        if (release_time - sample->time > MIDDLE_THROW_HISTORY_MS_VALUE ||
+            previous - sample->time > MIDDLE_THROW_MAX_GAP_MS_VALUE)
+            break;
+        previous = sample->time;
+        start--;
+    }
+
+    first = samples[start].time;
+    timed_anchor = first != last && !samples[start].dx && !samples[start].dy;
+    span = last - first;
+    if (!timed_anchor) span += MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE;
+    for (i = start + (size_t)timed_anchor; i < count; i++)
+    {
+        sum_x += samples[i].dx;
+        sum_y += samples[i].dy;
+    }
+    if (hypot(sum_x, sum_y) < MIDDLE_THROW_MIN_DISTANCE_VALUE) return 0;
+
+    *vx = sum_x * 1000.0 * WHEEL_DELTA_VALUE / (span * MIDDLE_DRAG_STEP_VALUE);
+    *vy = sum_y * 1000.0 * WHEEL_DELTA_VALUE / (span * MIDDLE_DRAG_STEP_VALUE);
+    if (measured_span) *measured_span = span;
+    return 1;
+}
+
+static int reference_middle_throw_starts(const struct reference_middle_sample *samples,
+                                         size_t count, unsigned int release_time)
+{
+    double vx, vy;
+
+    return reference_middle_throw_velocity(samples, count, release_time, &vx, &vy, NULL) &&
+           hypot(vx, vy) >= START_SPEED_VALUE;
+}
+
+static void check_middle_throw_estimator_math(void)
+{
+    static const struct reference_middle_sample coalesced[] =
+    {
+        {0.0, 0.0, 0}, {6.0, 0.0, 200},
+    };
+    static const struct reference_middle_sample same_time[] =
+    {
+        {0.0, 0.0, 100}, {3.0, 0.0, 100}, {3.0, 0.0, 100},
+    };
+    static const struct reference_middle_sample release_boundary[] =
+    {
+        {6.0, 0.0, 100},
+    };
+    static const struct reference_middle_sample reversed[] =
+    {
+        {0.0, 0.0, 100}, {12.0, 0.0, 120}, {-9.0, 0.0, 140},
+    };
+    static const struct reference_middle_sample corrected[] =
+    {
+        {0.0, 0.0, 100}, {8.0, 0.0, 120}, {-4.0, 0.0, 140},
+    };
+    static const struct reference_middle_sample too_short[] =
+    {
+        {3.0, 0.0, 100},
+    };
+    static const struct reference_middle_sample below_start_speed[] =
+    {
+        {0.0, 0.0, 0}, {2.0, 0.0, 60}, {2.0, 0.0, 100},
+    };
+    static const struct reference_middle_sample terminal_suffix[] =
+    {
+        {0.0, 0.0, 0}, {-50.0, 0.0, 10}, {6.0, 0.0, 200},
+    };
+    double vx, vy;
+    unsigned int span;
+
+    if (!reference_middle_throw_velocity(coalesced, 2, 250, &vx, &vy, &span) ||
+        span != MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE || fabs(vx - 1250.0) > 0.000001 || vy)
+        fail("one coalesced terminal event can seed a middle throw",
+             "the backward suffix or conservative fallback span was lost");
+    else
+        pass("one coalesced terminal event uses the conservative fallback span");
+
+    if (!reference_middle_throw_velocity(same_time, 3, 180, &vx, &vy, &span) ||
+        span != MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE || fabs(vx - 1250.0) > 0.000001 || vy)
+        fail("same-time middle samples retain a finite velocity",
+             "coalesced timestamps produced rejection or a zero span");
+    else
+        pass("same-time middle samples retain a finite bounded-span estimate");
+
+    if (!reference_middle_throw_velocity(release_boundary, 1, 180, &vx, &vy, NULL) ||
+        reference_middle_throw_velocity(release_boundary, 1, 181, &vx, &vy, NULL))
+        fail("middle release has an exact 80 ms freshness boundary",
+             "the estimator did not accept 80 ms and reject 81 ms");
+    else
+        pass("middle release accepts 80 ms of rest and rejects 81 ms");
+
+    if (reference_middle_throw_velocity(reversed, 3, 150, &vx, &vy, NULL) ||
+        !reference_middle_throw_velocity(corrected, 3, 150, &vx, &vy, NULL))
+        fail("middle reversal filtering uses net terminal distance",
+             "a sub-four-pixel reversal passed or a four-pixel correction failed");
+    else
+        pass("net reversal is rejected without rejecting a four-pixel correction");
+
+    if (reference_middle_throw_velocity(too_short, 1, 100, &vx, &vy, NULL) ||
+        !reference_middle_throw_velocity(below_start_speed, 3, 100, &vx, &vy, NULL) ||
+        reference_middle_throw_starts(below_start_speed, 3, 100))
+        fail("middle throw enforces distance and starting-speed thresholds",
+             "short motion passed or a 200-unit-per-second estimate started coasting");
+    else
+        pass("middle throw rejects short net travel and sub-threshold velocity");
+
+    if (!reference_middle_throw_velocity(terminal_suffix, 3, 250, &vx, &vy, &span) ||
+        span != MIDDLE_THROW_FALLBACK_SPAN_MS_VALUE || vx <= 0.0 || vy)
+        fail("middle throw uses the newest suffix after a pause",
+             "old opposite motion contaminated the terminal estimate");
+    else
+        pass("a pause discards old motion before the newest terminal suffix");
+}
+
 struct coast_result
 {
     struct safe_axis axes[2];
@@ -1425,46 +1613,53 @@ static void check_math_envelope(void)
     double expected_velocity, expected_normal;
     int packet, next;
 
-    packet = safe_axis_tick(&normal, 8, 4.0);
-    expected_normal = MAX_SPEED_VALUE / 4.0 * (1.0 - exp(-4.0 * 0.008));
+    packet = safe_axis_tick(&normal, 8, DEFAULT_INERTIA_RATE_VALUE);
+    expected_normal = MAX_SPEED_VALUE / DEFAULT_INERTIA_RATE_VALUE *
+                      (1.0 - exp(-DEFAULT_INERTIA_RATE_VALUE * 0.008));
     if (packet != (int)expected_normal || abs(packet) > MAX_PACKET_VALUE)
         fail("maximum starting speed stays below the packet ceiling", "normal first packet was too large");
     else
         pass("maximum starting speed produces a bounded normal first packet");
 
-    packet = safe_axis_tick(&stalled, 1000, 4.0);
-    expected_velocity = MAX_SPEED_VALUE * exp(-4.0);
+    packet = safe_axis_tick(&stalled, 1000, DEFAULT_INERTIA_RATE_VALUE);
+    expected_velocity = MAX_SPEED_VALUE * exp(-DEFAULT_INERTIA_RATE_VALUE);
     if (abs(packet) > MAX_PACKET_VALUE || fabs(stalled.velocity - expected_velocity) > 0.000001)
         fail("a delayed tick cannot catch up missed movement", "stall envelope was exceeded");
     else
         pass("a delayed tick decays fully without replaying missed frames");
 
-    packet = safe_axis_tick(&overflow, 8, 4.0);
+    packet = safe_axis_tick(&overflow, 8, DEFAULT_INERTIA_RATE_VALUE);
     overflow.velocity = 0.0;
-    next = safe_axis_tick(&overflow, 8, 4.0);
+    next = safe_axis_tick(&overflow, 8, DEFAULT_INERTIA_RATE_VALUE);
     if (packet != MAX_PACKET_VALUE || next || overflow.remainder != 0.0)
         fail("positive packet excess is discarded", "excess survived as later output");
     else
         pass("positive packet excess is discarded");
 
-    packet = safe_axis_tick(&reverse, 8, 4.0);
+    packet = safe_axis_tick(&reverse, 8, DEFAULT_INERTIA_RATE_VALUE);
     reverse.velocity = 0.0;
-    next = safe_axis_tick(&reverse, 8, 4.0);
+    next = safe_axis_tick(&reverse, 8, DEFAULT_INERTIA_RATE_VALUE);
     if (packet != -MAX_PACKET_VALUE || next || reverse.remainder != 0.0)
         fail("negative packet excess is discarded", "excess survived as later output");
     else
         pass("negative packet excess is discarded");
 
-    default_single = run_reference_coast(MAX_SPEED_VALUE, 0.0, 4.0);
-    default_diagonal = run_reference_coast(diagonal, diagonal, 4.0);
+    default_single = run_reference_coast(MAX_SPEED_VALUE, 0.0, DEFAULT_INERTIA_RATE_VALUE);
+    default_diagonal = run_reference_coast(diagonal, diagonal, DEFAULT_INERTIA_RATE_VALUE);
     if (!coast_within_envelope(&default_single) || !default_single.stopped_by_speed ||
         default_single.stopped_by_messages || default_single.stopped_by_travel ||
+        default_single.elapsed_ms < 992 || default_single.elapsed_ms > 1008 ||
+        default_single.axes[0].travel < 379 || default_single.axes[0].travel > 381 ||
         !coast_within_envelope(&default_diagonal) || !default_diagonal.stopped_by_speed ||
-        default_diagonal.stopped_by_messages || default_diagonal.stopped_by_travel)
-        fail("the default exponential coast reaches its natural stop",
-             "the default curve hit a safety backstop or escaped the envelope");
+        default_diagonal.stopped_by_messages || default_diagonal.stopped_by_travel ||
+        default_diagonal.elapsed_ms < 992 || default_diagonal.elapsed_ms > 1008 ||
+        default_diagonal.axes[0].travel < 267 || default_diagonal.axes[0].travel > 269 ||
+        default_diagonal.axes[1].travel < 267 || default_diagonal.axes[1].travel > 269 ||
+        default_diagonal.messages < 210 || default_diagonal.messages > 218)
+        fail("the rate-three default coast reaches its natural stop",
+             "duration, travel, message count, or an independent safety envelope changed");
     else
-        pass("the default single-axis and diagonal coasts reach a bounded natural stop");
+        pass("rate-three single-axis and diagonal coasts reach a bounded natural stop");
 
     slow_diagonal = run_reference_coast(diagonal, diagonal, 0.5);
     if (!coast_within_envelope(&slow_diagonal) || !slow_diagonal.stopped_by_travel ||
@@ -1478,10 +1673,10 @@ static void check_math_envelope(void)
     packet_limited = run_reference_coast(diagonal, diagonal, 1.67);
     if (!coast_within_envelope(&packet_limited) || !packet_limited.stopped_by_messages ||
         packet_limited.messages != MAX_MESSAGES_VALUE)
-        fail("the 192-message budget independently bounds custom curves",
+        fail("the 224-message budget independently bounds custom curves",
              "the reference curve did not terminate at the packet backstop");
     else
-        pass("the 192-message budget independently bounds custom curves");
+        pass("the 224-message budget independently bounds custom curves");
 }
 
 int main(int argc, char **argv)
@@ -1548,6 +1743,7 @@ int main(int argc, char **argv)
     check_held_wheel_provenance();
     check_legacy_wheel_copy_model();
     check_default_continuation_matrix();
+    check_middle_throw_estimator_math();
     check_warp_probe_math();
     check_math_envelope();
 
