@@ -2,33 +2,24 @@
 
 ## Unreleased
 
-<!-- DRAFT: PipeASIO 1.5 (branch moonshot-pipeasio-15-v2). The bullets below
-     are unreleased. Container builds, non-integration CTest, sanitizer and
-     artifact-audit gates are complete; the final Live, hardware, distro,
-     suspend/hotplug and scheduler matrix is still open. -->
-- The audio driver moves from PipeASIO 1.2.2 to 1.5.0. The integration remains
-  experimental until the final Live 11 and 12 hardware matrix completes;
-  upstream has not declared PipeASIO 1.5 confirmed with Ableton Live.
-- The driver accepts every buffer size from 32 through 8192 frames.
-- When another audio application changes the shared buffer size, Live mutes
-  instead of playing at the wrong speed and returns after the audio engine
-  accepts the new size.
-- Sample-rate corrections stay in place after the audio engine restarts. The
-  MIDI timebase now extends its 32-bit counter across the 49.7-day rollover;
-  the final hardware MIDI rollover test is still open.
-- PipeASIO Settings ships as an optional Qt application. The Hardware Setup
-  worker pins the driver while the panel is open, reaps the panel process and
-  shows a fallback message when startup fails; the final Live test is open.
-- The installer requires PipeWire 1.4.2 or newer and stops before changing the
-  current setup on unsupported systems. Stock Ubuntu 24.04 and Linux Mint 22
-  require a distribution upgrade.
-- The self-extracting kit includes the realtime setup and audio-report tools and
-  installs durable copies under `~/.local/share/ableton-wine/`. Runtime rollback
-  and uninstall also account for the settings panel and PipeASIO registration.
-- PipeASIO 1.5 changes scheduling and measurement; it does not claim lower CPU
-  use or uninterrupted audio during CPU starvation, device removal, or daemon
-  failure.
-<!-- end PipeASIO 1.5 draft -->
+### PipeASIO 1.5
+
+- Updated the audio driver from PipeASIO 1.2.2 to 1.5.0.
+- Live can use every buffer size from 32 to 8192 frames.
+- Live mutes instead of playing at the wrong speed while it changes to another
+  audio programme's PipeWire buffer size.
+- A sample rate accepted by Live stays selected after the audio engine restarts.
+- MIDI timestamps continue forwards when their 49.7-day timer returns to zero.
+- PipeASIO Settings now ships with the runtime and appears in the application
+  menu.
+- The installer checks for PipeWire 1.4.2 or newer before it replaces the audio
+  driver. Ubuntu 24.04 and Linux Mint 22 need a distribution upgrade first.
+- The installer can update individual parts, restore the previous runtime, and
+  remove files while preserving user changes.
+- The single-file installer includes the audio report, real-time setup, and
+  rollback commands.
+- This PipeASIO update does not reduce Live's CPU use.
+
 - Link setup confirms its version marker only when the service step
   completed, so a host where that step failed retries it on the next
   update instead of counting itself configured. The version moves to 5.

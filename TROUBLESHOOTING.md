@@ -31,9 +31,11 @@ Open **Settings > Audio** and select:
 - **Driver Type:** ASIO
 - **Audio Device:** PipeASIO
 
-Confirm that PipeWire and WirePlumber are running on the host. If audio
-crackles, raise the buffer size with **PipeASIO Settings** in your
-application menu (`pipeasio-settings` in a terminal), or for one launch:
+Set **Audio Device** to **None**, then select **PipeASIO** again. If the sound
+breaks up, open **PipeASIO Settings** from the application menu and select a
+larger buffer size.
+
+You can also try a 512-frame buffer for one launch:
 
 ```bash
 env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
@@ -41,73 +43,53 @@ env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 
 ## PipeASIO Settings does not open
 
-Audio still works when the settings window is unavailable. Install the
-missing desktop support for your distribution:
+Live can still use PipeASIO without the settings window. Run the latest update:
 
 ```bash
-# Ubuntu 24.04
-sudo apt install libqt6widgets6t64 qt6-qpa-plugins
-
-# Debian 13
-sudo apt install libqt6widgets6 qt6-qpa-plugins
-
-# Fedora
-sudo dnf install qt6-qtbase-gui
-
-# Arch Linux
-sudo pacman -S qt6-base
+sh ~/Downloads/install-ableton-latest.run --update
 ```
 
-Try `pipeasio-settings` again. After changing a setting, set Live's **Audio
-Device** to **None** and back to **PipeASIO**.
+If a desktop package is missing, the update prints the exact install command
+for your Linux distribution. Run that command, then open PipeASIO Settings
+again. After changing a setting, set Live's **Audio Device** to **None** and
+back to **PipeASIO**.
 
 ## The installer says PipeWire is too old
 
-The installer has not changed your current setup. Install your normal system
-updates and try again. Ubuntu 24.04 and Linux Mint 22 need a distribution
-upgrade that provides PipeWire 1.4.2 or newer.
+Your current installation is unchanged. Install your normal Linux updates and
+try again. If the message remains, upgrade to a Linux release that includes
+PipeWire 1.4.2 or newer. Ubuntu 24.04 and Linux Mint 22 need that distribution
+upgrade before this version can install.
 
 ## Crackle with two audio devices
 
 Select the same audio device for input and output when possible. If the
 crackle stops, the two-device setup caused it.
 
-The audio report shows whether this is your case and names the device:
-
-```bash
-sh ~/Downloads/install-ableton-latest.run --extract /tmp/ableton-kit
-bash /tmp/ableton-kit/scripts/audio-report.sh
-```
-
-After installation, run:
+Run the audio report after installation:
 
 ```bash
 ~/.local/share/ableton-wine/audio-report.sh
 ```
 
-From a repository checkout, run `./scripts/audio-report.sh` instead.
-
-Attach the report to your issue.
+If you still hear crackle, attach the report when you
+[open an issue](https://github.com/shibco/ableton-linux/issues).
 
 ## Audio cuts out for a few seconds, or plays at the wrong speed
 
-Another audio application (usually a JACK one) told PipeWire to run at a
-different buffer size. Live mutes for a moment while the driver moves to
-that size, then audio comes back on its own. If it happens once, there is
-nothing to do.
+Wait a few seconds. If audio returns at the correct speed, there is nothing
+else to do. Another audio programme changed the buffer size shared with Live,
+and PipeASIO paused while Live changed to the same size.
 
-If audio plays too fast or too slow instead of coming back, you are on a
-release up to 2026.08.08.1: update this project. Until you can update,
-clear the stuck buffer size and restart Live:
+If audio stays silent or plays too fast or too slow, update this project. Until
+you can update, close Live, run this command, then start Live again:
 
 ```bash
 pw-metadata -n settings 0 clock.force-quantum 0
 ```
 
-The buffer size does not have to be a power of two.
-
-If the problems come back after a reboot, run the audio report as
-described in the previous entry and attach the output to an issue.
+If the problem returns, run the audio report from the previous entry and attach
+it when you open an issue.
 
 ## A plugin window resizes repeatedly or shows stale pixels
 
@@ -248,25 +230,17 @@ appear.
 
 Lower the buffer size with **PipeASIO Settings** in your application menu
 (`pipeasio-settings` in a terminal), then set **Audio Device** in Live to
-None and back to PipeASIO to restart the audio engine. Lowering the buffer does
-not reduce the CPU used by Live or plugins. Raise it if audio breaks up.
+**None** and back to **PipeASIO**. A lower value shortens the delay but gives
+Live less time to process audio. Raise it again if the sound breaks up. This
+setting does not reduce the CPU used by Live or plugins.
 
-For advanced host tuning from a repository checkout, run:
+Run the real-time audio setup once:
 
 ```bash
-./scripts/setup-realtime.sh
+~/.local/share/ableton-wine/setup-realtime.sh
 ```
 
-The script asks for `sudo`, gives your user account permission to run audio
-at realtime priority, and tells the system to avoid moving Live's memory to
-swap. Log out and back in after it completes. Run
-`env ABLETON_RT=off ableton-live` to compare normal scheduling.
-
-While Live runs, the launcher also holds the computer in its fastest power
-mode, and releases it when Live exits, so battery use stays normal while
-Live is closed. This uses the `power-profiles-daemon` service, which GNOME
-and KDE ship by default. Run `env ABLETON_POWER=off ableton-live` to
-compare a launch without it.
+The script asks for `sudo`. Log out and back in after it finishes.
 
 On Pop!_OS and other System76 computers, do not install the
 `power-profiles-daemon` package. The package manager removes the System76
@@ -282,8 +256,8 @@ sudo rm /etc/systemd/system/ableton-cpufreq-performance.service
 sudo systemctl daemon-reload
 ```
 
-From a repository checkout, run `./scripts/setup-realtime.sh` to remove it
-instead.
+You can also run `~/.local/share/ableton-wine/setup-realtime.sh` again to
+remove the old setting.
 
 ## Display scaling is wrong
 

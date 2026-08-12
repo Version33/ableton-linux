@@ -64,9 +64,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Test installer and launcher lifecycle
-        run: make test
-
       - name: Read runtime version
         id: runtime_version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
@@ -112,7 +109,14 @@ jobs:
       # post-job save) run as.
       - name: Fix ownership of container output (docker runs as root here)
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" dist .ccache
+        run: |
+          owner="$(id -u):$(id -g)"
+          for path in dist .ccache; do
+            [ ! -e "$path" ] || sudo chown -R "$owner" "$path"
+          done
+
+      - name: Test installer and launcher lifecycle
+        run: make test
 
       # The generic artifact format permits an explicitly recorded no-Qt
       # driver build. The official release image installs Qt, so its artifact
