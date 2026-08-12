@@ -338,6 +338,9 @@ unchanged. For another desktop, change its shortcut settings when necessary.
 
 ## Scrolling, middle-button panning, or pinch zoom misbehaves
 
+Mute or disconnect monitoring before reproducing a problem that can change a
+fader. Start with Live's Master fader low and use a limiter.
+
 Turn the feature you suspect off for one launch:
 
 ```bash
@@ -347,7 +350,11 @@ env WINE_X11_MIDDLE_DRAG=disabled ableton-live
 env WINE_X11_TOUCHPAD_INERTIA=disabled ableton-live
 ```
 
-Releases after 2026.08.08.1 scroll Live in fine steps instead of whole notches when you use a touchpad or a high-resolution mouse wheel. They also zoom on a touchpad pinch and pan when you drag with the middle mouse button held.
+The current build forwards pointer movement during a drag, but drops ordinary
+fine-scroll, wheel, pinch-generated wheel, and delayed wheel output while any
+button is held. Saved fine-scroll positions are still advanced, so ignored
+movement cannot catch up after release. Middle-button drag navigation is the
+only exception and accepts only its one withheld middle press.
 
 If scrolling only feels too fine, keep whole steps:
 
@@ -355,7 +362,10 @@ If scrolling only feels too fine, keep whole steps:
 env WINE_X11_SMOOTH_SCROLLING=notched ableton-live
 ```
 
-If turning a feature off fixes the problem, report it and name the variable you used.
+If turning a feature off changes the result, report the variable you used,
+your pointing device, desktop, Xorg or XWayland session, and Live version.
+The limits and manual acceptance tests are in
+[the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
 
 ## Report a problem
 

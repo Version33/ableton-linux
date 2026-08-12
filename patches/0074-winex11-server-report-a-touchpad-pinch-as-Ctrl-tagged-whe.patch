@@ -1,92 +1,52 @@
-Subject: winex11, server: report a touchpad pinch as Ctrl-tagged wheel input
+Subject: winex11, server: add touchpad pinch and fixed-point wheel delivery
 
-Wine reports touchpad input as pointer and wheel events only. A pinch
-reaches the X server as an XInput2 gesture. winex11 never selects
-gesture events, so the X server drops the pinch and Live has no zoom on
-a trackpad other than Ctrl+scroll (issue 64).
+Turn an XInput2 2.4 pinch into Ctrl+wheel without creating Ctrl key events.
+Maintain the Ctrl state that applications can read, release it on every known
+end path, and send no pinch wheel output while a mouse button is held. Limit
+each update and cancellation correction to one notch.
 
-Select XI_GesturePinchBegin, XI_GesturePinchUpdate and XI_GesturePinchEnd
-on each top-level window, next to the touch events winex11 already
-selects there, and report the scale change as wheel input that
-applications read as Ctrl+wheel. This is the input a Windows precision
-touchpad produces for a pinch its application does not handle itself, so
-applications that zoom on Ctrl+wheel need no change. PinchZoom=disabled
-leaves gesture events with the X server and keeps the XInput2 version
-request at 2.2.
+Add wheel delivery at a supplied screen point without moving the cursor. A
+fixed-point message keeps its source window and point, ignores later capture,
+does not create raw input, does not merge, and is dropped when a mouse button
+is held or the source window is no longer usable.
 
-The patch synthesises no Ctrl key event: it creates no key message and
-triggers no keyboard hook or accelerator. The modifier reaches the
-application through both of its observable reads:
+Limit ordinary queued wheel merging to one notch and keep vertical and
+horizontal messages under the same rule.
 
-- A new SEND_HWMSG_FORCE_MK_CONTROL flag on the send_hardware_message
-  request makes the server set MK_CONTROL in the generated message's
-  wparam, which it builds at queue time. update_key_state() ignores the
-  MK_* bits of mouse messages, so this half changes no key state. The
-  request's wire format does not change and the client passes its
-  existing flags word through, so the protocol needs no version bump; a
-  later patch in the series already carries the next bump.
-- For the gesture's duration, the driver holds Ctrl in the owning
-  thread's queue key state and the async key state through the server's
-  existing set_key_state request. Live reads GetKeyState() rather than
-  the wheel message state. A run against Live 12 on 2026-08-10 verified
-  this: with the wparam override alone, the wheel arrived and nothing
-  zoomed. This half serves that read without creating any input. The
-  driver releases the key on gesture end, cancellation, focus loss,
-  device change, slot eviction and thread detach. It checks the X keymap
-  for a Ctrl that the user physically holds and does not release that key.
-  KeymapNotify resynchronises a stale state byte if a release path misses.
-
-A whole wheel notch stands for a 1.1x scale change, but a pinch reports
-its scale many times a second, so each report is worth a fraction of one
-notch. The driver sends that fraction: WHEEL_DELTA is a unit, not a
-minimum, and an application that follows the amount rather than counting
-messages zooms continuously instead of in steps. Each report advances
-the tracked scale by exactly what the driver sent, so the remainder
-carries into the next report. The driver caps a single report at 16
-notches.
-
-The driver tracks gestures per physical device: the event's sourceid
-keys the slots, not the master deviceid, so two slave devices pinching
-through one master pointer stay two gestures. XInput2 allows one active
-gesture sequence per device. A begin seeds the baseline at the
-protocol's defined begin scale of 1.0. An update without a begin claims
-a slot and seeds from its own scale. The driver ignores an end without a
-begin.
-
-On XIGesturePinchEventCancelled, the driver returns the net wheel
-movement in one compensating event, capped at 16 notches. A larger
-cancelled gesture can retain some zoom. An application that clamps zoom
-at a bound can also finish at a different level after compensation.
-
-The wheel events carry no position. The server stamps them at the
-current cursor, which a touchpad pinch does not move. The driver stores
-no pointer point and makes no XQueryPointer round trip.
-
-The server does not merge wheel messages across a modifier change.
-Summing an untagged scroll delta into a Ctrl-tagged zoom message would
-change what the combined delta means. The server also coalesces
-WM_MOUSEHWHEEL in the same way as WM_MOUSEWHEEL, so a stalled application
-drains one accumulated message per axis instead of hundreds of queued
-horizontal events.
-
-Gesture events need XInput2 2.4. The server refuses to select them for a
-client that asked for less, so the version request rises to 2.4 only
-when PinchZoom is on. On an X server without 2.4, the driver logs a
-warning and continues without pinch input. Headers without the gesture
-definitions compile the path out.
-
-A verification run on GNOME Wayland (XWayland) on 2026-08-10 confirmed
-pinch zoom in Live 12.
+See notes/ABLETON-WINE-POINTER-GESTURES.md for the complete safety contract.
 ---
- dlls/winex11.drv/event.c       |    3 
- dlls/winex11.drv/mouse.c       |  305 ++++++++++++++++++++++++++++++++++++++++
- dlls/winex11.drv/x11drv.h      |   15 ++
- dlls/winex11.drv/x11drv_main.c |    3 
- include/wine/server_protocol.h |    1 
- server/protocol.def            |    1 
- server/queue.c                 |   21 ++-
- 7 files changed, 346 insertions(+), 3 deletions(-)
-
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 00f6eb4..850d727 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2603,7 +2603,7 @@ static WORD pointer_buttons_from_mouse_buttons( WORD mouse_flags )
+  * returns TRUE if the contents of 'msg' should be passed to the application
+  */
+ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, HWND hwnd_filter,
+-                                   UINT first, UINT last, BOOL remove )
++                                   UINT first, UINT last, BOOL remove, BOOL fixed_position )
+ {
+     static MSG clk_msg;
+ 
+@@ -2620,7 +2620,7 @@ static BOOL process_mouse_message( MSG *msg, UINT hw_id, ULONG_PTR extra_info, H
+ 
+     info.cbSize = sizeof(info);
+     NtUserGetGUIThreadInfo( GetCurrentThreadId(), &info );
+-    if (info.hwndCapture)
++    if (info.hwndCapture && !fixed_position)
+     {
+         hittest = HTCLIENT;
+         msg->hwnd = info.hwndCapture;
+@@ -2914,7 +2914,8 @@ static BOOL process_hardware_message( MSG *msg, UINT hw_id, const struct hardwar
+     else if (is_keyboard_message( msg->message ))
+         ret = process_keyboard_message( msg, hw_id, hwnd_filter, first, last, remove );
+     else if (is_mouse_message( msg->message ))
+-        ret = process_mouse_message( msg, hw_id, msg_data->info, hwnd_filter, first, last, remove );
++        ret = process_mouse_message( msg, hw_id, msg_data->info, hwnd_filter, first, last, remove,
++                                     !!msg_data->fixed_position );
+     else if (msg->message >= WM_POINTERUPDATE && msg->message <= WM_POINTERLEAVE)
+         ret = process_pointer_message( msg, hw_id, msg_data );
+     else if (msg->message == WM_WINE_CLIPCURSOR)
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index a524761..ee5a274 100644
 --- a/dlls/winex11.drv/event.c
@@ -102,7 +62,7 @@ index a524761..ee5a274 100644
  
      x11drv_thread_data()->last_focus = hwnd;
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 0c3f273..d410454 100644
+index 807ae1e..8edd397 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -29,6 +29,7 @@
@@ -170,10 +130,35 @@ index 0c3f273..d410454 100644
      mask.mask     = mask_bits;
      mask.mask_len = sizeof(mask_bits);
      mask.deviceid = XIAllMasterDevices;
-@@ -572,6 +602,26 @@ static void send_wheel_only_input( HWND hwnd, UINT flags, int delta, UINT time )
+@@ -572,6 +602,51 @@ static void send_wheel_only_input( HWND hwnd, UINT flags, int delta, UINT time )
      send_mouse_input( hwnd, pos, flags, delta, time, NULL );
  }
  
++/***********************************************************************
++ *           send_wheel_at_input
++ *
++ * Send wheel input at a stored point without moving the desktop cursor.
++ */
++static void send_wheel_at_input( HWND hwnd, POINT point, UINT flags, int delta, UINT time )
++{
++    INPUT input = { .type = INPUT_MOUSE };
++
++    input.mi.dx = point.x;
++    input.mi.dy = point.y;
++    input.mi.dwFlags = flags;
++    input.mi.mouseData = delta;
++    input.mi.time = time;
++
++    NtUserSendHardwareInput( hwnd, SEND_HWMSG_RAWINPUT | SEND_HWMSG_FIXED_POSITION, &input, 0 );
++}
++
++static BOOL pointer_button_down(void)
++{
++    return (NtUserGetKeyState( VK_LBUTTON ) | NtUserGetKeyState( VK_MBUTTON ) |
++            NtUserGetKeyState( VK_RBUTTON ) | NtUserGetKeyState( VK_XBUTTON1 ) |
++            NtUserGetKeyState( VK_XBUTTON2 )) & 0x8000;
++}
++
 +/***********************************************************************
 + *           send_wheel_control_input
 + *
@@ -197,7 +182,7 @@ index 0c3f273..d410454 100644
  /* movement one wheel notch stands for, in raw virtual screen pixels */
  #define MIDDLE_DRAG_STEP 24
  
-@@ -1840,6 +1890,8 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+@@ -1845,6 +1920,8 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
  
      if (event->deviceid != data->xinput2_pointer) return FALSE;
      update_relative_valuators( event->classes, event->num_classes );
@@ -206,7 +191,7 @@ index 0c3f273..d410454 100644
      return TRUE;
  }
  
-@@ -1963,8 +2015,253 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
+@@ -1968,8 +2045,259 @@ static BOOL X11DRV_TouchEvent( HWND hwnd, XGenericEventCookie *xev )
      return TRUE;
  }
  
@@ -218,10 +203,9 @@ index 0c3f273..d410454 100644
 + * Hold or release Ctrl in the calling thread's queue key state and the
 + * async key state, without generating any key input. GetKeyState() and
 + * GetAsyncKeyState() then report the modifier while no key message, hook
-+ * event or accelerator ever fires. Live reads the key state rather than
-+ * the wheel message state (verified 2026-08-10), so the wparam override
-+ * alone does not zoom it; both are kept so either read works. A stale
-+ * byte self-heals through the KeymapNotify modifier resync.
++ * event or accelerator fires. Some applications read the key state rather
++ * than the wheel message, so both views report Ctrl. KeymapNotify repairs a
++ * stale state byte if a release path is interrupted.
 + */
 +static void set_control_key_state( BOOL down )
 +{
@@ -362,17 +346,14 @@ index 0c3f273..d410454 100644
 + * which a touchpad pinch does not move. The driver stores no pointer point
 + * and cannot move the cursor through this path.
 + *
-+ * On cancellation, the driver sends the net wheel movement in one event.
-+ * The compensation has a 16-notch cap, so a larger gesture can retain some
-+ * zoom. An application that clamps zoom at a bound can also finish at a
-+ * different level after compensation.
-+ * This limit keeps one event within the normal per-report cap.
++ * On cancellation, the driver sends at most one notch back towards the
++ * starting zoom. The same one-notch limit applies to every update.
 + */
 +static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
 +{
 +    /* scale change one whole wheel notch stands for */
 +    static const double zoom_step = 1.1;
-+    static const int max_delta = 16 * WHEEL_DELTA;
++    static const int max_delta = WHEEL_DELTA;
 +    XIGesturePinchEvent *event = xev->data;
 +    struct x11drv_thread_data *data = x11drv_thread_data();
 +    UINT time = EVENT_x11_time_to_win32_time( event->time );
@@ -380,6 +361,16 @@ index 0c3f273..d410454 100644
 +    double units;
 +    int delta;
 +    HWND hwnd;
++
++    if (pointer_button_down())
++    {
++        if ((gesture = find_pinch_gesture( data, event->sourceid, FALSE )))
++        {
++            pinch_release_control( gesture, event->display );
++            gesture->sourceid = 0;
++        }
++        return TRUE;
++    }
 +
 +    if (event->evtype == XI_GesturePinchBegin)
 +    {
@@ -460,7 +451,7 @@ index 0c3f273..d410454 100644
  
  /***********************************************************************
   *              x11drv_xinput2_load
-@@ -2034,6 +2331,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
+@@ -2039,6 +2367,14 @@ BOOL X11DRV_GenericEvent( HWND hwnd, XEvent *xev )
          ret = X11DRV_TouchEvent( hwnd, event );
          break;
  
@@ -476,7 +467,7 @@ index 0c3f273..d410454 100644
          TRACE( "Unhandled event %#x\n", event->evtype );
          break;
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 340aca7..dab7296 100644
+index 340aca7..e82739e 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
 @@ -474,6 +474,20 @@ struct x11drv_middle_drag
@@ -509,10 +500,10 @@ index 340aca7..dab7296 100644
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 5356e18..b966797 100644
+index f0cc453..84e07f3 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
-@@ -831,6 +831,9 @@ void X11DRV_ThreadDetach(void)
+@@ -857,6 +857,9 @@ void X11DRV_ThreadDetach(void)
  
      if (data)
      {
@@ -523,34 +514,62 @@ index 5356e18..b966797 100644
          if (data->font_set) XFreeFontSet( data->display, data->font_set );
          if (data->net_supported) XFree( data->net_supported );
 diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
-index efc1cbe..41283f9 100644
+index efc1cbe..8f1b5ce 100644
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
-@@ -3169,6 +3169,7 @@ struct send_hardware_message_reply
+@@ -297,7 +297,7 @@ struct hardware_msg_data
+ {
+     lparam_t             info;
+     data_size_t          size;
+-    int                  __pad;
++    unsigned int         fixed_position;
+     unsigned int         hw_id;
+     unsigned int         flags;
+     struct hw_msg_source source;
+@@ -3169,6 +3169,8 @@ struct send_hardware_message_reply
  };
  #define SEND_HWMSG_INJECTED    0x01
  #define SEND_HWMSG_RAWINPUT    0x02
 +#define SEND_HWMSG_FORCE_MK_CONTROL 0x04
++#define SEND_HWMSG_FIXED_POSITION 0x08
  
  
  
 diff --git a/server/protocol.def b/server/protocol.def
-index 30235df..13e20a3 100644
+index 30235df..ff51aeb 100644
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -2429,6 +2429,7 @@ enum message_type
+@@ -313,7 +313,7 @@ struct hardware_msg_data
+ {
+     lparam_t             info;      /* extra info */
+     data_size_t          size;      /* size of hardware message data */
+-    int                  __pad;
++    unsigned int         fixed_position; /* preserve the supplied mouse position */
+     unsigned int         hw_id;     /* unique id */
+     unsigned int         flags;     /* hook flags */
+     struct hw_msg_source source;    /* message source */
+@@ -2429,6 +2429,8 @@ enum message_type
  @END
  #define SEND_HWMSG_INJECTED    0x01  /* message is injected from application */
  #define SEND_HWMSG_RAWINPUT    0x02  /* don't generate WM_INPUT x / y updates */
 +#define SEND_HWMSG_FORCE_MK_CONTROL 0x04  /* report MK_CONTROL in the generated mouse message */
++#define SEND_HWMSG_FIXED_POSITION 0x08  /* use the supplied position without moving the cursor */
  
  
  /* Get a message from the current queue */
 diff --git a/server/queue.c b/server/queue.c
-index 437c4fa..99da166 100644
+index d4ae52e..a967041 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -845,7 +845,8 @@ static struct message *find_mouse_message( struct thread_input *input, const str
+@@ -86,6 +86,7 @@ struct message
+     lparam_t               lparam;    /* parameters */
+     int                    x;         /* message position */
+     int                    y;
++    bool                   fixed_position; /* do not replace x/y with the cursor position */
+     unsigned int           time;      /* message time */
+     void                  *data;      /* message data for sent messages */
+     unsigned int           data_size; /* size of message data */
+@@ -845,7 +846,8 @@ static struct message *find_mouse_message( struct thread_input *input, const str
      return prev;
  }
  
@@ -560,10 +579,11 @@ index 437c4fa..99da166 100644
  static int merge_mousewheel( struct thread_input *input, const struct message *msg )
  {
      struct message *prev;
-@@ -853,6 +854,10 @@ static int merge_mousewheel( struct thread_input *input, const struct message *m
+@@ -853,9 +855,17 @@ static int merge_mousewheel( struct thread_input *input, const struct message *m
  
      if (!(prev = find_mouse_message( input, msg ))) return 0;
      if (prev->x != msg->x || prev->y != msg->y) return 0; /* don't merge if cursor has moved */
++    if (prev->fixed_position || msg->fixed_position) return 0;
 +    /* don't merge across a modifier change: summing an untagged scroll delta
 +     * into a Ctrl-tagged zoom message (or the reverse) would change what the
 +     * combined delta means to the application */
@@ -571,7 +591,13 @@ index 437c4fa..99da166 100644
  
      /* accumulate wheel delta */
      delta = GET_WHEEL_DELTA_WPARAM(prev->wparam) + GET_WHEEL_DELTA_WPARAM(msg->wparam);
-@@ -926,6 +931,7 @@ static int merge_unique_message( struct thread_input *input, unsigned int messag
++    /* Never turn a queue stall into one control-sized wheel message. Preserve
++     * total movement by starting a separate queued message at this boundary. */
++    if (delta < -WHEEL_DELTA || delta > WHEEL_DELTA) return 0;
+     if (delta < SHRT_MIN || delta > SHRT_MAX) return 0;
+ 
+     prev->wparam  = MAKEWPARAM(GET_KEYSTATE_WPARAM(msg->wparam), delta);
+@@ -926,6 +936,7 @@ static int merge_unique_message( struct thread_input *input, unsigned int messag
  static int merge_message( struct thread_input *input, const struct message *msg )
  {
      if (msg->msg == WM_MOUSEWHEEL) return merge_mousewheel( input, msg );
@@ -579,17 +605,67 @@ index 437c4fa..99da166 100644
      if (msg->msg == WM_MOUSEMOVE) return merge_mousemove( input, msg );
      if (msg->msg == WM_WINE_CLIPCURSOR) return merge_unique_message( input, WM_WINE_CLIPCURSOR, msg );
      if (msg->msg == WM_WINE_SETCURSOR) return merge_unique_message( input, WM_WINE_SETCURSOR, msg );
-@@ -2213,7 +2219,8 @@ static void dispatch_rawinput_message( struct desktop *desktop, const struct raw
+@@ -1835,7 +1846,13 @@ static user_handle_t find_hardware_message_window( struct desktop *desktop, stru
+         break;
+     case QS_MOUSEMOVE:
+     case QS_MOUSEBUTTON:
+-        if (!input || !(win = input_shm->capture))
++        if (msg->fixed_position)
++        {
++            if (!is_window_visible( msg->win ) || is_window_transparent( msg->win )) break;
++            win = msg->win;
++            *thread = window_thread_from_point( win, msg->x, msg->y );
++        }
++        else if (!input || !(win = input_shm->capture))
+         {
+             if (is_window_visible( msg->win ) && !is_window_transparent( msg->win )) win = msg->win;
+             else win = shallow_window_from_point( desktop, msg->x, msg->y );
+@@ -1912,18 +1929,24 @@ static void queue_hardware_message( struct desktop *desktop, struct message *msg
+         prepend_cursor_history( msg->x, msg->y, msg->time, msg_data->info );
+         /* fallthrough */
+     case QS_MOUSEBUTTON:
+-        if (update_desktop_cursor_pos( desktop, msg->win, msg->x, msg->y )) always_queue = 1;
+-        if (desktop_shm->keystate[VK_LBUTTON] & 0x80)  msg->wparam |= MK_LBUTTON;
+-        if (desktop_shm->keystate[VK_MBUTTON] & 0x80)  msg->wparam |= MK_MBUTTON;
+-        if (desktop_shm->keystate[VK_RBUTTON] & 0x80)  msg->wparam |= MK_RBUTTON;
+-        if (desktop_shm->keystate[VK_SHIFT] & 0x80)    msg->wparam |= MK_SHIFT;
+-        if (desktop_shm->keystate[VK_CONTROL] & 0x80)  msg->wparam |= MK_CONTROL;
+-        if (desktop_shm->keystate[VK_XBUTTON1] & 0x80) msg->wparam |= MK_XBUTTON1;
+-        if (desktop_shm->keystate[VK_XBUTTON2] & 0x80) msg->wparam |= MK_XBUTTON2;
++        if (!msg->fixed_position)
++        {
++            if (update_desktop_cursor_pos( desktop, msg->win, msg->x, msg->y )) always_queue = 1;
++            if (desktop_shm->keystate[VK_LBUTTON] & 0x80)  msg->wparam |= MK_LBUTTON;
++            if (desktop_shm->keystate[VK_MBUTTON] & 0x80)  msg->wparam |= MK_MBUTTON;
++            if (desktop_shm->keystate[VK_RBUTTON] & 0x80)  msg->wparam |= MK_RBUTTON;
++            if (desktop_shm->keystate[VK_SHIFT] & 0x80)    msg->wparam |= MK_SHIFT;
++            if (desktop_shm->keystate[VK_CONTROL] & 0x80)  msg->wparam |= MK_CONTROL;
++            if (desktop_shm->keystate[VK_XBUTTON1] & 0x80) msg->wparam |= MK_XBUTTON1;
++            if (desktop_shm->keystate[VK_XBUTTON2] & 0x80) msg->wparam |= MK_XBUTTON2;
++        }
+         break;
+     }
+-    msg->x = desktop_shm->cursor.x;
+-    msg->y = desktop_shm->cursor.y;
++    if (!msg->fixed_position)
++    {
++        msg->x = desktop_shm->cursor.x;
++        msg->y = desktop_shm->cursor.y;
++    }
+ 
+     if (msg->win && (thread = get_window_thread( msg->win )))
+     {
+@@ -2213,7 +2236,8 @@ static void dispatch_rawinput_message( struct desktop *desktop, const struct raw
  
  /* queue a hardware message for a mouse event */
  static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
 -                                unsigned int origin, struct msg_queue *sender, bool rawinput )
 +                                unsigned int origin, struct msg_queue *sender, bool rawinput,
-+                                bool force_mk_control )
++                                bool force_mk_control, bool fixed_position )
  {
      static const POINT empty_raw = {0};
  
-@@ -2252,6 +2259,12 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+@@ -2252,6 +2276,26 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
      }
      if (input->mouse.raw_count) raw = get_req_data();
  
@@ -598,27 +674,72 @@ index 437c4fa..99da166 100644
 +     * touchpad pinch delivered as zoom wheel). update_key_state() ignores
 +     * MK_* bits of mouse messages, so no key state changes anywhere. */
 +    if (force_mk_control) wparam |= MK_CONTROL;
++    if (fixed_position)
++    {
++        unsigned char buttons = desktop_shm->keystate[VK_LBUTTON] |
++                                desktop_shm->keystate[VK_MBUTTON] |
++                                desktop_shm->keystate[VK_RBUTTON] |
++                                desktop_shm->keystate[VK_XBUTTON1] |
++                                desktop_shm->keystate[VK_XBUTTON2];
++
++        /* A fixed wheel packet is delayed pointer movement. Never deliver it
++         * into a control that the user has started manipulating. */
++        if (buttons & 0x80) return 0;
++        if (desktop_shm->keystate[VK_SHIFT] & 0x80)   wparam |= MK_SHIFT;
++        if (desktop_shm->keystate[VK_CONTROL] & 0x80) wparam |= MK_CONTROL;
++    }
 +
      SHARED_WRITE_BEGIN( desktop_shm, desktop_shm_t )
      {
          shared->cursor.last_change = time;
-@@ -3271,6 +3284,7 @@ DECL_HANDLER(send_hardware_message)
+@@ -2287,13 +2331,20 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+         if (x == desktop_shm->cursor.x && y == desktop_shm->cursor.y)
+             flags &= ~MOUSEEVENTF_MOVE;
+     }
++    else if (fixed_position)
++    {
++        x = input->mouse.x;
++        y = input->mouse.y;
++    }
+     else
+     {
+         x = desktop_shm->cursor.x;
+         y = desktop_shm->cursor.y;
+     }
+ 
+-    if ((foreground = get_foreground_thread( desktop, win )))
++    /* Delayed coast input is legacy wheel input tied to one stored point.
++     * Do not also report it as unanchored raw input to the foreground app. */
++    if (!fixed_position && (foreground = get_foreground_thread( desktop, win )))
+     {
+         memset( &raw_msg, 0, sizeof(raw_msg) );
+         raw_msg.foreground = foreground;
+@@ -2332,6 +2383,8 @@ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, cons
+         msg->lparam    = 0;
+         msg->x         = x;
+         msg->y         = y;
++        msg->fixed_position = fixed_position;
++        msg_data->fixed_position = fixed_position;
+         if (origin == IMO_INJECTED) msg_data->flags = LLMHF_INJECTED;
+ 
+         /* specify a sender only when sending the last message */
+@@ -3271,6 +3324,8 @@ DECL_HANDLER(send_hardware_message)
      unsigned int origin = (req->flags & SEND_HWMSG_INJECTED ? IMO_INJECTED : IMO_HARDWARE);
      struct msg_queue *sender = req->flags & SEND_HWMSG_INJECTED ? get_current_queue() : NULL;
      bool rawinput = !!(req->flags & SEND_HWMSG_RAWINPUT);
 +    bool force_mk_control = !!(req->flags & SEND_HWMSG_FORCE_MK_CONTROL);
++    bool fixed_position = !!(req->flags & SEND_HWMSG_FIXED_POSITION);
      desktop_shm_t *desktop_shm;
      int wait = 0;
  
-@@ -3290,7 +3304,8 @@ DECL_HANDLER(send_hardware_message)
+@@ -3290,7 +3345,8 @@ DECL_HANDLER(send_hardware_message)
      switch (req->input.type)
      {
      case INPUT_MOUSE:
 -        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender, rawinput );
 +        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender, rawinput,
-+                                    force_mk_control );
++                                    force_mk_control, fixed_position );
          break;
      case INPUT_KEYBOARD:
          wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
--- 
-2.55.0
+

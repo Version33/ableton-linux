@@ -1,85 +1,20 @@
-Subject: winex11: registry pointer settings and middle-button drag navigation
+Subject: winex11: add pointer settings and middle-button navigation
 
-Live drives arrangement zoom from Ctrl+wheel and has no function on the
-middle button. Other DAWs put navigation there: the user holds the
-middle button and moves the pointer, and the arrangement scrolls in both
-directions without reaching for a scrollbar (issue 50).
+Read the six pointer settings once when the process starts. A launch
+environment variable has first priority, followed by the application's Wine
+registry values, the global Wine registry values, and the built-in default.
+Reject unknown names and invalid rates without changing the selected value.
 
-This series configures its pointer features through the registry, like
-the rest of winex11: HKCU\Software\Wine\X11 Driver holds the global
-settings, HKCU\Software\Wine\AppDefaults\<exe>\X11 Driver outranks it
-per application inside get_config_key(), and a WINE_X11_* environment
-variable outranks both for one launch. The driver parses six values once
-at process attach into one configuration block: SmoothScrolling
-(disabled/precise/notched, default precise), TouchpadInertia
-(disabled/auto/enabled, default enabled), PinchZoom
-(disabled/legacy-wheel, default legacy-wheel), MiddleDrag
-(disabled/navigate/navigate-notched, default navigate), InertiaCurve
-(exponential/linear, default exponential) and InertiaRate (a decimal in
-[0.5, 16.0], the exponential decay rate coefficient in 1/s, default
-4.0). The parser matches each value against an allow-list, so a setting
-that exists to disable a feature can never enable it through a near
-miss. On an unrecognised value it warns and keeps the default, and
-InertiaRate rejects non-finite values, out-of-range values and trailing
-characters. The parser traces each resolved value and its source once.
-Earlier development builds of this work read different environment
-names, and nothing maps them to the current ones: the driver warns on
-winediag when it finds one set, and names the current variable, instead
-of ignoring the setting. This patch consumes MiddleDrag; the later
-patches in the series consume the rest.
+Turn a middle-button drag into vertical and horizontal wheel input. A normal
+middle click remains a click. Twenty-four raw screen pixels equal one notch,
+and one input report cannot emit more than one notch per axis. Discard excess
+movement from a larger report instead of replaying it later. Keep drag state on
+the Wine interface thread and move the cursor to the real point on release.
 
-MiddleDrag=navigate holds a middle-button press back from the
-application and reports the movement that follows as wheel input.
-Vertical movement becomes wheel units and horizontal movement becomes
-horizontal wheel units, one whole notch per 24 raw virtual screen
-pixels. map_event_coords() reports MDT_RAW_DPI coordinates with no DPI
-normalization, so one notch is a fixed physical distance and covers less
-of a window's content the higher the display scale. The report follows
-the pointer continuously rather than waiting for a whole notch:
-WHEEL_DELTA is a unit, not a minimum, and a precision pointing device
-sends part of one too. MiddleDrag=navigate-notched floors to whole
-notches and carries the rest, for an application that ignores fractional
-wheel units.
-
-The drag slop comes from the SM_CXDRAG and SM_CYDRAG system metrics, not
-a private constant. The driver measures it against the press origin, so
-a slow drag in steps smaller than the slop still becomes a drag. When a
-press stays inside the slop, the driver replays it on release as a plain
-middle click and stamps the down with the time and position the press
-landed on.
-
-Wheel output goes through a wheel-only helper: without
-MOUSEEVENTF_ABSOLUTE and with a zero point, send_mouse_input() adds no
-MOUSEEVENTF_MOVE, and the server stamps the message at the current
-cursor position. The drag swallows the pointer motion, so the server
-cursor stays at the press origin. Every wheel message lands there, the
-panned region stays the hit-test target for the whole drag, and the
-cursor never moves as a side effect. On a completed drag the driver
-syncs the cursor to the X11 release coordinates, so the input that
-follows lands where the pointer really is.
-
-A press of another button during a drag ends it. A drag that reported
-wheel movement syncs the cursor to the real pointer position; the driver
-replays a press that never moved as a click; and the new press and the
-movement that follow go through. Placing the cursor with the left button
-while panning with the middle one leaves no unwanted click behind. A drag
-that lost its release ends the same way on the next event.
-
-The drag adds no modifier. A Ctrl the user holds during the drag still
-reaches the message through the desktop key state, so the same drag
-performs whatever the application does for Ctrl+wheel.
-
-The drag state lives in the thread data. The X implicit pointer grab on
-the press pins the whole drag's delivery to the window's owning thread,
-so concurrent drags on windows of different threads cannot share state.
+See notes/ABLETON-WINE-POINTER-GESTURES.md for the settings and review order.
 ---
- dlls/winex11.drv/mouse.c       |  228 ++++++++++++++++++++++++++++++++++++++++
- dlls/winex11.drv/x11drv.h      |   64 +++++++++++
- dlls/winex11.drv/x11drv_main.c |  163 +++++++++++++++++++++++++++++
- 3 files changed, 455 insertions(+)
-
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 2c394b6..0c3f273 100644
+index 2c394b6..807ae1e 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,6 +30,7 @@
@@ -90,7 +25,7 @@ index 2c394b6..0c3f273 100644
  #ifdef HAVE_X11_EXTENSIONS_XINPUT2_H
  #include <X11/extensions/XInput2.h>
  #endif
-@@ -557,6 +558,230 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
+@@ -557,6 +558,235 @@ static void send_mouse_input( HWND hwnd, POINT pos, UINT flags, UINT data, UINT
      NtUserSendHardwareInput( hwnd, SEND_HWMSG_RAWINPUT, &input, (LPARAM)raw );
  }
  
@@ -195,7 +130,7 @@ index 2c394b6..0c3f273 100644
 +    if (drag->active)
 +    {
 +        if (event->button == Button2)
-+            middle_drag_flush_click( time );  /* a stale drag, its release was lost */
++            middle_drag_abort( pt, time );  /* a stale drag, its release was lost */
 +        else
 +        {
 +            middle_drag_abort( pt, time );
@@ -222,13 +157,18 @@ index 2c394b6..0c3f273 100644
 +/***********************************************************************
 + *           middle_drag_delta
 + *
-+ * Convert accumulated raw pixels into wheel units, keeping the remainder
-+ * in the accumulator. The notched variant floors to whole notches and
-+ * carries the rest the same way.
++ * Convert accumulated raw pixels into wheel units, keeping the remainder.
++ * Bound one event to one notch per axis. A larger compositor-coalesced jump
++ * is discarded after that notch instead of becoming queued movement debt.
++ * The notched variant floors sub-notch movement and carries that remainder.
 + */
 +static int middle_drag_delta( int *accum, BOOL notched )
 +{
-+    int delta = *accum * WHEEL_DELTA / MIDDLE_DRAG_STEP;
++    int delta;
++
++    if (*accum >= MIDDLE_DRAG_STEP) { *accum = 0; return WHEEL_DELTA; }
++    if (*accum <= -MIDDLE_DRAG_STEP) { *accum = 0; return -WHEEL_DELTA; }
++    delta = *accum * WHEEL_DELTA / MIDDLE_DRAG_STEP;
 +
 +    if (notched) delta = (delta / WHEEL_DELTA) * WHEEL_DELTA;
 +    *accum -= delta * MIDDLE_DRAG_STEP / WHEEL_DELTA;
@@ -321,7 +261,7 @@ index 2c394b6..0c3f273 100644
  #ifdef SONAME_LIBXCURSOR
  
  /***********************************************************************
-@@ -1526,6 +1751,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -1526,6 +1756,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -329,7 +269,7 @@ index 2c394b6..0c3f273 100644
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
  }
-@@ -1545,6 +1771,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+@@ -1545,6 +1776,7 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
      TRACE( "hwnd %p/%lx button %u pos %s\n", hwnd, event->window, button, wine_dbgstr_point( &pt ) );
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -337,7 +277,7 @@ index 2c394b6..0c3f273 100644
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
      return TRUE;
  }
-@@ -1569,6 +1796,7 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+@@ -1569,6 +1801,7 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -428,7 +368,7 @@ index 34b53ce..340aca7 100644
      XIValuatorClassInfo x_valuator;
      XIValuatorClassInfo y_valuator;
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
-index 500a013..5356e18 100644
+index 500a013..f0cc453 100644
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
 @@ -26,6 +26,7 @@
@@ -615,5 +555,4 @@ index 500a013..5356e18 100644
      NtClose( appkey );
      NtClose( hkey );
  }
--- 
-2.55.0
+

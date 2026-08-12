@@ -12,6 +12,7 @@ The build requires:
 - `zstd`
 - `cabextract`
 - `binutils`
+- a host C compiler and maths library for `make check`
 
 ## Build and install from source
 
@@ -106,7 +107,16 @@ The result is `dist/ableton-wine-setup-<version>.run`. The installer includes
 the runtime, launchers, Ableton Link support, setup scripts, and corresponding
 source required by bundled licences.
 
-Verify pinned source inputs with:
+Run the pointer safety checks with:
+
+```bash
+make check
+```
+
+These source and maths checks inspect the production patch code and exercise
+the pointer limits with hostile inputs. They do not run Wine or Live.
+
+Verify the pinned source inputs and run the same pointer checks with:
 
 ```bash
 make verify
@@ -145,21 +155,23 @@ compatibility defaults.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
-- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` overrides the scrolling
-  mode for one launch. The `SmoothScrolling` registry value holds the
-  persistent setting; see
-  [the pointer notes](notes/ABLETON-WINE-POINTER-GESTURES.md).
+- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` selects the XInput2
+  fine-scroll path for one launch. `disabled` leaves ordinary wheel input
+  available. Precise scrolling is the default.
 - `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` overrides touchpad pinch zoom
   for one launch (registry value `PinchZoom`).
 - `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` overrides
   middle-button drag navigation for one launch (registry value `MiddleDrag`).
   Navigation is on by default.
-- `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` overrides scroll inertia
-  for one launch (registry value `TouchpadInertia`). Inertia defaults to on;
-  `auto` currently resolves to disabled.
+- `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` controls continued movement
+  after a fast fine scroll or middle drag. It is on by default; `auto` is
+  disabled on XInput2.
 - `WINE_X11_INERTIA_CURVE=exponential|linear` and
   `WINE_X11_INERTIA_RATE=<0.5..16.0>` override the inertia decay for one
   launch (registry values `InertiaCurve` and `InertiaRate`).
+
+The registry names, defaults, safety limits, and manual acceptance tests are in
+[the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
 
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
 - `ABLETON_POWER=off` keeps the computer's power mode unchanged for one

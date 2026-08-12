@@ -1,15 +1,18 @@
-/* pinchgen.c - create a virtual multitouch touchpad and perform one gesture.
+/* Create a virtual multitouch touchpad and perform one gesture.
  *
- * libinput turns the two-finger movement into a pinch gesture, the compositor
- * forwards it to the surface under the pointer, and XWayland reports it as an
- * XInput2 gesture. This exercises patch 0071 without a physical touchpad: put
- * the pointer over a window of the application under test, then run this.
+ * On a compatible libinput, compositor, and XWayland setup, this becomes
+ * either an XInput2 pinch or two-finger scroll report. Put the pointer over
+ * the window under test, then run this program. It generates input but does
+ * not decide whether the application handled that input correctly.
  *
- * Needs write access to /dev/uinput, which a desktop session normally grants
- * the logged-in user. The virtual device disappears when the program exits.
+ * Requires write access to /dev/uinput. Access depends on the host's device
+ * policy. The virtual device disappears when the program exits.
  *
- * build: gcc -O2 -o pinchgen pinchgen.c
- * usage: ./pinchgen [out|in|up|down|left|right] [steps]
+ * build: cc -O2 -Wall -Wextra -o tools/pinchgen tools/pinchgen.c
+ * usage: tools/pinchgen [out|in|up|down|left|right] [steps]
+ * defaults: out, 30 steps
+ * out and in pinch; up, down, left, and right perform two-finger scrolling.
+ * steps changes the report count and duration, not the total travel.
  *
  * See notes/ABLETON-WINE-POINTER-GESTURES.md.
  */

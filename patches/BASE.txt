@@ -11,7 +11,7 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 86 files, numbered 0001 through 0091.
+The current Wine series contains 87 files, numbered 0001 through 0092.
 Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
 are reserved by open pull requests and will enter this branch as those
 merge.
@@ -269,38 +269,19 @@ Apply them in sequence with the rest of the series.
   an unconditional MESSAGE line, and prints a one-line summary when the
   swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
-- `0072`: read the six pointer settings (SmoothScrolling,
-  TouchpadInertia, PinchZoom, MiddleDrag, InertiaCurve, InertiaRate)
-  from `HKCU\Software\Wine\X11 Driver` once at process attach. The
-  driver applies the AppDefaults overlay and accepts a `WINE_X11_*`
-  environment variable as a one-launch override. The patch also adds
-  middle-button drag navigation (issue 50). A held middle press
-  reports movement as fractional wheel input through a wheel-only
-  helper that cannot move the cursor; the driver takes the drag slop
-  from SM_CXDRAG and SM_CYDRAG. Rebuilds the PR 157 middle-drag patch
-  after its review: per-thread state, release-coordinate cursor sync,
-  allow-list option parsing. See
+- `0072`: read the six pointer settings once when a process starts, with a
+  launch override followed by application, global, and built-in values. Add
+  middle-button drag navigation with Wine's normal drag distance, a one-notch
+  limit per report, normal middle clicks, and cursor correction on release. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0073`: preserve screen coordinates for vertical and horizontal wheel
-  messages. Wine converted WM_MOUSEHWHEEL coordinates to client space,
-  although WM_MOUSEHWHEEL uses the same screen-coordinate lParam contract
-  as WM_MOUSEWHEEL. In Live, the incorrect horizontal-wheel point appeared
-  as fixed horizontal bands across the device drawer. The server now also
-  skips non-client filter prediction for both messages because neither has
-  a non-client form. See
+- `0073`: keep vertical and horizontal wheel coordinates in screen space and
+  exclude both messages from non-client mouse prediction. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0074`: report a touchpad pinch as wheel input applications read as
-  Ctrl+wheel (issue 64), the input a Windows precision touchpad
-  produces. The driver never synthesises a Ctrl key event: a
-  server-side override (SEND_HWMSG_FORCE_MK_CONTROL) sets the modifier
-  in the message wparam. Live reads GetKeyState() rather than the
-  message state (measured 2026-08-10), so the gesture also holds Ctrl
-  in the key state through the existing set_key_state request; the
-  gesture never produces a key message, and every end path releases
-  Ctrl. The driver tracks each gesture per sourceid with a matched
-  begin/update/end/cancel lifecycle and compensates a cancelled
-  gesture. Rebuilds the PR 157 pinch patch after its review. Zoom
-  passed verification in Live 12 on GNOME Wayland 2026-08-10. See
+- `0074`: convert touchpad pinch to Ctrl+wheel without Ctrl key events and
+  limit each pinch message to one notch. Add wheel delivery at a fixed window
+  and screen point. Fixed messages do not move the cursor, follow capture,
+  create raw input, or merge, and are dropped while a mouse button is held.
+  Limit ordinary queued wheel messages to one notch. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
@@ -404,26 +385,22 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
-- `0090`: preserve fractional scrolling from XInput2 2.1 scroll
-  valuators instead of the whole-notch legacy button events. The
-  decoder invalidates its cumulative baselines on window enter, focus
-  changes, grabs, device changes and removals, and discards excess
-  beyond the per-report cap. While the user holds a button, it drops
-  no input. Rebuilds the PR 157 smooth-scrolling decoder after its
-  review, without the inertia worker. Outside an active middle drag, direct
-  XInput2 wheel input includes the mapped desktop point from the event.
-  Active middle drags remain positionless. See
+- `0090`: convert cumulative XInput2 values into fine-grained scrolling at a
+  fixed report point. Limit each report to one notch, discard device resets,
+  and reset saved values after focus, window, grab, or device changes. While
+  a button is held, forward pointer movement but send no scroll-axis wheel
+  input or delayed remainder. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0091`: coast scrolling and thrown middle drags after release, on by
-  default (`TouchpadInertia`, `disabled` turns it off). The patch stays
-  separate from 0090. XInput2 cannot classify scroll sources, so the
-  default also makes free-spin and high-resolution wheels coast; `auto`
-  resolves to disabled on this backend. All state and every emitted
-  wheel event live on the owning GUI thread; a nudger thread only
-  posts driver-internal tick messages. The driver derives velocity
-  from event-timestamped raw deltas over the interval they cover. A
-  fling starts immediately on the finger lift marker or a middle
-  release; coasting integrates the decay analytically. Any real input
-  cancels. A 2026-08-10 run in Live 12 on GNOME Wayland exercised
-  flings, throws and cancellation; the full gate has not run. See
+- `0091`: continue fast scrolling or a middle-button drag only after a
+  matching end signal. Limit output to the latest 16 ms, 30 units per
+  message, and 480 units per axis for the complete movement. Keep delayed
+  messages at their starting point and cancel on new input or context change.
+  See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0092`: consolidate the pointer safety rules in the applied source. Drop
+  ordinary wheel output while any button is held, advance saved scroll values
+  without replay, and permit middle-drag output only with its one withheld
+  middle press. Recheck stored-position wheel messages after button changes.
+  Limit continued movement to 16 attempted messages across both axes, 15 units
+  per message, 120 units per axis, and 1,200 units per second. Reset ending
+  speed at device jumps and newer process input. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.

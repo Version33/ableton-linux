@@ -1,133 +1,50 @@
-Subject: winex11: coast scrolling and thrown middle drags after release
+Subject: winex11: add bounded scrolling after a matching end signal
 
-When a fast two-finger scroll sequence or a middle-button drag ends,
-its velocity can decay into further wheel input, the way macOS keeps
-scrolling after a flick. The feature ships on by default;
-TouchpadInertia=disabled turns it off. XInput2 cannot classify scroll
-sources (ScrollClass has no finger/wheel field, and XWayland discards
-the Wayland axis_source), so the default also makes free-spinning and
-high-resolution wheels coast. TouchpadInertia=auto resolves to
-disabled on this backend; it exists for a future backend that can
-classify input sources. The scroll path also requires precise mode:
-the tracker measures a fling from its fractional stream, and whole-notch
-wheel buttons never feed the tracker. The middle drag always has raw
-pixel deltas, so a drag released while moving throws in any scrolling
-mode.
+Record the last 100 ms of accepted fine-grained scrolling or middle-button
+movement. Start continued movement only after a matching stop report or a
+moving middle-button release. Silence only abandons the recorded sequence.
 
-While a sequence runs, the tracker keeps the raw fractional deltas of
-the trailing 100 ms, with the events' own timestamps. Each delta is
-measured against the last observed report, never the delivery baseline:
-held-button delivery carries an undelivered fraction in that baseline,
-and measuring against it would inflate each sample by the accumulated
-fraction. A held button cancels tracking and coasting and sends no
-samples, so this stream cannot coast into the control the user holds.
-The tracker never polls. Each sample rearms a one-shot 100 ms release
-deadline, and a positive end evaluates the fling immediately. On the
-scroll path, the positive end is a report whose present scroll axes did
-not move since the previous report. On the tested XWayland system, this
-report coincided with the compositor's axis stop. The tracker compares
-against the last observed value, not the reporting baseline. The
-baseline lags by the sub-notch remainder, so a true stop never
-compares equal against it. Comparing against the baseline adds the full
-deadline before each fling (measured in Live 2026-08-10). On the middle
-drag, the positive end is the button release itself. An aborted drag
-cancels instead, as does a press that stayed a click.
+Reduce velocity over the complete elapsed time but calculate output for no
+more than the latest 16 ms. Limit each message to 30 wheel units and each axis
+to 480 units for the complete coast. Discard missed frames and excess whole
+movement instead of replaying them later.
 
-The tracker sums the raw deltas over the interval their timestamps cover
-to get the fling velocity, so a late evaluation cannot underestimate
-it and rounding cannot thin it out. The oldest retained sample anchors
-the interval without contributing movement that accrued before it. A
-fling starts at 240 wheel units per second of vector magnitude, stops
-below 60, and clamps at 19200 (touchpad flicks measured 4000 to 19000
-units/s).
+Keep delayed messages at the window and screen point where movement began.
+Cancel on new pointer, button, key, focus, grab, device, or scroll input.
 
-A positive end that arrives more than 70 ms after the last movement
-means the fingers rested before lifting; observed genuine lift gaps
-run 3 to 29 ms. A rest does not fling. The same gate cancels a coast
-that the quiet deadline started when a later stop marker shows that the
-fingers were still down. A middle drag has no quiet end: stopping under
-the held button parks the tracker, and only a release during movement
-throws. After three seconds of coasting, the driver raises the decay
-rate to 14/s. A slow custom InertiaRate then finishes in about 300 ms
-instead of stopping in one tick.
-
-The nudger waits on CLOCK_MONOTONIC, so wall-clock steps cannot stall
-a deadline or freeze a coast. Eight slots keep one schedule per window
-under a mutex. If all slots are full, the nudger replaces the schedule
-with the latest deadline; that tracker resumes on its thread's next
-input. No field is read outside the lock. The nudger wakes only when a
-schedule moves earlier, so a device can update its slot hundreds of
-times a second without waking the thread each time.
-
-Coasting integrates the decay analytically over each measured
-interval: v1 = v0 e^(-k dt) and dx = v0 (1 - e^(-k dt)) / k. The
-tracker carries the sub-unit remainder, so total travel does not
-depend on tick timing. InertiaRate is k in 1/s; InertiaCurve=linear
-substitutes a constant deceleration with the same initial slope. k is
-an exponential rate coefficient, not a fraction of velocity lost per
-second.
-
-The owning GUI thread holds the tracker state, decides whether to fling
-and emits every wheel event. A separate nudger thread posts
-WM_X11DRV_POINTER_TICK on a timer. win32u routes this internal message to
-the driver on the window's thread and never returns it to the application.
-The nudger holds no scroll state, emits no input and waits on a condition
-variable when no schedule remains. A post after cancellation finds the
-tracker idle. No lock guards the GUI thread's scroll state.
-
-Coasting emits wheel-only input addressed to no window. The server
-routes it by capture and cursor position, so the driver stores neither a
-window target nor a pointer position. Any real input or context change
-cancels the coast: pointer motion that reaches the
-application, any button press or release, any key press, focus loss,
-cursor-clip grabs, device changes, and a new scroll sequence, which
-starts its own tracking instead of continuing the fling. Swallowed
-middle-drag motion feeds the tracker rather than cancelling it, and
-the middle release itself decides between throwing and cancelling.
-
-A verification run in Live 12 on GNOME Wayland (XWayland) on
-2026-08-10 exercised scroll coasting and thrown drags: flings start on
-the lift marker, coast, and cancel on new input. The feature ships on
-by default from that one verified environment; the full release gate
-has not run.
+See notes/ABLETON-WINE-POINTER-GESTURES.md for the formula, constants, and
+manual safety acceptance tests.
 ---
- dlls/winex11.drv/event.c    |   2 +
- dlls/winex11.drv/keyboard.c |   4 +
- dlls/winex11.drv/mouse.c    | 600 +++++++++++++++++++++++++++++++++++-
- dlls/winex11.drv/window.c   |   3 +
- dlls/winex11.drv/x11drv.h   |  32 +-
- 5 files changed, 633 insertions(+), 8 deletions(-)
-
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
-index 106b110..abf9cff 100644
+index 106b110..1551a0d 100644
 --- a/dlls/winex11.drv/event.c
 +++ b/dlls/winex11.drv/event.c
 @@ -761,6 +761,8 @@ static void focus_out( Display *display , HWND hwnd )
      pinch_gestures_reset();
      /* scrolling elsewhere advances the cumulative valuators unobserved */
      pointer_scroll_invalidate_baselines();
-+    /* neither does a fling: the pointer is interacting somewhere else */
++    /* Continued movement cannot survive a focus change. */
 +    pointer_inertia_cancel();
  
      if (xim_in_compose_mode()) return;
  
 diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
-index 668a25b..123927a 100644
+index 668a25b..4056e55 100644
 --- a/dlls/winex11.drv/keyboard.c
 +++ b/dlls/winex11.drv/keyboard.c
 @@ -1528,6 +1528,10 @@ BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *xev )
      TRACE_(key)("type %d, window %lx, state 0x%04x, keycode %u\n",
  		event->type, event->window, event->state, event->keycode);
  
-+    /* key input while wheel output coasts belongs to whatever the user is
-+     * doing next; end the fling before the key is processed */
-+    if (event->type == KeyPress) pointer_inertia_cancel();
++    /* A modifier transition can change the meaning of wheel input. End any
++     * coast before processing either a press or release. */
++    if (event->type == KeyPress || event->type == KeyRelease) pointer_inertia_cancel();
 +
      if (event->type == KeyPress && (data = get_win_data( hwnd )))
      {
          window_set_user_time( data, event->time, FALSE );
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
-index 4036e9a..ef710cb 100644
+index d3518bb..328dd03 100644
 --- a/dlls/winex11.drv/mouse.c
 +++ b/dlls/winex11.drv/mouse.c
 @@ -30,8 +30,10 @@
@@ -188,41 +105,41 @@ index 4036e9a..ef710cb 100644
      return TRUE;
  #else
      WARN( "XInput2 was not available at compile time\n" );
-@@ -902,6 +923,17 @@ static void send_wheel_control_input( HWND hwnd, int delta, UINT time )
+@@ -927,6 +948,15 @@ static void send_wheel_control_input( HWND hwnd, int delta, UINT time )
  /* movement one wheel notch stands for, in raw virtual screen pixels */
  #define MIDDLE_DRAG_STEP 24
  
 +#ifdef XIScrollClass
-+/* the middle drag feeds the scroll inertia tracker so a fast drag can be
-+ * thrown: released while moving, the pan coasts on (on by default, with the
-+ * rest of TouchpadInertia). the drag has no XInput2 source, so it tracks
-+ * under a reserved id */
++/* A middle drag uses the same release-speed tracker as fine scrolling. It has
++ * no XInput2 source, so it uses a reserved source id. */
 +#define INERTIA_SOURCE_MIDDLE_DRAG (-1)
 +static void pointer_inertia_sample( struct x11drv_thread_data *data, int sourceid, HWND hwnd,
-+                                    double dx, double dy, UINT time );
-+static void pointer_inertia_release( struct x11drv_thread_data *data, int sourceid, UINT time );
++                                    POINT anchor, double dx, double dy, UINT time );
++static void pointer_inertia_release( struct x11drv_thread_data *data, int sourceid, HWND hwnd, UINT time );
 +#endif
 +
  /***********************************************************************
   *           middle_drag_enabled
   *
-@@ -962,6 +994,7 @@ static void middle_drag_abort( POINT pt, UINT time )
+@@ -987,6 +1017,7 @@ static void middle_drag_abort( POINT pt, UINT time )
      if (drag->moved)
          send_mouse_input( drag->hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
      drag->active = FALSE;
-+    pointer_inertia_cancel();  /* an abort never throws */
++    pointer_inertia_cancel();  /* only a normal release may start a coast */
  }
  
  /***********************************************************************
-@@ -1052,6 +1085,7 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1082,7 +1113,8 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
  {
      struct x11drv_middle_drag *drag = &x11drv_thread_data()->middle_drag;
      BOOL notched = middle_drag_notched();
+-    int delta;
 +    int move_x, move_y;
-     int delta;
++    int delta_x, delta_y;
  
      if (!drag->active) return FALSE;
-@@ -1062,8 +1096,10 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+     if (!(event->state & Button2Mask) ||                /* the release went somewhere else */
+@@ -1092,8 +1124,10 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
          return FALSE;
      }
  
@@ -235,36 +152,50 @@ index 4036e9a..ef710cb 100644
      drag->last = pt;
      if (!drag->moved)
      {
-@@ -1072,6 +1108,15 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1102,15 +1136,25 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
          drag->moved = TRUE;
      }
  
+-    if ((delta = middle_drag_delta( &drag->accum_y, notched )))  /* up scrolls up */
++    delta_y = middle_drag_delta( &drag->accum_y, notched );  /* up scrolls up */
++    delta_x = middle_drag_delta( &drag->accum_x, notched );  /* right scrolls right */
++
 +#ifdef XIScrollClass
-+    /* feed the raw movement to the inertia tracker in the sign the wheel
-+     * is sent, so a fast drag can be thrown on release */
-+    if (move_x || move_y)
++    /* Release speed uses only the bounded wheel movement sent below. */
++    if (delta_x || delta_y)
 +        pointer_inertia_sample( x11drv_thread_data(), INERTIA_SOURCE_MIDDLE_DRAG, drag->hwnd,
-+                                move_x * (double)WHEEL_DELTA / MIDDLE_DRAG_STEP,
-+                                -move_y * (double)WHEEL_DELTA / MIDDLE_DRAG_STEP, time );
++                                drag->origin, delta_x, -delta_y, time );
 +#endif
 +
-     if ((delta = middle_drag_delta( &drag->accum_y, notched )))  /* up scrolls up */
++    if (delta_y)
      {
-         TRACE( "hwnd %p wheel delta %d\n", drag->hwnd, -delta );
-@@ -1106,6 +1151,22 @@ static BOOL middle_drag_end( XButtonEvent *event, POINT pt, UINT time )
+-        TRACE( "hwnd %p wheel delta %d\n", drag->hwnd, -delta );
+-        send_wheel_only_input( drag->hwnd, MOUSEEVENTF_WHEEL, -delta, time );
++        TRACE( "hwnd %p wheel delta %d\n", drag->hwnd, -delta_y );
++        send_wheel_only_input( drag->hwnd, MOUSEEVENTF_WHEEL, -delta_y, time );
+     }
+-    if ((delta = middle_drag_delta( &drag->accum_x, notched )))  /* right scrolls right */
++    if (delta_x)
+     {
+-        TRACE( "hwnd %p hwheel delta %d\n", drag->hwnd, delta );
+-        send_wheel_only_input( drag->hwnd, MOUSEEVENTF_HWHEEL, delta, time );
++        TRACE( "hwnd %p hwheel delta %d\n", drag->hwnd, delta_x );
++        send_wheel_only_input( drag->hwnd, MOUSEEVENTF_HWHEEL, delta_x, time );
+     }
+     return TRUE;
+ }
+@@ -1136,6 +1180,20 @@ static BOOL middle_drag_end( XButtonEvent *event, POINT pt, UINT time )
      if (drag->moved)
          send_mouse_input( drag->hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
      drag->active = FALSE;
 +#ifdef XIScrollClass
-+    /* releasing a drag is a positive end of its sequence: a fast drag is
-+     * thrown and coasts on. a press that stayed a click cancels instead,
-+     * and so does a release that finds the tracker on another source: a
-+     * button release always ends any coast it did not itself start */
++    /* A moving drag may coast after this normal release. A click or a
++     * release from another input sequence cancels pending movement. */
 +    if (drag->moved)
 +    {
 +        struct x11drv_thread_data *data = x11drv_thread_data();
 +
-+        pointer_inertia_release( data, INERTIA_SOURCE_MIDDLE_DRAG, time );
++        pointer_inertia_release( data, INERTIA_SOURCE_MIDDLE_DRAG, drag->hwnd, time );
 +        if (data->scroll_inertia.state != INERTIA_IDLE &&
 +            data->scroll_inertia.sourceid != INERTIA_SOURCE_MIDDLE_DRAG)
 +            pointer_inertia_cancel();
@@ -274,7 +205,7 @@ index 4036e9a..ef710cb 100644
      return TRUE;
  }
  
-@@ -2078,6 +2139,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
+@@ -2108,6 +2166,7 @@ BOOL X11DRV_ButtonPress( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
@@ -282,28 +213,27 @@ index 4036e9a..ef710cb 100644
      if (middle_drag_begin( hwnd, event, pt, time )) return TRUE;
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_down_data[button], time, NULL );
      return TRUE;
-@@ -2101,7 +2163,9 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
-     /* the remainder a quantised held-button stream left behind must not
-      * replay into the next unheld scroll */
+@@ -2131,7 +2190,9 @@ BOOL X11DRV_ButtonRelease( HWND hwnd, XEvent *xev )
+     /* Never carry a sub-notch remainder across a button release into whatever
+      * target receives later scrolling. */
      pointer_scroll_discard_remainders();
-+    /* a middle release decides between throwing and cancelling itself */
++    /* A middle release decides between throwing and cancelling itself. */
      if (middle_drag_end( event, pt, time )) return TRUE;
 +    pointer_inertia_cancel();
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, button_up_data[button], time, NULL );
      return TRUE;
  }
-@@ -2126,7 +2190,10 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
+@@ -2156,7 +2217,9 @@ BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *xev )
      }
  
      pt = map_event_coords( hwnd, event->window, event->root, root, pt );
-+    /* swallowed drag motion feeds the tracker instead of cancelling it;
-+     * only motion that really reaches the application cancels a fling */
++    /* Drag motion is handled above. Other pointer movement cancels a coast. */
      if (middle_drag_motion( event, pt, time )) return TRUE;
 +    pointer_inertia_cancel();
      send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE, 0, time, NULL );
      return TRUE;
  }
-@@ -2149,6 +2216,7 @@ BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
+@@ -2179,6 +2242,7 @@ BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *xev )
       * valuators did elsewhere in the meantime was not observed here, so the
       * cached baselines no longer mean anything */
      pointer_scroll_invalidate_baselines();
@@ -311,7 +241,7 @@ index 4036e9a..ef710cb 100644
  
      if (hwnd == NtUserGetAncestor( get_capture_window(), GA_ROOT )) return FALSE;
  
-@@ -2182,6 +2250,7 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
+@@ -2212,6 +2276,7 @@ static BOOL X11DRV_DeviceChanged( XGenericEventCookie *xev )
  #endif
      /* the device set changed under any gesture in progress */
      pinch_gestures_reset();
@@ -319,26 +249,24 @@ index 4036e9a..ef710cb 100644
      return TRUE;
  }
  
-@@ -2420,6 +2489,488 @@ static void send_xinput2_wheel_input( HWND hwnd, POINT pt, UINT flags, int delta
-         send_mouse_input( hwnd, pt, MOUSEEVENTF_ABSOLUTE | flags, delta, time, NULL );
+@@ -2452,6 +2517,529 @@ static void send_xinput2_wheel_input( HWND hwnd, POINT pt, UINT flags, int delta
+     }
  }
  
-+/* scroll inertia: coast after a fast touchpad sequence ends (on by default)
++/* Continue fast fine scrolling or a middle drag after a confirmed release.
 + *
-+ * All state lives in the owning GUI thread's data and every wheel event is
-+ * emitted from that thread. The only foreign thread is a nudger whose sole
-+ * job is posting WM_X11DRV_POINTER_TICK to the sequence's window: win32u
-+ * routes driver-range messages to the driver on the window's own thread and
-+ * the application never sees them. A stray post after a cancel finds the
-+ * tracker idle and does nothing, so there is no cross-thread race to lose.
++ * State and wheel output stay on the owning interface thread. A timer thread
++ * only posts WM_X11DRV_POINTER_TICK to that thread. The application does not
++ * receive this private message, and a late tick finds cancelled state idle.
 + */
 +
-+#define INERTIA_HISTORY_MS   100     /* velocity comes from this much tail */
-+#define INERTIA_DEADLINE_MS  100     /* quiet time that ends a sequence without a lift marker */
-+#define INERTIA_RELEASE_GATE_MS 70   /* a positive end this long after the last sample means
-+                                        the fingers were resting, not flicking (observed
-+                                        genuine lift gaps are 3 to 29 ms) */
++#define INERTIA_HISTORY_MS   100     /* history used to calculate release speed */
++#define INERTIA_DEADLINE_MS  100     /* abandon tracking without a matching release marker */
++#define INERTIA_RELEASE_GATE_MS 70   /* reject a release after the pointer has rested */
 +#define INERTIA_TICK_MS      8
++#define INERTIA_MAX_FRAME_MS 16      /* discard movement from older missed frames */
++#define INERTIA_MAX_PACKET   (WHEEL_DELTA / 4)
++#define INERTIA_MAX_TRAVEL   (4 * WHEEL_DELTA)
 +#define INERTIA_CAP_MS       3000    /* longest coast before the decay is forced steeper */
 +#define INERTIA_CAP_RATE     14.0    /* decay rate used after the three-second cap */
 +#define INERTIA_START_SPEED  240.0   /* wheel units per second, vector magnitude */
@@ -356,7 +284,7 @@ index 4036e9a..ef710cb 100644
 +        HWND   hwnd;      /* post target, 0 = free slot */
 +        UINT64 fire_at;   /* CLOCK_MONOTONIC milliseconds */
 +        UINT   interval;
-+        BOOL   repeating; /* deadlines post once, coasting ticks repeat */
++        BOOL   repeating; /* tracking expiry posts once; coast ticks repeat */
 +    } slots[INERTIA_NUDGE_SLOTS];
 +    BOOL running;
 +    BOOL failed;
@@ -429,7 +357,7 @@ index 4036e9a..ef710cb 100644
 + *
 + * Register or move one window's next tick. Slots are keyed by window, so
 + * trackers on different GUI threads schedule independently, and every
-+ * access runs under the mutex. The nudger only wakes when a schedule
++ * access runs under the mutex. The timer thread only wakes when a schedule
 + * moves earlier than the slot held before; a deadline re-armed later
 + * needs no wake, because the sleep target was already sooner.
 + */
@@ -503,7 +431,7 @@ index 4036e9a..ef710cb 100644
 +    pthread_mutex_unlock( &inertia_nudge_mutex );
 +}
 +
-+/* drop one window's schedule; the nudger wakes at the stale time and
++/* Drop one window's schedule. The timer thread wakes at the stale time and
 + * finds nothing due, so no signal is needed */
 +static void inertia_nudge_stop( HWND hwnd )
 +{
@@ -518,12 +446,9 @@ index 4036e9a..ef710cb 100644
 +
 +static BOOL pointer_inertia_enabled(void)
 +{
-+    /* auto stays disabled on XInput2: ScrollClass has no source field and
-+     * XWayland discards the Wayland axis source, so a touchpad cannot be
-+     * told from a free-spinning or high-resolution wheel here. enabled is
-+     * the explicit opt-in. The scroll path additionally requires the
-+     * precise mode, whose fractional stream a fling can be measured from;
-+     * the middle drag always has raw pixel deltas and needs no such gate. */
++    /* XInput2 does not distinguish a touchpad from a high-resolution or
++     * free-spinning wheel, so auto remains disabled. Fine scrolling also
++     * requires precise mode. Middle drags provide their own raw movement. */
 +    return pointer_config.touchpad_inertia == POINTER_INERTIA_ENABLED;
 +}
 +
@@ -551,26 +476,34 @@ index 4036e9a..ef710cb 100644
 + *
 + * Record one accepted smooth scroll report: the raw fractional wheel units
 + * in the sign they were sent, stamped with the event's own time. A report
-+ * from another device restarts tracking, and a report during a coast ends
-+ * the coast first, so a new touch always wins over a running fling. Each
-+ * sample re-arms the one-shot release deadline.
++ * from another device restarts tracking, and new input replaces an active
++ * coast. Each sample re-arms the one-shot abandonment timer.
 + */
 +static void pointer_inertia_sample( struct x11drv_thread_data *data, int sourceid, HWND hwnd,
-+                                    double dx, double dy, UINT time )
++                                    POINT anchor, double dx, double dy, UINT time )
 +{
 +    struct x11drv_scroll_inertia *si = &data->scroll_inertia;
 +    unsigned int i;
++    BOOL new_sequence;
 +
 +    if (!pointer_inertia_enabled()) return;
 +
-+    if (si->state == INERTIA_COASTING || (si->state == INERTIA_TRACKING && si->sourceid != sourceid))
++    new_sequence = si->state != INERTIA_TRACKING || si->sourceid != sourceid || si->hwnd != hwnd;
++    if (si->state == INERTIA_COASTING ||
++        (si->state == INERTIA_TRACKING && (si->sourceid != sourceid || si->hwnd != hwnd)))
 +    {
++        HWND old_hwnd = si->hwnd;
++
 +        si->state = INERTIA_IDLE;
 +        si->count = 0;
++        /* Do not leave the old window's repeating slot alive after the
++         * tracker switches source or target. */
++        inertia_nudge_stop( old_hwnd );
 +    }
 +    si->state = INERTIA_TRACKING;
 +    si->sourceid = sourceid;
 +    si->hwnd = hwnd;
++    if (new_sequence) si->anchor = anchor;
 +    si->last_time = time;
 +
 +    if (si->count == INERTIA_HISTORY_SIZE)
@@ -582,8 +515,8 @@ index 4036e9a..ef710cb 100644
 +    si->history[i].dy = dy;
 +    si->history[i].time = time;
 +
-+    /* an upsert per sample is a plain mutexed write; the nudger itself
-+     * only wakes when a schedule moves earlier, and a deadline pushed
++    /* An update is a mutex-protected write. The timer thread only wakes when
++     * a schedule moves earlier, and a deadline pushed
 +     * later never does */
 +    inertia_nudge_arm( hwnd, INERTIA_DEADLINE_MS, FALSE );
 +}
@@ -591,12 +524,11 @@ index 4036e9a..ef710cb 100644
 +/***********************************************************************
 + *           pointer_inertia_evaluate
 + *
-+ * Decide whether the ended sequence flings. The velocity is the summed raw
-+ * deltas of the trailing history over the interval their timestamps cover,
-+ * measured with the events' own timestamps: a late evaluation cannot
-+ * underestimate it, and rounding losses cannot accumulate in it.
++ * Decide whether the release speed is high enough to coast. Calculate speed
++ * from accepted raw movement and the input events' own timestamps, so a late
++ * evaluation and wheel-unit rounding do not change it.
 + */
-+static void pointer_inertia_evaluate( struct x11drv_thread_data *data, UINT now, BOOL deadline )
++static void pointer_inertia_evaluate( struct x11drv_thread_data *data, UINT now )
 +{
 +    struct x11drv_scroll_inertia *si = &data->scroll_inertia;
 +    double sum_x = 0.0, sum_y = 0.0, vx, vy, speed;
@@ -634,7 +566,7 @@ index 4036e9a..ef710cb 100644
 +    speed = hypot( vx, vy );
 +    if (speed < INERTIA_START_SPEED)
 +    {
-+        TRACE( "sequence ended at %f units/s, no fling\n", speed );
++        TRACE( "sequence ended at %f units/s, no coast\n", speed );
 +        return;
 +    }
 +    if (speed > INERTIA_MAX_SPEED)
@@ -644,13 +576,13 @@ index 4036e9a..ef710cb 100644
 +    }
 +
 +    si->state = INERTIA_COASTING;
-+    si->deadline_fling = deadline;
 +    si->vx = si->v0x = vx;
 +    si->vy = si->v0y = vy;
 +    si->rem_x = si->rem_y = 0.0;
++    si->travel_x = si->travel_y = 0;
 +    si->start_time = si->last_tick = now;
 +
-+    TRACE( "fling start velocity %f,%f units/s%s\n", vx, vy, deadline ? " (deadline)" : "" );
++    TRACE( "coast start velocity %f,%f units/s\n", vx, vy );
 +
 +    inertia_nudge_arm( si->hwnd, INERTIA_TICK_MS, TRUE );
 +}
@@ -658,20 +590,19 @@ index 4036e9a..ef710cb 100644
 +/***********************************************************************
 + *           pointer_inertia_release
 + *
-+ * The tracked sequence ended positively: a finger lift marker from the
-+ * scroll path, or the middle button releasing a drag. Evaluate the fling
-+ * right away instead of waiting for the quiet deadline.
++ * A matching scroll marker or middle-button release ended the tracked
++ * sequence. Evaluate it immediately; silence alone never starts a coast.
 + */
-+static void pointer_inertia_release( struct x11drv_thread_data *data, int sourceid, UINT time )
++static void pointer_inertia_release( struct x11drv_thread_data *data, int sourceid, HWND hwnd, UINT time )
 +{
 +    struct x11drv_scroll_inertia *si = &data->scroll_inertia;
 +
-+    if (si->state != INERTIA_TRACKING || si->sourceid != sourceid) return;
++    if (si->state != INERTIA_TRACKING || si->sourceid != sourceid || si->hwnd != hwnd) return;
 +    if (time - si->last_time > INERTIA_RELEASE_GATE_MS)
 +    {
 +        /* the fingers rested before lifting: stopping precisely must stop
 +         * precisely, however fast the movement before the rest was */
-+        TRACE( "release from source %d after %u ms of rest, no fling\n",
++        TRACE( "release from source %d after %u ms of rest, no coast\n",
 +               sourceid, time - si->last_time );
 +        si->state = INERTIA_IDLE;
 +        si->count = 0;
@@ -679,45 +610,66 @@ index 4036e9a..ef710cb 100644
 +        return;
 +    }
 +    TRACE( "release from source %d\n", sourceid );
-+    pointer_inertia_evaluate( data, time, FALSE );
++    inertia_nudge_stop( si->hwnd );
++    pointer_inertia_evaluate( data, time );
 +}
 +
-+/* treat a zero-delta report on a present scroll axis as a stop marker; it
-+ * coincided with finger lift on the tested XWayland setup */
-+static void pointer_inertia_stop_marker( struct x11drv_thread_data *data, int sourceid, UINT time )
++/* Treat a repeated cumulative value on a present scroll axis as a release
++ * marker. The source and window must match the tracked sequence. */
++static void pointer_inertia_stop_marker( struct x11drv_thread_data *data, int sourceid,
++                                         HWND hwnd, UINT time )
 +{
-+    struct x11drv_scroll_inertia *si = &data->scroll_inertia;
-+
 +    if (!pointer_inertia_enabled()) return;
++    pointer_inertia_release( data, sourceid, hwnd, time );
++}
 +
-+    /* a late marker shows that the fingers remained down after the quiet
-+     * deadline. if it started a coast for this source while the fingers
-+     * rested, cancel that coast */
-+    if (si->state == INERTIA_COASTING && si->sourceid == sourceid && si->deadline_fling &&
-+        time - si->last_time > INERTIA_RELEASE_GATE_MS)
++/***********************************************************************
++ *           pointer_inertia_packet
++ *
++ * Bound one axis independently. Whole-unit output beyond the packet cap is
++ * discarded instead of becoming debt for a later tick; only its sub-unit
++ * remainder survives. Each coast can emit at most four notches per axis.
++ */
++static int pointer_inertia_packet( double *remainder, double *velocity, int *travel )
++{
++    int available = (int)*remainder;
++    int remaining = INERTIA_MAX_TRAVEL - *travel;
++    int delta;
++
++    *remainder -= available;
++    if (remaining <= 0)
 +    {
-+        TRACE( "late lift marker from source %d cancels a deadline fling\n", sourceid );
-+        pointer_inertia_cancel();
-+        return;
++        *remainder = *velocity = 0.0;
++        return 0;
 +    }
-+    pointer_inertia_release( data, sourceid, time );
++
++    if (available > INERTIA_MAX_PACKET) delta = INERTIA_MAX_PACKET;
++    else if (available < -INERTIA_MAX_PACKET) delta = -INERTIA_MAX_PACKET;
++    else delta = available;
++    if (delta > remaining) delta = remaining;
++    else if (delta < -remaining) delta = -remaining;
++
++    *travel += abs( delta );
++    if (*travel >= INERTIA_MAX_TRAVEL) *remainder = *velocity = 0.0;
++    return delta;
 +}
 +
 +/***********************************************************************
 + *           pointer_inertia_tick
 + *
-+ * Runs on the owning thread for every WM_X11DRV_POINTER_TICK the nudger
-+ * posts. During tracking it is the release deadline for sequences without
-+ * a lift marker; during coasting it integrates the decay analytically over
-+ * the measured interval, so total travel does not depend on tick timing,
-+ * and emits the whole wheel units, carrying the remainder.
++ * Runs on the owning thread for every timer tick. During tracking it abandons
++ * a sequence without a matching release marker. During coasting it reduces
++ * velocity over the full elapsed wall time, but
++ * integrates only the latest bounded frame so a stalled GUI thread cannot
++ * replay missed travel as one burst.
 + */
 +void pointer_inertia_tick(void)
 +{
 +    struct x11drv_thread_data *data = x11drv_thread_data();
 +    struct x11drv_scroll_inertia *si;
 +    UINT now = NtGetTickCount();
-+    double dt, k = pointer_config.inertia_rate;
++    UINT elapsed_ms, frame_ms;
++    double elapsed_dt, frame_dt, k = pointer_config.inertia_rate;
 +    int delta;
 +
 +    if (!data) return;
@@ -730,16 +682,11 @@ index 4036e9a..ef710cb 100644
 +    case INERTIA_TRACKING:
 +        if (now - si->last_time >= INERTIA_DEADLINE_MS)
 +        {
-+            /* a middle drag has no quiet end: it ends by release or abort,
-+             * which evaluate or cancel themselves. going quiet under the
-+             * held button means the user paused, and a pause never throws */
-+            if (si->sourceid == INERTIA_SOURCE_MIDDLE_DRAG)
-+            {
-+                si->state = INERTIA_IDLE;
-+                si->count = 0;
-+                inertia_nudge_stop( si->hwnd );
-+            }
-+            else pointer_inertia_evaluate( data, now, TRUE );
++            /* Quiet is not proof of release. Only a same-value stop marker
++             * or a middle-button release may start a coast. */
++            si->state = INERTIA_IDLE;
++            si->count = 0;
++            inertia_nudge_stop( si->hwnd );
 +        }
 +        else  /* an early post, e.g. from a re-arm race: keep the deadline */
 +            inertia_nudge_arm( si->hwnd, INERTIA_DEADLINE_MS - (now - si->last_time), FALSE );
@@ -748,7 +695,10 @@ index 4036e9a..ef710cb 100644
 +        break;
 +    }
 +
-+    if (!(dt = (now - si->last_tick) / 1000.0)) return;
++    if (!(elapsed_ms = now - si->last_tick)) return;
++    frame_ms = elapsed_ms > INERTIA_MAX_FRAME_MS ? INERTIA_MAX_FRAME_MS : elapsed_ms;
++    elapsed_dt = elapsed_ms / 1000.0;
++    frame_dt = frame_ms / 1000.0;
 +    si->last_tick = now;
 +
 +    /* after the cap, a steeper decay takes any remaining velocity to the
@@ -759,47 +709,68 @@ index 4036e9a..ef710cb 100644
 +
 +    if (pointer_config.inertia_curve == POINTER_INERTIA_CURVE_LINEAR)
 +    {
-+        /* constant deceleration with the exponential curve's initial slope */
-+        double dec_x = k * fabs( si->v0x ) * dt, dec_y = k * fabs( si->v0y ) * dt;
-+        double new_vx, new_vy;
++        /* Decay across the full interval, then integrate only its most recent
++         * bounded frame. Missed frames are deliberately discarded. */
++        double before_dt = elapsed_dt - frame_dt;
++        double rate_x = k * fabs( si->v0x ), rate_y = k * fabs( si->v0y );
++        double frame_vx, frame_vy, new_vx, new_vy;
 +
-+        if (si->vx > 0) new_vx = si->vx - dec_x > 0 ? si->vx - dec_x : 0;
-+        else new_vx = si->vx + dec_x < 0 ? si->vx + dec_x : 0;
-+        if (si->vy > 0) new_vy = si->vy - dec_y > 0 ? si->vy - dec_y : 0;
-+        else new_vy = si->vy + dec_y < 0 ? si->vy + dec_y : 0;
-+        si->rem_x += (si->vx + new_vx) / 2.0 * dt;
-+        si->rem_y += (si->vy + new_vy) / 2.0 * dt;
++        if (si->vx > 0)
++        {
++            frame_vx = si->vx - rate_x * before_dt > 0 ? si->vx - rate_x * before_dt : 0;
++            new_vx = si->vx - rate_x * elapsed_dt > 0 ? si->vx - rate_x * elapsed_dt : 0;
++        }
++        else if (si->vx < 0)
++        {
++            frame_vx = si->vx + rate_x * before_dt < 0 ? si->vx + rate_x * before_dt : 0;
++            new_vx = si->vx + rate_x * elapsed_dt < 0 ? si->vx + rate_x * elapsed_dt : 0;
++        }
++        else frame_vx = new_vx = 0;
++        if (si->vy > 0)
++        {
++            frame_vy = si->vy - rate_y * before_dt > 0 ? si->vy - rate_y * before_dt : 0;
++            new_vy = si->vy - rate_y * elapsed_dt > 0 ? si->vy - rate_y * elapsed_dt : 0;
++        }
++        else if (si->vy < 0)
++        {
++            frame_vy = si->vy + rate_y * before_dt < 0 ? si->vy + rate_y * before_dt : 0;
++            new_vy = si->vy + rate_y * elapsed_dt < 0 ? si->vy + rate_y * elapsed_dt : 0;
++        }
++        else frame_vy = new_vy = 0;
++        si->rem_x += (frame_vx + new_vx) / 2.0 * frame_dt;
++        si->rem_y += (frame_vy + new_vy) / 2.0 * frame_dt;
 +        si->vx = new_vx;
 +        si->vy = new_vy;
 +    }
 +    else
 +    {
-+        /* v1 = v0 e^(-k dt); dx = v0 (1 - e^(-k dt)) / k */
-+        double factor = exp( -k * dt );
++        /* Decay across the full interval. Integrate only [elapsed-frame,
++         * elapsed], discarding any motion from earlier missed frames. */
++        double factor = exp( -k * elapsed_dt );
++        double frame_start = exp( -k * (elapsed_dt - frame_dt) );
++        double frame_factor = exp( -k * frame_dt );
 +
-+        si->rem_x += si->vx * (1.0 - factor) / k;
-+        si->rem_y += si->vy * (1.0 - factor) / k;
++        si->rem_x += si->vx * frame_start * (1.0 - frame_factor) / k;
++        si->rem_y += si->vy * frame_start * (1.0 - frame_factor) / k;
 +        si->vx *= factor;
 +        si->vy *= factor;
 +    }
 +
-+    if ((delta = (int)si->rem_y))
++    if ((delta = pointer_inertia_packet( &si->rem_y, &si->vy, &si->travel_y )))
 +    {
-+        si->rem_y -= delta;
 +        TRACE( "coast wheel %d\n", delta );
-+        send_wheel_only_input( NULL, MOUSEEVENTF_WHEEL, delta, now );
++        send_wheel_at_input( si->hwnd, si->anchor, MOUSEEVENTF_WHEEL, delta, now );
 +    }
-+    if ((delta = (int)si->rem_x))
++    if ((delta = pointer_inertia_packet( &si->rem_x, &si->vx, &si->travel_x )))
 +    {
-+        si->rem_x -= delta;
 +        TRACE( "coast hwheel %d\n", delta );
-+        send_wheel_only_input( NULL, MOUSEEVENTF_HWHEEL, delta, now );
++        send_wheel_at_input( si->hwnd, si->anchor, MOUSEEVENTF_HWHEEL, delta, now );
 +    }
 +
 +    if (hypot( si->vx, si->vy ) < INERTIA_STOP_SPEED ||
 +        now - si->start_time > INERTIA_CAP_MS + 1000)  /* backstop after the raised decay rate */
 +    {
-+        TRACE( "fling ends at %f,%f units/s\n", si->vx, si->vy );
++        TRACE( "coast ends at %f,%f units/s\n", si->vx, si->vy );
 +        si->state = INERTIA_IDLE;
 +        inertia_nudge_stop( si->hwnd );
 +    }
@@ -808,28 +779,28 @@ index 4036e9a..ef710cb 100644
  /***********************************************************************
   *           X11DRV_SmoothScrollEvent
   *
-@@ -2442,8 +2993,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
-     POINT pt = { event->event_x, event->event_y }, root = { event->root_x, event->root_y };
+@@ -2475,7 +3063,7 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      UINT time = EVENT_x11_time_to_win32_time( event->time );
      BOOL emulated = event->flags & XIPointerEmulated;
--    double value_x = 0, value_y = 0;
+     double value_x = 0, value_y = 0;
 -    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE;
-+    double value_x = 0, value_y = 0, units_x = 0.0, units_y = 0.0;
 +    BOOL have_x = FALSE, have_y = FALSE, saw_motion = FALSE, stop_marker = FALSE;
      BOOL quantize, buttons_down;
      int delta_x = 0, delta_y = 0;
      HWND hwnd;
-@@ -2460,7 +3011,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2491,8 +3079,9 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+         if (button < 3 || button > 6) return forward_xinput2_core_event( hwnd, event );
          if (event->evtype == XI_ButtonRelease || emulated) return TRUE;
  
-         /* a native XI wheel button: a device without scroll axes reporting a
+-        /* a native XI wheel button: a device without scroll axes reporting a
 -         * whole notch per press */
-+         * whole notch per press. direct input, so it also ends a fling */
++        /* A native XI wheel button is direct input from a device without
++         * scroll axes. It also cancels continued movement. */
 +        pointer_inertia_cancel();
          if ((win_data = get_win_data( hwnd )))
          {
              /* user-time feeds focus-stealing arbitration only; pushing the
-@@ -2490,8 +3042,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2522,8 +3111,8 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
  
      if (emulated)
      {
@@ -840,47 +811,37 @@ index 4036e9a..ef710cb 100644
          if (have_x) smooth_scroll_delta( &src->scroll_x, value_x, TRUE, FALSE );
          if (have_y) smooth_scroll_delta( &src->scroll_y, value_y, TRUE, FALSE );
          if (have_x) { src->scroll_x.last_value = value_x; src->scroll_x.last_value_valid = TRUE; }
-@@ -2513,6 +3065,20 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2542,6 +3131,10 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
      buttons_down = xinput2_any_button_down( event );
-     quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED || buttons_down;
+     quantize = pointer_config.smooth_scrolling == POINTER_SCROLL_NOTCHED;
  
-+    /* the raw fractional units for the inertia tracker, and the stop marker:
-+     * a report whose present scroll axes did not move since the previous
-+     * report. on the tested XWayland setup, it coincided with the axis stop.
-+     * compare both against the last observed report, never the delivery
-+     * baseline: the baseline lags by the sub-notch remainder while
-+     * quantising, and measuring against it inflates the deltas by
-+     * the accumulated remainder */
-+    if (have_x && src->scroll_x.last_value_valid)
-+        units_x = WHEEL_DELTA * (value_x - src->scroll_x.last_value) / src->scroll_x.increment;
-+    if (have_y && src->scroll_y.last_value_valid)
-+        units_y = WHEEL_DELTA * (value_y - src->scroll_y.last_value) / src->scroll_y.increment;
++    /* A same-value report is the only fine-scroll release marker. */
 +    stop_marker = (have_x || have_y) &&
 +                  (!have_x || (src->scroll_x.last_value_valid && value_x == src->scroll_x.last_value)) &&
 +                  (!have_y || (src->scroll_y.last_value_valid && value_y == src->scroll_y.last_value));
      if (have_x) { src->scroll_x.last_value = value_x; src->scroll_x.last_value_valid = TRUE; }
      if (have_y) { src->scroll_y.last_value = value_y; src->scroll_y.last_value_valid = TRUE; }
  
-@@ -2535,5 +3101,18 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
+@@ -2564,6 +3157,18 @@ static BOOL X11DRV_SmoothScrollEvent( XGenericEventCookie *xev )
          if (delta_y) send_xinput2_wheel_input( hwnd, pt, MOUSEEVENTF_WHEEL, -delta_y, time );
          if (delta_x) send_xinput2_wheel_input( hwnd, pt, MOUSEEVENTF_HWHEEL, delta_x, time );
      }
 +    if (buttons_down)
 +    {
-+        /* a held button means the user is manipulating something; the
-+         * quantised stream must not feed a fling that would coast into
-+         * the held control after the deadline */
++        /* A held button means the user is manipulating something. Delivery
++         * was suppressed and reseeded above; do not retain inertia either. */
 +        pointer_inertia_cancel();
 +    }
 +    else if (pointer_config.smooth_scrolling == POINTER_SCROLL_PRECISE)
 +    {
-+        if (stop_marker) pointer_inertia_stop_marker( data, event->sourceid, time );
-+        else if (units_x || units_y)
-+            pointer_inertia_sample( data, event->sourceid, hwnd, units_x, -units_y, time );
++        if (stop_marker) pointer_inertia_stop_marker( data, event->sourceid, hwnd, time );
++        else if (delta_x || delta_y)
++            pointer_inertia_sample( data, event->sourceid, hwnd, pt, delta_x, -delta_y, time );
 +    }
      return TRUE;
  }
-@@ -2657,6 +3236,9 @@ static void set_control_key_state( BOOL down )
+ 
+@@ -2685,6 +3290,9 @@ static void set_control_key_state( BOOL down )
          wine_server_call( req );
      }
      SERVER_END_REQ;
@@ -890,17 +851,16 @@ index 4036e9a..ef710cb 100644
  }
  
  /***********************************************************************
-@@ -2792,6 +3374,9 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+@@ -2827,6 +3435,8 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
      if (event->evtype == XI_GesturePinchBegin)
      {
          if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
-+        /* a pinch beginning over a running fling must not zoom with the
-+         * fling's leftover momentum */
++        /* New pinch input cancels any earlier coast. */
 +        pointer_inertia_cancel();
          gesture = find_pinch_gesture( data, event->sourceid, TRUE );
          gesture->hwnd = hwnd;
          gesture->scale = 1.0;  /* the protocol defines Begin as scale 1.0 */
-@@ -2830,6 +3415,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
+@@ -2865,6 +3475,7 @@ static BOOL X11DRV_GesturePinchEvent( XGenericEventCookie *xev )
          /* the begin went somewhere else: start from the current scale rather
           * than dropping the rest of the gesture */
          if (XFindContext( event->display, event->event, winContext, (char **)&hwnd )) return FALSE;
@@ -923,10 +883,10 @@ index defaead..f5aa3a2 100644
          FIXME( "got window msg %x hwnd %p wp %lx lp %lx\n", msg, hwnd, (long)wp, lp );
          return 0;
 diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
-index 489ad64..5f33166 100644
+index aa6e747..f0722db 100644
 --- a/dlls/winex11.drv/x11drv.h
 +++ b/dlls/winex11.drv/x11drv.h
-@@ -513,6 +513,34 @@ struct x11drv_scroll_source
+@@ -513,6 +513,35 @@ struct x11drv_scroll_source
  extern void pointer_scroll_invalidate_baselines(void);
  extern void pointer_scroll_discard_remainders(void);
  
@@ -944,15 +904,16 @@ index 489ad64..5f33166 100644
 +    enum pointer_inertia_state state;
 +    int    sourceid;      /* device of the tracked sequence */
 +    HWND   hwnd;          /* window of the sequence, target of the tick posts */
++    POINT  anchor;        /* fixed point used for delayed wheel messages */
 +    struct { double dx, dy; UINT time; } history[INERTIA_HISTORY_SIZE];
 +    unsigned int count, pos;
 +    UINT   last_time;     /* win32 time of the last accepted sample */
 +    UINT   start_time;    /* when coasting began */
 +    UINT   last_tick;     /* last integration time */
-+    BOOL   deadline_fling; /* the coast was launched by the quiet deadline, not a positive end */
 +    double vx, vy;        /* coasting velocity, wheel units per second */
 +    double v0x, v0y;      /* velocity at coast begin, for the linear curve */
 +    double rem_x, rem_y;  /* sub-unit wheel remainder carried across ticks */
++    int travel_x, travel_y; /* absolute wheel units emitted by this coast */
 +};
 +
 +extern void pointer_inertia_cancel(void);
@@ -961,7 +922,7 @@ index 489ad64..5f33166 100644
  struct x11drv_thread_data
  {
      Display *display;
-@@ -537,6 +565,7 @@ struct x11drv_thread_data
+@@ -537,6 +566,7 @@ struct x11drv_thread_data
      int      root_window_users;    /* counter for root window XISelectEvents */
      struct x11drv_pinch_gesture pinch_gestures[POINTER_PINCH_SLOTS];
      struct x11drv_scroll_source scroll_sources[SCROLL_SOURCE_CACHE_SIZE];
@@ -969,13 +930,13 @@ index 489ad64..5f33166 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
-@@ -741,7 +770,8 @@ enum x11drv_window_messages
+@@ -741,7 +771,8 @@ enum x11drv_window_messages
      WM_X11DRV_UPDATE_CLIPBOARD = WM_WINE_FIRST_DRIVER_MSG,
      WM_X11DRV_SET_WIN_REGION,
      WM_X11DRV_DELETE_TAB,
 -    WM_X11DRV_ADD_TAB
 +    WM_X11DRV_ADD_TAB,
-+    WM_X11DRV_POINTER_TICK      /* scroll inertia deadline or coasting tick */
++    WM_X11DRV_POINTER_TICK      /* tracking expiry or continued-scroll tick */
  };
  
  /* _NET_WM_STATE properties that we keep track of */

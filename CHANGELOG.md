@@ -2,34 +2,31 @@
 
 ## Unreleased
 
-- Touchpad and high-resolution wheel scrolling reaches Live in fine
-  steps instead of whole notches. The `SmoothScrolling` setting restores
-  whole steps (`notched`) or the previous behaviour (`disabled`). Live
-  receives wheel input in whole steps while you hold a mouse button,
-  so scrolling cannot nudge the control you are dragging. Horizontal
-  scrolling now uses the pointer's screen position, so Live scrolls the
-  device drawer under the pointer across its full height.
-- A touchpad pinch zooms the way Ctrl+wheel does, on X servers with
-  XInput2 2.4. Wine creates no Ctrl key event anywhere: the modifier
-  rides the wheel message and the key state for the gesture's duration.
-  A pinch cannot press keys, trigger shortcuts, or leave a stuck
-  modifier. The `PinchZoom` setting turns it off.
-- Holding the middle mouse button and moving the pointer scrolls and
-  pans, on by default. A plain middle click still clicks: only a press
-  that moves becomes a drag. The `MiddleDrag` setting (`disabled`)
-  restores the old behaviour.
-- Scrolling coasts after a fast release, and you can throw a fast
-  middle-button drag. Inertia is on by default; `TouchpadInertia`
-  (`disabled`) turns it off. High-resolution and free-spinning wheels
-  coast too, because the input stack cannot tell them from a touchpad.
-
-- The pointer work spans patches 0072 through 0074, 0090 and 0091. A
-  verification run on 2026-08-10 confirmed pinch zoom, precision
-  scrolling, middle-drag panning and inertia in Live 12 on one GNOME
-  Wayland setup. On 2026-08-11, the build passed all 114 artifact checks
-  and `tools/wheelcoords.c`. An interactive Live 12.4.3 run then
-  confirmed horizontal scrolling across the full height of the device
-  drawer. The full release gate remains open. See
+- Added fine vertical and horizontal scrolling from XInput2. Each direct
+  report is limited to one notch per axis. While any button is held, Wine
+  forwards pointer movement but drops ordinary fine-scroll, wheel,
+  pinch-generated wheel, and delayed wheel output. Saved scroll positions are
+  advanced so ignored movement cannot catch up after release.
+- Added touchpad pinch as Ctrl+wheel on XInput2 2.4. Wine creates no Ctrl key
+  input. Each update and cancellation correction is limited to one notch.
+- Added middle-button drag navigation. A plain middle click remains a click.
+  Drag output is limited to one notch per axis and is accepted only while
+  exactly its withheld middle press remains down.
+- Added bounded movement after a matching fast-scroll end signal or a fast
+  middle-button release. Each message is limited to one eighth of a notch,
+  each axis has a one-notch travel guard, and one continuation can attempt no
+  more than 16 messages or two notches across both axes. Ending speed is
+  limited to 1,200 units per second. A delayed interface discards missed
+  frames instead of replaying them as a burst.
+- Delayed pointer messages retain their Wine window and screen point without
+  moving the cursor. They do not follow later capture, create raw input, or
+  merge. Wine drops them after any unexpected button transition.
+- Pointer defaults remain unchanged. `SmoothScrolling`, `PinchZoom`,
+  `MiddleDrag`, `TouchpadInertia`, `InertiaCurve`, and `InertiaRate` provide
+  per-launch and registry controls. XInput2 cannot distinguish a touchpad from
+  a high-resolution or free-spinning wheel.
+- Added `make check` for deterministic source and maths checks. It does not run
+  Wine or Live. Manual acceptance tests remain in
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 
 - Link setup records its version marker only when the service step

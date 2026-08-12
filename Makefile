@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup refresh uninstall test vendor-cache verify clean distclean
+.PHONY: all build install setup refresh uninstall test vendor-cache verify check pointer-safety-check clean distclean
 
 all: build
 
@@ -26,8 +26,22 @@ test:                         ## run installer and launcher lifecycle gates
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup
 	./scripts/vendor-winetricks-cache.sh
 
-verify:                       ## check vendored inputs against pinned checksums
+verify: pointer-safety-check  ## check vendored inputs and pointer safety rules
 	cd vendor && sha256sum -c wine-base.sha256 pipeasio.sha256 pipewire-sdk.sha256 ntsync-uapi.sha256 link.sha256
+
+check: pointer-safety-check   ## run deterministic pointer safety checks
+
+pointer-safety-check:
+	@set -eu; \
+	trap 'rm -f -- tools/.pointer-safety-invariants.tmp' EXIT HUP INT TERM; \
+	$(CC) -std=c11 -O2 -Wall -Wextra -Werror \
+		tools/pointer-safety-invariants.c -lm -o tools/.pointer-safety-invariants.tmp; \
+	tools/.pointer-safety-invariants.tmp \
+		patches/0090-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch \
+		patches/0091-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch \
+		patches/0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch \
+		patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch \
+		patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch
 
 clean:                        ## remove build outputs
 	rm -rf dist

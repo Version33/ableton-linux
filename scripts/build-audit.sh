@@ -111,7 +111,7 @@ else
     bad "BUILD-INFO patch count" "missing or != $n_series (see $binfo)"
 fi
 
-# --- [3/4] per-patch verification ----------------------------------------------
+# --- [3/4] patch artifact fingerprints -----------------------------------------
 # FINGERPRINTS: patch|encoding(ascii|wide=UTF-16LE)|module|pattern. STAMP_ONLY: patch|reason.
 FINGERPRINTS='
 0001|ascii|lib/wine/x86_64-windows/wined3d.dll|WINED3D_DCOMP_FORCE_FULL_REDRAW
@@ -153,7 +153,8 @@ FINGERPRINTS='
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
 0090|ascii|lib/wine/x86_64-unix/winex11.so|smooth scroll delta
-0091|ascii|lib/wine/x86_64-unix/winex11.so|fling start velocity
+0091|ascii|lib/wine/x86_64-unix/winex11.so|coast start velocity
+0092|ascii|lib/wine/x86_64-unix/winex11.so|pinch table full, dropping begin from source
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -214,7 +215,7 @@ wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
         | sed -e 's/^ //' -e 's/ $//' -e 's/ /\\x00\\x/g' -e 's/^/\\x/' -e 's/$/\\x00/'
 }
-say "== [3/4] per-patch verification ($n_series patches) =="
+say "== [3/4] patch artifact fingerprints ($n_series patches) =="
 for f in $(awk '{print $2}' "$SERIES" | sort); do
     num="${f%%-*}"
     integrity="sha✓"
