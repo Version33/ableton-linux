@@ -74,9 +74,6 @@ declare -A SERIES_GAPS=(
     [0066]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0067]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
     [0068]="reserved 2026-08-02 for PR 124's GPU denylist hardening series"
-    [0072]="unclaimed; kept as a gap so 0073 and 0074 stay where PR 152 put them"
-    [0073]="reserved for PR 152"
-    [0074]="reserved for PR 152"
 )
 seq_expect=1
 for f in $(awk '{print $2}' "$SERIES" | grep -v '^pipeasio/' | sort); do
@@ -114,7 +111,7 @@ else
     bad "BUILD-INFO patch count" "missing or != $n_series (see $binfo)"
 fi
 
-# --- [3/4] per-patch verification ----------------------------------------------
+# --- [3/4] patch artifact fingerprints -----------------------------------------
 # FINGERPRINTS: patch|encoding(ascii|wide=UTF-16LE)|module|pattern. STAMP_ONLY: patch|reason.
 FINGERPRINTS='
 0001|ascii|lib/wine/x86_64-windows/wined3d.dll|WINED3D_DCOMP_FORCE_FULL_REDRAW
@@ -148,11 +145,19 @@ FINGERPRINTS='
 0065|ascii|lib/wine/x86_64-unix/winex11.so|WINE_WIN32_FULLSCREEN_CLASS
 0069|ascii|lib/wine/x86_64-unix/win32u.so|WINE_WIN32_RESIZABLE_CLASS
 0071|ascii|lib/wine/x86_64-windows/wined3d.dll|Sustained present-size mismatch
+0072|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDrag
+0074|ascii|lib/wine/x86_64-unix/winex11.so|pinch begin on
 0075|ascii|lib/wine/x86_64-windows/kernel32.dll|UnregisterApplicationRecoveryCallback
 0076|ascii|lib/wine/x86_64-windows/userenv.dll|DeriveAppContainerSidFromAppContainerName
 0080|ascii|lib/wine/x86_64-windows/ninput.dll|pointer_count %u
 0084|ascii|lib/wine/x86_64-unix/win32u.so|WINE_DISABLE_PREFIX_FONT_SMOOTHING
 0088|ascii|lib/wine/x86_64-unix/win32u.so|DesktopUIFont
+0090|ascii|lib/wine/x86_64-unix/winex11.so|smooth scroll delta
+0091|ascii|lib/wine/x86_64-unix/winex11.so|nudge slots full, dropping the schedule
+0092|ascii|lib/wine/x86_64-unix/winex11.so|pinch table full, dropping begin from source
+0093|ascii|lib/wine/x86_64-unix/winex11.so|lost X focus to another client while clipping
+0094|ascii|lib/wine/x86_64-unix/winex11.so|XWayland warp emulation activated after observed failed warps
+0095|ascii|lib/wine/x86_64-unix/winex11.so|MiddleDragThrow
 pipeasio/0001|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-clamp-sample-rate
 pipeasio/0002|ascii|lib/wine/x86_64-unix/pipeasio64.dll.so|pipeasio-midi-timebase
 '
@@ -204,6 +209,7 @@ STAMP_ONLY='
 0053|logic-only (WM_GETMINMAXINFO minimum exported as PMinSize hints; no new string literal)
 0054|logic-only (per-string SystemLink font fallback in draw_menu_item, plus the calc_menu_item_size CJK-measurement fix; no new string literal)
 0070|logic-only (break Alt/F10 menu-bar arming when the app consumes the chord key; no new string literal)
+0073|logic-only (both wheel messages preserve screen coordinates and skip non-client filter prediction; adds no string literal)
 0077|logic-only (minimize/maximize Motif functions advertised unconditionally; extends 0037, no new string literal)
 0078|logic-only (initial monitor DPI seeded in the create_window request; MR 11573 backport, no new string literal)
 0079|logic-only (standalone-surface window search gated on a private-data marker; adds no string literal)
@@ -212,7 +218,7 @@ wide_pattern() {  # ascii string -> PCRE matching its UTF-16LE bytes
     printf '%s' "$1" | od -An -v -tx1 | tr -d '\n' | tr -s ' ' ' ' \
         | sed -e 's/^ //' -e 's/ $//' -e 's/ /\\x00\\x/g' -e 's/^/\\x/' -e 's/$/\\x00/'
 }
-say "== [3/4] per-patch verification ($n_series patches) =="
+say "== [3/4] patch artifact fingerprints ($n_series patches) =="
 for f in $(awk '{print $2}' "$SERIES" | sort); do
     num="${f%%-*}"
     integrity="sha✓"
