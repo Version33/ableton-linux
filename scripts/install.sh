@@ -154,7 +154,10 @@ unit_source=""
 
 validate_runtime_payload()
 {
-    tarball="$(find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" -print 2>/dev/null | sort -V | tail -n 1)"
+    # Developer -debug trees lack wineboot/winepath/wine.inf and must never win
+    # the newest-version selection over a release tree.
+    tarball="$(find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
+        ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -n 1)"
     [ -n "$tarball" ] || { echo "!! no $ABLETON_RUNTIME_NAME-*.tar.zst payload found" >&2; return 1; }
     echo "== validate runtime payload: $(basename "$tarball") =="
     if [ -f "$tarball.sha256" ]; then
@@ -179,9 +182,14 @@ validate_runtime_payload()
         ableton_run_bounded "$extract_timeout" tar -C "$stage" -I zstd -xf "$tarball"
     fi
     candidate="$stage/$ABLETON_RUNTIME_NAME"
+    # setup-prefix.sh and ableton-live call wineboot, winepath, and wine.inf
+    # by absolute path.  A tree without them passes installation and then
+    # cannot boot a prefix.  wineboot and winepath are symlinks to wine,
+    # which -s follows.
     local required
     for required in \
-        bin/wine bin/wineserver \
+        bin/wine bin/wineserver bin/wineboot bin/winepath \
+        share/wine/wine.inf \
         lib/wine/x86_64-windows/libusb-1.0.dll \
         lib/wine/x86_64-unix/libusb-1.0.so \
         lib/wine/x86_64-unix/comdlg32.so \

@@ -15,9 +15,11 @@ ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 NAME="wine-d2d1-nspa-11.13"
 VERSION="$(cat VERSION)"
-# exact-version runtime if present, else the newest built one
+# exact-version runtime if present, else the newest built one, never an
+# incomplete developer -debug tree
 tarball="dist/${NAME}-${VERSION}.tar.zst"
-[ -f "$tarball" ] || tarball="$(ls dist/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
+[ -f "$tarball" ] || tarball="$(find dist -maxdepth 1 -type f -name "${NAME}-*.tar.zst" \
+    ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -1)"
 
 [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst in dist/: run ./build.sh first" >&2; exit 1; }
 [ -f "$tarball.sha256" ] || { echo "!! $tarball.sha256 missing" >&2; exit 1; }

@@ -46,4 +46,4 @@ ENGINE="$ENGINE" IMAGE="$IMAGE" ./scripts/build-ableton-linkd.sh
 echo "== [4/4] done: artifacts in dist/ =="
 ls -lh dist/
 echo
-echo "Next:  ./scripts/install.sh   then   ./scripts/setup-prefix.sh"
+echo "Next:  ./scripts/installer.sh install"

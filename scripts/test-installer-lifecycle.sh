@@ -18,6 +18,27 @@ fail()
     exit 1
 }
 
+# The suite installs the real build artifacts: the runtime tarball from the
+# runtime-plan check onwards and dist/ableton-linkd from the link-prestate
+# check.  Without this gate a fresh clone dies mid-suite on set -e, the
+# component's message stays in a discarded log, and the terminal shows a few
+# ok lines with no failure line.
+. "$here/lib/config.sh"
+missing=0
+find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
+    ! -name '*-debug.tar.zst' -print -quit 2>/dev/null | grep -q . || {
+    echo "!! missing build artifact: dist/$ABLETON_RUNTIME_NAME-<version>.tar.zst" >&2
+    missing=1
+}
+[ -f "$root/dist/ableton-linkd" ] || [ -f "$root/bin/ableton-linkd" ] || {
+    echo "!! missing build artifact: dist/ableton-linkd" >&2
+    missing=1
+}
+if [ "$missing" -eq 1 ]; then
+    echo "!! run ./build.sh first" >&2
+    fail "prerequisite build artifacts are present"
+fi
+
 new_env()
 {
     local name="$1"
@@ -118,6 +139,15 @@ run_isolated "$base" env ABLETON_DPI_MODE=preserve bash "$here/installer.sh" upd
 grep -q 'final Link policy: off' "$base/out" || fail "update preserves Link opt-out"
 ! grep -q 'write Link binary:' "$base/out" || fail "opted-out update excludes Link assets"
 ok "update preserves the persistent Link opt-out"
+
+base="$(new_env update-no-prefix)"
+if run_isolated "$base" bash "$here/installer.sh" update --dry-run >"$base/out" 2>"$base/err"; then
+    fail "update without an existing prefix fails"
+fi
+grep -q 'update needs an existing prefix' "$base/err" || fail "update without a prefix names the remedy"
+! grep -q -- '--refresh' "$base/err" || fail "update failure avoids the component --refresh flag"
+[ ! -e "$base/config" ] && [ ! -e "$base/state" ] || fail "update without a prefix mutates state"
+ok "update without a prefix fails fast in installer vocabulary"
 
 base="$(new_env mismatch)"
 printf 'Ableton Live 11 installer\n' > "$base/Ableton_Live_11_Installer.exe"

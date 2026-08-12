@@ -9,8 +9,8 @@ build:                        ## build runtime and Link helper with Podman -> di
 install:                      ## install the built Wine tree + launcher (end user)
 	./scripts/installer.sh install --skip-live-install
 
-setup:                        ## create/refresh the Wine prefix (end user)
-	./scripts/setup-prefix.sh
+setup:                        ## create the Wine prefix (refresh: installer.sh prefix update)
+	./scripts/installer.sh prefix create
 
 uninstall:                    ## remove installed Wine tree + launcher
 	./scripts/installer.sh uninstall --keep-prefix

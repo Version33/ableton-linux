@@ -379,6 +379,8 @@ case "$command_name:$subcommand" in
             exit
         fi ;;
     prefix:update)
+        [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
+            echo "!! no prefix at $ABLETON_WINEPREFIX; use prefix create" >&2; exit 2; }
         "$here/setup-prefix.sh" --refresh --validate
         if [ "$dry_run" -eq 1 ]; then printf 'PLAN: transactionally update prefix %s\n' "$ABLETON_WINEPREFIX"; exit; fi ;;
     link:enable)
@@ -391,6 +393,11 @@ case "$command_name:$subcommand" in
     link:disable)
         if [ "$dry_run" -eq 1 ]; then "$here/setup-link.sh" plan-disable; exit; fi ;;
     install:|update:)
+        # installer.sh checks the prefix itself: the message then names the
+        # command the user typed, not the component --refresh flag, and the
+        # check runs before the slow runtime payload extraction.
+        [ "$command_name" != update ] || [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
+            echo "!! update needs an existing prefix at $ABLETON_WINEPREFIX; run install first" >&2; exit 2; }
         components=(--runtime-only --integration-only)
         [ "$desired_link" = off ] || components+=(--link-assets-only)
         "$here/install.sh" "${components[@]}" --validate
