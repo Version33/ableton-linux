@@ -32,7 +32,7 @@ KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 | `MiddleDragThrow` | `WINE_X11_MIDDLE_DRAG_THROW` | `enabled` | `disabled`, `enabled` |
 | `WheelWhileButtonHeld` | `WINE_X11_WHEEL_WHILE_BUTTON_HELD` | `enabled` | `disabled`, `enabled` |
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` | `exponential` | `exponential`, `linear` |
-| `InertiaRate` | `WINE_X11_INERTIA_RATE` | `3.0` | 0.5 to 16.0 |
+| `InertiaRate` | `WINE_X11_INERTIA_RATE` | `4.0` | 0.5 to 16.0 |
 | `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `disabled` | `disabled`, `auto`, `enabled` |
 
 The launcher sets none of these variables. A launch variable overrides a saved
@@ -47,8 +47,10 @@ values stop it sooner.
 ## Safety rules
 
 - A mouse-button press stops older scrolling inertia or middle-drag throw.
-- Touchpad scrolling and pinch cannot change a control while a mouse button is
-  held. Ignored movement cannot catch up after release.
+- Adding a second touch and scrolling cannot speed up a left- or right-button
+  control drag. Normal one-finger dragging and middle-button navigation remain
+  available. Touchpad scrolling and pinch cannot change the held control.
+  Wine does not send ignored movement after release.
 - A physical mouse wheel still works while another button is held, except
   during middle-button navigation. Set `WheelWhileButtonHeld=disabled` to
   block it.
@@ -71,23 +73,27 @@ values stop it sooner.
 | Largest accepted scroll jump | 240 units |
 | Normal inertia start speed | 240 units per second |
 | Start speed after 100 ms without more scrolling | 480 units per second |
-| Maximum starting speed | 1,200 units per second |
-| Largest continued update | 15 units per axis |
-| Maximum continued travel | 480 units per axis, 960 units in total |
-| Maximum continued updates sent to Live | 224 |
+| Maximum starting speed | 19,200 units per second |
+| Largest continued update | 300 units per axis |
+| Maximum continued travel | 4,800 units per axis, 7,200 units in total |
+| Maximum continued updates sent to Live | 384 |
 | Maximum continued time | 4 seconds |
-| Movement used to judge a middle-drag throw | Latest 120 ms |
-| Longest pause before middle-button release | 80 ms |
-| Time assigned when movement arrives as one update | 24 ms |
-| Minimum end-to-end movement | 4 pixels |
+| Movement used to judge a middle-drag throw | Latest 100 ms |
+| Longest gap between movements or before release | 80 ms |
+| Minimum timed movement span | 10 ms |
+| Time assigned when movement updates share one time | 24 ms |
+| Minimum movement when updates share one time | 4 pixels |
 
 If Wine receives no clear end report, `TouchpadInertia=enabled` may begin
 inertia after 100 ms without more scrolling. This requires the higher start
 speed shown above.
 
-Middle-drag throw starts when the final movement covers at least 4 pixels end
-to end and the user releases within 80 ms. It accepts a short or curved final
-movement. A cancelled drag or extra button press stops it.
+Middle-drag throw uses all movement in the final 100 ms when it spans at least
+10 ms. A gap longer than 80 ms starts a new final movement, and a pause longer
+than 80 ms before release prevents the throw. When the desktop sends one
+movement update, or several updates with the same time, Wine assigns a 24 ms
+span and requires four pixels of movement. A cancelled drag or extra button
+press stops the throw.
 
 ## Source checks
 
@@ -110,8 +116,9 @@ with Live's Master fader low.
 1. Drag faders and knobs. Their values must follow the pointer without jumps.
 2. Load an affected Max for Live device without clicking its panel. A Live
    fader must still follow the pointer. Repeat after clicking the device once.
-3. Hold a fader and scroll or pinch on a touchpad. The fader must not change
-   during the drag or after release.
+3. Hold a fader with the left or right button. Drag with one finger, then add a
+   second touch and scroll. The drag must not speed up. Touchpad scrolling and
+   pinch must not change the fader during the drag or after release.
 4. Hold the left or right mouse button and turn a physical mouse wheel. The
    wheel must work with the default setting. Repeat with
    `WheelWhileButtonHeld=disabled`; the wheel must stop.

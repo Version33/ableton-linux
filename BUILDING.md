@@ -167,7 +167,7 @@ settings for one launch.
   pinch and continued movement stay blocked during a drag.
 - `WINE_X11_INERTIA_CURVE=exponential|linear` selects how continued movement
   slows. `WINE_X11_INERTIA_RATE=<0.5..16.0>` selects how soon it stops. The
-  default rate is `3.0`. Lower values keep movement going for longer. Higher
+  default rate is `4.0`. Lower values keep movement going for longer. Higher
   values stop it sooner.
 - `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
   for faders and knobs that move farther than the pointer. It defaults to
