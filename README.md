@@ -54,7 +54,9 @@ requirements.
 3. From a terminal, pass the Ableton download to the installer explicitly:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run install
+   sh ~/Downloads/install-ableton-latest.run install \
+     --live-installer "$HOME/Downloads/Ableton Live 12 Installer.zip" \
+     --link=session
    ```
 
 Replace the example ZIP name with the file you downloaded. When you run the
@@ -152,7 +154,9 @@ To install Live 11:
 1. In your terminal window, tell the installer you want to install Live 11:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run install --live-major 11
+   sh ~/Downloads/install-ableton-latest.run install \
+     --live-installer "$HOME/Downloads/Ableton Live 11 Installer.zip" \
+     --live-major 11 --link=session
    ```
 
    The first setup downloads extra Live 11 support files, so it needs internet
