@@ -221,7 +221,15 @@ validate_integration_sources()
     for required in config.sh lifecycle.sh manifest.sh; do
         [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
     done
-    [ -f "$root/desktop/ableton-live.desktop.in" ] || { echo "!! installer kit is missing desktop integration" >&2; return 1; }
+    for required in ableton-live.desktop.in ableton-linux-protocol.desktop.in \
+                    ableton-linux-auz.desktop.in x-wine-extension-auz.xml; do
+        [ -f "$root/desktop/$required" ] || {
+            echo "!! installer kit is missing desktop/$required" >&2; return 1; }
+    done
+    for required in xdg-mime update-desktop-database update-mime-database; do
+        command -v "$required" >/dev/null 2>&1 || {
+            echo "!! $required is required for desktop and MIME integration" >&2; return 1; }
+    done
 }
 
 validate_link_sources()
@@ -266,8 +274,10 @@ if [ "$dry_run" -eq 1 ]; then
         printf '  write launcher: %s/ableton-live\n' "$bin"
         printf '  write launcher support: %s/{lib/config.sh,lib/lifecycle.sh,lib/manifest.sh,detect-scale.sh,detect-theme.sh,shortcut-hold.sh}\n' "$data"
         printf '  write helper assets when packaged: %s/{setsyscolors.exe,learnheal.exe}\n' "$data"
-        printf '  write desktop entries: %s/{ableton-live,wine-protocol-ableton,wine-extension-auz}.desktop\n' "$apps"
-        printf '  write staged protocol entries: %s/{wine-protocol-ableton,wine-extension-auz}.desktop\n' "$data"
+        printf '  write desktop entries: %s/{ableton-live,%s,%s}\n' \
+            "$apps" "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
+        printf '  write staged callback entries: %s/{%s,%s}\n' \
+            "$data" "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
         printf '  write icon files below: %s/{scalable,symbolic}\n' "$icons"
         printf '  write MIME packages below: %s/packages\n' "$mime_root"
         printf '  record/modify MIME defaults: %s/mime-prestate.tsv and %s\n' \
@@ -378,7 +388,9 @@ record_mime_prestate()
 
 install_integration()
 {
-    local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d
+    local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
+    local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
+    local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
     echo "== install launchers and host integration =="
     for tool in config.sh lifecycle.sh manifest.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
@@ -422,17 +434,30 @@ install_integration()
     fi
     rm -f -- "$tmp"
 
-    for d in wine-protocol-ableton wine-extension-auz; do
+    for ((i=0; i<${#handler_ids[@]}; i++)); do
+        d="${handler_ids[i]}"
         tmp="$(mktemp)"
         sed -e "s#@HOME@#$(sed_escape "$HOME")#g" -e "s#@BIN@#$(sed_escape "$bin")#g" \
-            "$root/desktop/$d.desktop.in" > "$tmp"
-        ableton_install_file 644 "$tmp" "$data/$d.desktop"
-        if [ ! -e "$apps/$d.desktop" ] || grep -qF "$bin/ableton-live" "$apps/$d.desktop"; then
-            ableton_install_file 644 "$tmp" "$apps/$d.desktop"
-        else
-            echo "   preserving foreign $apps/$d.desktop"
-        fi
+            "$root/desktop/${handler_templates[i]}.desktop.in" > "$tmp"
+        ableton_install_file 644 "$tmp" "$data/$d"
+        ableton_install_file 644 "$tmp" "$apps/$d"
         rm -f -- "$tmp"
+    done
+
+    # Retire only the legacy handlers written by this project.  Wine may still
+    # own files with these globally contested names, so an entry that does not
+    # route through ableton-live stays in place while the default moves to the
+    # project-specific ID.
+    for target in \
+        "$data/wine-protocol-ableton.desktop" "$data/wine-extension-auz.desktop" \
+        "$apps/wine-protocol-ableton.desktop" "$apps/wine-extension-auz.desktop"; do
+        [ -e "$target" ] || continue
+        if grep -Eq '^Exec=.*/ableton-live (%u|%f)$' "$target"; then
+            echo "   removing legacy project handler $target"
+            ableton_remove_managed_file "$target"
+        else
+            echo "   preserving foreign legacy handler $target"
+        fi
     done
 
     for source in "$root"/desktop/icons/scalable/apps/*.svg; do
@@ -449,11 +474,6 @@ install_integration()
 
     record_mime_prestate
     ableton_txn_snapshot "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
-    if command -v xdg-mime >/dev/null 2>&1; then
-        xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton
-        xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz
-        xdg-mime default ableton-live.desktop application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack
-    fi
 
     local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     if [ -f "$max_unix" ]; then
@@ -469,14 +489,39 @@ install_integration()
             fi
             rm -f -- "$tmp"
         done
-        if command -v xdg-mime >/dev/null 2>&1; then
-            xdg-mime default max9.desktop application/x-ableton-live-max-device
-            xdg-mime default wine-protocol-c74max.desktop x-scheme-handler/c74max
-        fi
     fi
-    update-mime-database "$mime_root" >/dev/null 2>&1 || true
-    update-desktop-database "$apps" >/dev/null 2>&1 || true
-    gtk-update-icon-cache -q "$icons" >/dev/null 2>&1 || true
+
+    echo "== register desktop and MIME integration =="
+    update-mime-database "$mime_root" || {
+        echo "!! failed to update the MIME database at $mime_root" >&2; return 1; }
+    update-desktop-database "$apps" || {
+        echo "!! failed to update the desktop application database at $apps" >&2; return 1; }
+
+    pin_mime_default()
+    {
+        local id="$1" type="$2" current
+        xdg-mime default "$id" "$type" || {
+            echo "!! failed to set $type to $id" >&2; return 1; }
+        current="$(xdg-mime query default "$type")" || {
+            echo "!! failed to query the active handler for $type" >&2; return 1; }
+        [ "$current" = "$id" ] || {
+            echo "!! $type resolves to '${current:-no handler}' after registration; expected $id" >&2
+            return 1
+        }
+    }
+    pin_mime_default "$ABLETON_PROTOCOL_DESKTOP_ID" x-scheme-handler/ableton
+    pin_mime_default "$ABLETON_AUZ_DESKTOP_ID" application/x-wine-extension-auz
+    for d in application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack; do
+        pin_mime_default ableton-live.desktop "$d"
+    done
+    if [ -f "$max_unix" ]; then
+        pin_mime_default max9.desktop application/x-ableton-live-max-device
+        pin_mime_default wine-protocol-c74max.desktop x-scheme-handler/c74max
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -q "$icons" || \
+            echo "!! warning: failed to refresh the icon cache at $icons" >&2
+    fi
 }
 
 install_link_assets()

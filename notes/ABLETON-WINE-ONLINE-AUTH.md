@@ -1,85 +1,94 @@
-# Online authorization and `.auz` file handling
+# Online authorisation and `.auz` files
 
-Status: implemented in the installer and launcher. The host-side routing has
-been verified. Completing an account authorization remains a manual test
-because it requires a real Ableton account and consumes an authorization.
+Status: the installer and launcher implement the return route. Automated
+checks cover handler registration and prefix dispatch. The browser, desktop
+portal, and a real account authorisation still need manual checks. A real check
+consumes an authorisation.
 
-Online authorization leaves Live, opens the host browser, and returns to the
-same Wine prefix:
+## How the return path works
 
-1. Live opens an Ableton HTTPS URL. Wine passes it through `winebrowser` and
-   `xdg-open` to the host browser.
-2. After login, Ableton returns an `ableton:` URL. The page can also provide a
-   downloadable `.auz` response file.
-3. The desktop MIME system runs `~/.local/bin/ableton-live` for either
-   response.
-4. The launcher forwards the response through the packaged Wine runtime and
-   `~/.wine-ableton`. The prefix registry then dispatches it to Live.
+Live sends an online authorisation request through the host browser. The
+result must return to the same prefix:
 
-Authorization is bound to the prefix's `MachineGuid`. A response sent to
-another prefix cannot authorize this installation.
+1. Live opens an Ableton HTTPS address. `winebrowser` passes it to `xdg-open`,
+   which starts the host browser.
+2. Ableton sends an `ableton:` address after login. The website can also
+   provide an `.auz` response file.
+3. The desktop MIME system runs `~/.local/bin/ableton-live` through one of the
+   project-specific `io.github.shibco.ableton-linux.*.desktop` handlers.
+4. The launcher sends the response through the packaged runtime and selected
+   prefix. The prefix registry then starts Live.
 
-## Historical failure
+The prefix stores a `MachineGuid`. Ableton binds the response to that value,
+so another prefix cannot use it.
 
-On 2026-07-20, a Live 12.4.5b7 beta in a scratch prefix replaced the installed
-handler with:
+## What failed in older releases
+
+On 20 July 2026, a Live 12.4.5b7 beta in a separate prefix replaced the
+installed handler with:
 
     Exec=env "WINEPREFIX=/path/to/scratch-prefix" wine start %u
 
 Four gaps broke the return path:
 
-1. The handler filename is contested. winemenubuilder names URL handlers
-   `wine-protocol-<scheme>.desktop`. A scratch prefix could export its own
-   `wine-protocol-ableton.desktop` and overwrite this project's file. Its
-   `Exec` line used stock Wine and the scratch prefix.
-2. The installer preserved the overwritten file.
-3. The installer did not pin a default handler in `mimeapps.list`, so a
-   second claimant made selection ambiguous.
-4. The host had no MIME registration for `.auz`. Plain
-   `wine start <unix-path>` also fails because `start.exe` translates a Unix
-   path only with `/unix`.
+1. `winemenubuilder` gives every handler for the same scheme the global
+   `wine-protocol-<scheme>.desktop` name. The beta prefix overwrote
+   `wine-protocol-ableton.desktop` and routed the response through the wrong
+   runtime and prefix.
+2. The installer kept the overwritten file.
+3. The installer did not set a default handler in `mimeapps.list`. A second
+   handler therefore made the result depend on cache order.
+4. The host had no MIME registration for `.auz`. `wine start <unix-path>` also
+   failed because `start.exe` only converts a Unix path after `/unix`.
 
-## Fix
+## Implementation
 
-- `scripts/install.sh` replaces a handler entry that does not route through
-  `~/.local/bin/ableton-live` instead of preserving it, and stages canonical
-  copies of both handler entries in `~/.local/share/ableton-wine/`.
-- It registers the user MIME type `application/x-wine-extension-auz` with
-  the `*.auz` glob and installs
-  [desktop/wine-extension-auz.desktop.in](../desktop/wine-extension-auz.desktop.in)
-  for it.
-- It pins both handlers with `xdg-mime default`.
-- The launcher restores a missing entry or one with winemenubuilder's
-  `Exec=env ... WINEPREFIX=... wine start` signature. It then rebuilds the
-  desktop cache and pins the defaults again. Other hand-edited entries are
-  left unchanged.
-- The launcher forwards a single existing file argument through
-  `wine start /unix`, so `.auz` files reach the prefix as DOS paths. Live
-  documents use the direct Live executable path.
-- `scripts/uninstall.sh` removes the entries, MIME package, and pinned
-  default lines.
+- `scripts/install.sh` installs
+  `io.github.shibco.ableton-linux.protocol.desktop` and
+  `io.github.shibco.ableton-linux.auz.desktop`. `winemenubuilder` does not
+  generate these project IDs for other prefixes.
+- The installer keeps known copies in `~/.local/share/ableton-wine/`. It
+  removes an older global handler only when that file runs `ableton-live`.
+- The installer registers `application/x-wine-extension-auz`, refreshes both
+  host databases, sets each default, and checks the result. It stops and rolls
+  back when registration fails.
+- The launcher restores a missing or changed project handler. It resets and
+  checks both defaults every time Live starts.
+- The installer writes the selected runtime and prefix to
+  `${XDG_CONFIG_HOME:-$HOME/.config}/ableton-wine/config`. A desktop callback
+  therefore uses a custom prefix after the installer exits.
+- The launcher sends `ableton:` and `.auz` callbacks to the prefix before it
+  searches for a Live executable. Two editions of the same Live major version
+  cannot block the callback.
+- The launcher sends an existing `.auz` path through `wine start /unix`. It
+  sends Live Sets, Clips, and Packs straight to the selected Live executable.
+- `scripts/uninstall.sh` removes the project handlers and restores the previous
+  defaults when they still point to this project.
 
-## Verification
+## Check the host handlers
 
-On 2026-07-20, the repair function replaced the captured winemenubuilder
-entry, created the missing `.auz` entry, pinned both defaults, preserved a
-hand-edited control entry, and made no changes on its second run.
-
-The prefix already contained the `HKCR\ableton` URL protocol and `.auz`
-ProgID. No prefix change was needed. The installed handlers can be checked
-with:
+Run:
 
 ```bash
-apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 xdg-mime query default x-scheme-handler/ableton
 xdg-mime query default application/x-wine-extension-auz
-grep '^Exec=' "$apps/wine-protocol-ableton.desktop"
-grep '^Exec=' "$apps/wine-extension-auz.desktop"
+sh -c 'apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+grep "^Exec=" "$apps/io.github.shibco.ableton-linux.protocol.desktop"
+grep "^Exec=" "$apps/io.github.shibco.ableton-linux.auz.desktop"'
 ```
 
-The expected defaults are `wine-protocol-ableton.desktop` and
-`wine-extension-auz.desktop`. Both `Exec` lines should use
-`$HOME/.local/bin/ableton-live`.
+The commands must print these desktop IDs:
 
-For the manual end-to-end check, start Live, choose online authorization,
-complete the browser login, and confirm that Live reports the license.
+```text
+io.github.shibco.ableton-linux.protocol.desktop
+io.github.shibco.ableton-linux.auz.desktop
+```
+
+Both `Exec` lines must run `~/.local/bin/ableton-live`.
+
+## Check the full return path
+
+Start Live, choose online authorisation, complete the browser login, and
+confirm that Live reports the licence. Use a fresh browser profile or compare
+a native package with a Flatpak or Snap package when only one browser package
+fails.

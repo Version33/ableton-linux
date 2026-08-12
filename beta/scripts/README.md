@@ -11,9 +11,10 @@ when a supported clipboard tool is available. Review the output before sharing
 it.
 
 - **Linux:** distribution and kernel, CPU model and count, memory, system
-  vendor/product, OpenGL vendor/renderer/version, desktop and session
-  type, PipeWire/WirePlumber state and versions, audio devices, MIDI
-  devices.
+  vendor/product, OpenGL vendor/renderer/version, desktop and session type,
+  PipeWire/WirePlumber state and versions, audio devices, MIDI devices, project
+  and Live versions, browser handoff, desktop portal state, handler
+  registration, prefix state, and library folder access.
 - **macOS:** OS version, hardware model, CPU, memory, audio devices
   (device names generalised), installed Ableton Live versions.
 - **Windows:** OS, CPU, memory, system model, graphics, audio, MIDI, and

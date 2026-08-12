@@ -69,7 +69,7 @@ When Live 11 and Live 12 share a prefix, select Live 11 explicitly:
 ABLETON_LIVE_VERSION=11 ableton-live
 ```
 
-Authorize with your own account. For an offline response file, pass its Unix
+Authorise with your own account. For an offline response file, pass its Unix
 path to the launcher:
 
 ```bash
@@ -77,8 +77,8 @@ ableton-live "$HOME/Downloads/ableton_live_11.auz"
 ```
 
 The launcher uses `wine start /unix` for an existing `.auz` file. Online
-authorization uses the `ableton:` handler installed from
-`desktop/wine-protocol-ableton.desktop.in`. Authorization is bound to the
+authorisation uses the `ableton:` handler installed from
+`desktop/ableton-linux-protocol.desktop.in`. Authorisation is bound to the
 prefix's `MachineGuid`, so keep the prefix.
 
 After Live's first run, move Max for Live 8's incompatible preferences aside:
@@ -100,4 +100,4 @@ run `./scripts/check-live-audio.sh`.
 
 - The issue #14 dumps confirm the crash signature, not the exact export.
 - Live's in-app network access can fail under Wine. An offline `.auz` file
-  avoids the online authorization path.
+  avoids the online authorisation path.
