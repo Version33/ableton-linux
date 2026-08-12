@@ -167,8 +167,10 @@ actual_outputs="$(find "$output_stage" -mindepth 1 -maxdepth 1 -printf '%f\n' | 
     exit 1
 }
 for staged_output in $expected_outputs; do
-    [ -f "$output_stage/$staged_output" ] && [ ! -L "$output_stage/$staged_output" ] || {
-        echo "!! staged output is not a regular file: $staged_output" >&2
+    [ -f "$output_stage/$staged_output" ] \
+        && [ ! -L "$output_stage/$staged_output" ] \
+        && [ -r "$output_stage/$staged_output" ] || {
+        echo "!! staged output is not a readable regular file: $staged_output" >&2
         exit 1
     }
 done

@@ -710,5 +710,16 @@ echo "   relocation + registration gate passed (cmd.exe ran, PipeASIO registered
 echo "== [8/8] build audit: every patch verified against the shipped tarball =="
 bash "$SRC/scripts/build-audit.sh" --source-tree-sha "$SOURCE_TREE_SHA" "$tarball"
 
+# zstd deliberately creates output files with mode 0600.  Under rootful Docker
+# that leaves the bind-mounted tarball readable only by root, while build.sh's
+# independent audit and promotion run as the invoking host user.  Publish the
+# completed, container-verified output set with explicit portable modes.
+chmod 0644 -- \
+    "$OUT/BUILD-INFO-${VERSION}.txt" \
+    "$OUT/BUILD-INFO.txt" \
+    "$tarball" \
+    "$tarball.sha256"
+chmod 0755 -- "$OUT/pipewire-version-probe"
+
 echo
 echo "OK: $(basename "$tarball") ($(du -h "$tarball" | cut -f1))"
