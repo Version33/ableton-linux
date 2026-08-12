@@ -3,21 +3,30 @@
 ## Unreleased
 
 - Added fine vertical and horizontal scrolling from XInput2. Each direct
-  report is limited to one notch per axis. While any button is held, Wine
-  forwards pointer movement but drops ordinary fine-scroll, wheel,
-  pinch-generated wheel, and delayed wheel output. Saved scroll positions are
-  advanced so ignored movement cannot catch up after release.
+  report is limited to one notch per axis. While a button is held, Wine
+  forwards pointer movement but drops fine-scroll valuators, pinch-generated
+  wheel, and delayed wheel output. Saved scroll positions are advanced so
+  ignored movement cannot catch up after release.
+- Restored stock-compatible physical wheel notches during a stable held-button
+  chord. They keep capture and `MK_*` state by default, while the setting
+  `WheelWhileButtonHeld=disabled` restores blanket suppression. Smooth,
+  synthesized, and delayed packets remain blocked during a drag. Correlated
+  legacy core copies of XInput2 smooth reports are suppressed too, and packets
+  queued before a press still fail the process input-serial check.
 - Added touchpad pinch as Ctrl+wheel on XInput2 2.4. Wine creates no Ctrl key
   input. Each update and cancellation correction is limited to one notch.
 - Added middle-button drag navigation. A plain middle click remains a click.
   Drag output is limited to one notch per axis and is accepted only while
   exactly its withheld middle press remains down.
-- Added bounded movement after a matching fast-scroll end signal or a fast
-  middle-button release. Each message is limited to one eighth of a notch,
-  each axis has a one-notch travel guard, and one continuation can attempt no
-  more than 16 messages or two notches across both axes. Ending speed is
-  limited to 1,200 units per second. A delayed interface discards missed
-  frames instead of replaying them as a burst.
+- Split experimental fine-scroll inertia from middle-drag throw; both now
+  default to `disabled` without changing direct fine scrolling or direct
+  middle navigation. Explicit fine-scroll inertia accepts the usual XI2 end
+  hint or a conservative 100 ms inactivity fallback. Middle throw measures
+  the raw terminal path from the real press to Button2 release, including
+  short compositor-coalesced flicks. Each delayed message is limited to one
+  eighth of a notch, each axis to four notches, one continuation to 192
+  messages and 960 units across both axes, and starting speed to 1,200 units
+  per second. Missed frames are discarded instead of replayed as a burst.
 - Delayed pointer messages retain their Wine window and screen point without
   moving the cursor. They do not follow later capture, create raw input, or
   merge. Wine drops them after any unexpected button transition.
@@ -33,11 +42,13 @@
   generation, and timestamp; cross-thread synthetic warp events are rejected.
   Focus, capture, clipping, device, thread, refused warp, and button changes
   cancel the process-wide state.
-- Gesture defaults remain unchanged. `SmoothScrolling`, `PinchZoom`,
-  `MiddleDrag`, `TouchpadInertia`, `InertiaCurve`, and `InertiaRate` provide
-  per-launch and registry controls. `WarpEmulation` defaults to `disabled`
-  pending the desktop test matrix, with opt-in `auto` and diagnostic `enabled`
-  modes. XInput2 cannot distinguish a touchpad from a high-resolution or
+- Fine scrolling, pinch, direct middle navigation, and held-button physical
+  wheel compatibility are enabled by default. Fine-scroll inertia,
+  middle-drag throw, and XWayland warp emulation default to `disabled`.
+  Named pointer values are case-insensitive; `off` and `0` disable settings
+  that accept `disabled`, and malformed values now appear on the launcher's
+  `winediag` log before Wine falls through to the next configuration source.
+  XInput2 cannot distinguish a touchpad from a high-resolution or
   free-spinning wheel.
 - Added `make check` for deterministic source and maths checks. It does not run
   Wine or Live. The checks cover warp raw/cooked classification, first-delta

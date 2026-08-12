@@ -5,8 +5,8 @@
  *
  * Wine is carried here as a patch stack rather than directly linkable source.
  * Read context and added hunk lines from the original patches. Treat 0092 as
- * the final gesture override and inspect the later 0094 warp layer separately.
- * Removed lines and commit prose cannot satisfy a check.
+ * the guarded-delivery layer, 0094 as the warp layer, and 0095 as the final
+ * gesture-policy layer. Removed lines and commit prose cannot satisfy a check.
  */
 
 #include <ctype.h>
@@ -20,8 +20,8 @@
 #define WHEEL_DELTA_VALUE 120
 #define MAX_FRAME_MS_VALUE 16
 #define MAX_PACKET_VALUE (WHEEL_DELTA_VALUE / 8)
-#define MAX_TRAVEL_VALUE WHEEL_DELTA_VALUE
-#define MAX_MESSAGES_VALUE 16
+#define MAX_TRAVEL_VALUE (4 * WHEEL_DELTA_VALUE)
+#define MAX_MESSAGES_VALUE 192
 #define MAX_SPEED_VALUE 1200.0
 #define MAX_TOTAL_VALUE \
     ((MAX_MESSAGES_VALUE * MAX_PACKET_VALUE < 2 * MAX_TRAVEL_VALUE) ? \
@@ -193,16 +193,17 @@ static int require_order(const char *test, const char *text, const char *first,
     return 0;
 }
 
-static void check_pointer_setting_fallback(const char *stack, const char *override)
+static void check_pointer_setting_fallback(const char *stack, const char *safety,
+                                           const char *final)
 {
     int ok = 1;
 
-    ok &= require_text("pointer settings use safe source fallback", override,
+    ok &= require_text("pointer settings use safe source fallback", safety,
                        "staticconstchar*constsources[]={\"environment\",\"AppDefaultsregistry\","
                        "\"globalregistry\"};");
-    ok &= require_text("application and global settings are read separately", override,
+    ok &= require_text("application and global settings are read separately", safety,
                        "key=source_index==1?appkey:defkey;");
-    if (count_occurrences(override, "for(source_index=0;source_index<3;source_index++)") != 2)
+    if (count_occurrences(safety, "for(source_index=0;source_index<3;source_index++)") != 2)
     {
         fail("pointer settings try every available source",
              "expected one loop for named settings and one for InertiaRate");
@@ -210,21 +211,55 @@ static void check_pointer_setting_fallback(const char *stack, const char *overri
     }
     if (count_occurrences(stack, "pointer_option_enum(defkey,appkey,") < 6)
     {
-        fail("all six named pointer settings use fallback", "one or more named settings bypass fallback");
+        fail("the original six named pointer settings use fallback",
+             "one or more named settings bypass fallback");
         ok = 0;
     }
-    ok &= require_text("invalid named settings fall through", override,
-                       "WARN(\"unrecognized%svalue%sfromthe%s,ignoringit\\n\","
+    ok &= require_text("SmoothScrolling uses named-setting fallback", stack,
+                       "pointer_option_enum(defkey,appkey,\"SmoothScrolling\","
+                       "\"WINE_X11_SMOOTH_SCROLLING\"");
+    ok &= require_text("TouchpadInertia uses named-setting fallback", stack,
+                       "pointer_option_enum(defkey,appkey,\"TouchpadInertia\","
+                       "\"WINE_X11_TOUCHPAD_INERTIA\"");
+    ok &= require_text("PinchZoom uses named-setting fallback", stack,
+                       "pointer_option_enum(defkey,appkey,\"PinchZoom\",\"WINE_X11_PINCH_ZOOM\"");
+    ok &= require_text("MiddleDrag uses named-setting fallback", stack,
+                       "pointer_option_enum(defkey,appkey,\"MiddleDrag\",\"WINE_X11_MIDDLE_DRAG\"");
+    ok &= require_text("InertiaCurve uses named-setting fallback", stack,
+                       "pointer_option_enum(defkey,appkey,\"InertiaCurve\","
+                       "\"WINE_X11_INERTIA_CURVE\"");
+    ok &= require_text("WarpEmulation uses named-setting fallback", stack,
+                       "pointer_option_enum(defkey,appkey,\"WarpEmulation\","
+                       "\"WINE_X11_WARP_EMULATION\"");
+    ok &= require_text("named settings are case-insensitive", final,
+                       "if(strcasecmp(buffer,names[i]))continue;");
+    ok &= require_text("off and zero alias a disabled setting", final,
+                       "if(!strcasecmp(names[0],\"disabled\")&&"
+                       "(!strcasecmp(buffer,\"off\")||!strcmp(buffer,\"0\")))");
+    ok &= require_text("invalid named settings use the diagnostic channel", final,
+                       "WARN_(winediag)(\"unrecognized%svalue%sfromthe%s,ignoringit\\n\","
                        "name,debugstr_a(buffer),source);");
-    ok &= require_text("invalid inertia rates fall through", override,
-                       "WARN(\"InertiaRatevalue%sfromthe%sisnotadecimalin[0.5,16.0],ignoringit\\n\","
+    ok &= require_text("invalid inertia rates use the diagnostic channel", final,
+                       "WARN_(winediag)(\"InertiaRatevalue%sfromthe%sisnotadecimalin[0.5,16.0],ignoringit\\n\","
                        "debugstr_a(buffer),source);continue;");
-    ok &= require_text("a valid inertia rate ends the search", override,
+    ok &= require_text("a valid inertia rate ends the search", safety,
                        "pointer_config.inertia_rate=parsed;"
                        "TRACE(\"InertiaRate=%.2f(%s)\\n\",parsed,source);break;");
     ok &= require_text("disabled remains a valid inertia setting", stack,
                        "staticconstchar*constinertia_names[]={\"disabled\",\"auto\",\"enabled\"};");
-    if (ok) pass("invalid settings cannot hide a lower-priority safety setting");
+    ok &= require_text("middle throw has an independent setting", final,
+                       "pointer_option_enum(defkey,appkey,\"MiddleDragThrow\","
+                       "\"WINE_X11_MIDDLE_DRAG_THROW\"");
+    ok &= require_text("held-button wheel input has an independent setting", final,
+                       "pointer_option_enum(defkey,appkey,\"WheelWhileButtonHeld\","
+                       "\"WINE_X11_WHEEL_WHILE_BUTTON_HELD\"");
+    ok &= require_text("fine inertia is disabled by default", final,
+                       ".touchpad_inertia=POINTER_INERTIA_DISABLED");
+    ok &= require_text("middle throw is disabled by default", final,
+                       ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_DISABLED");
+    ok &= require_text("physical wheel input while held remains enabled by default", final,
+                       ".wheel_while_button_held=POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED");
+    if (ok) pass("all eight named settings plus InertiaRate preserve safe source fallback");
 }
 
 static void check_warp_emulation(const char *stack, const char *warp)
@@ -351,7 +386,8 @@ static void check_warp_emulation(const char *stack, const char *warp)
     if (ok) pass("XWayland warp emulation activates only from correlated failed warps");
 }
 
-static void check_held_and_direct_input(const char *stack, const char *override)
+static void check_held_and_direct_input(const char *stack, const char *safety,
+                                        const char *final)
 {
     int ok = 1;
 
@@ -365,46 +401,147 @@ static void check_held_and_direct_input(const char *stack, const char *override)
                        "smooth_scroll_delta(&src->scroll_y,value_y,buttons_down,quantize,&discontinuity);");
     ok &= require_text("button state cannot select an output mode", stack,
                        "quantize=pointer_config.smooth_scrolling==POINTER_SCROLL_NOTCHED;");
-    ok &= forbid_text("held movement cannot become notched output", override,
+    ok &= forbid_text("held movement cannot become notched output", safety,
                       "POINTER_SCROLL_NOTCHED||buttons_down");
-    ok &= require_text("core wheel buttons are held-safe and fixed", override,
-                       "if(pinch_button_is_wheel(event->button)){if(!pointer_button_down()&&"
-                       "!x11drv_thread_data()->middle_drag.active)send_wheel_at_input(hwnd,pt,flags,"
-                       "button_down_data[button],time,NULL,FALSE);");
-    ok &= require_text("native XI wheel buttons are held-safe", override,
-                       "if(pointer_button_down()||data->middle_drag.active){"
-                       "pinch_button_release(event->detail);returnTRUE;}");
-    ok &= require_text("native XI wheel buttons use fixed report positioning", override,
-                       "send_xinput2_wheel_input(hwnd,pt,button_down_flags[button],"
-                       "(int)button_down_data[button],time);");
-    ok &= require_text("direct XI scroll separates cursor and wheel submission", override,
+    ok &= require_text("held wheel input requires explicit enablement and exact provenance", final,
+                       "if(pointer_config.wheel_while_button_held=="
+                       "POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED&&event_button_mask&&"
+                       "event_button_mask==held_button_mask&&"
+                       "!x11drv_thread_data()->middle_drag.active)");
+    ok &= require_text_between("only a stable held physical wheel uses the stock input path", final,
+                               "staticBOOLsend_discrete_wheel_input(",
+                               "/*Middle-dragnavigation",
+                               "returnsend_mouse_input(hwnd,pt,MOUSEEVENTF_ABSOLUTE|flags,"
+                               "delta,time,NULL);");
+    ok &= require_text_between("mismatched held state is conservatively suppressed", final,
+                               "staticBOOLsend_discrete_wheel_input(",
+                               "/*Middle-dragnavigation",
+                               "if(event_button_mask||held_button_mask||"
+                               "x11drv_thread_data()->middle_drag.active)");
+    ok &= require_text_between("unheld physical wheel input retains guarded positioning", final,
+                               "staticBOOLsend_discrete_wheel_input(",
+                               "/*Middle-dragnavigation",
+                               "returnsend_wheel_at_input(hwnd,pt,flags,delta,time,NULL,FALSE);");
+    ok &= require_text("core wheel provenance includes core and extended-button masks", final,
+                       "core_event_button_mask(event->state)|"
+                       "(pointer_button_mask()&((1u<<3)|(1u<<4)))");
+    ok &= require_text("native XI wheel provenance maps all ordinary buttons", final,
+                       "staticconstunsignedintbuttons[]={1,2,3,8,9};");
+    ok &= require_text("native XI wheel provenance preserves each mapped bit", final,
+                       "XIMaskIsSet(event->buttons.mask,buttons[i]))mask|=1u<<i;");
+    ok &= require_text("native XI wheel uses the full event button mask", final,
+                       "send_discrete_wheel_input(hwnd,pt,button_down_flags[button],"
+                       "(int)button_down_data[button],time,xinput2_ordinary_button_mask(event));");
+    ok &= require_text("direct XI scroll separates cursor and wheel submission", safety,
                        "if(!send_mouse_input(hwnd,pt,MOUSEEVENTF_ABSOLUTE,0,time,NULL))returnFALSE;"
                        "returnsend_wheel_at_input(hwnd,pt,flags,delta,time,NULL,FALSE);");
-    ok &= forbid_text_between("cursor movement cannot inherit fixed-wheel flags", override,
+    ok &= forbid_text_between("cursor movement cannot inherit fixed-wheel flags", safety,
                               "staticBOOLsend_xinput2_wheel_input(", "/*Addboundedinertia",
                               "MOUSEEVENTF_ABSOLUTE|flags");
-    if (ok) pass("held-button and direct wheel paths cannot jump a dragged control");
+    ok &= require_text("held smooth valuators still reseed without gesture output", final,
+                       "if(buttons_down||discontinuity){");
+    if (ok) pass("only provenance-matched physical wheel input bypasses fixed gesture delivery");
 }
 
-static void check_direct_packet_bounds(const char *stack, const char *override)
+static void check_legacy_wheel_copy_guard(const char *final)
 {
     int ok = 1;
 
-    if (count_occurrences(override, "staticconstintmax_delta=WHEEL_DELTA;") != 2)
+    ok &= require_text("legacy wheel-copy correlation is per X11 thread", final,
+                       "structx11drv_legacy_wheel_copylegacy_wheel_copy;");
+    ok &= require_text_between("legacy wheel-copy tags retain raw X time", final,
+                               "structx11drv_legacy_wheel_copy{",
+                               "externvoidpointer_scroll_invalidate_baselines", "Timetime;");
+    ok &= require_text_between("legacy wheel-copy tags retain expected directions", final,
+                               "structx11drv_legacy_wheel_copy{",
+                               "externvoidpointer_scroll_invalidate_baselines",
+                               "unsignedintwheel_buttons;");
+    ok &= require_text_between("legacy wheel-copy tags retain the held mask", final,
+                               "structx11drv_legacy_wheel_copy{",
+                               "externvoidpointer_scroll_invalidate_baselines",
+                               "unsignedintheld_buttons;");
+    ok &= require_text_between("legacy wheel-copy tags retain the X target window", final,
+                               "structx11drv_legacy_wheel_copy{",
+                               "externvoidpointer_scroll_invalidate_baselines", "Windowwindow;");
+    ok &= require_text("an emulated XI report without held buttons cannot arm suppression", final,
+                       "if(!held_buttons){legacy_wheel_copy_reset("
+                       "\"emulatedXIreporthasnoheldordinarybutton\");return;}");
+    ok &= require_text("vertical legacy directions come from the changed XI axis", final,
+                       "legacy_wheel_copy_direction(&src->scroll_y,value_y,4,5)");
+    ok &= require_text("horizontal legacy directions come from the changed XI axis", final,
+                       "legacy_wheel_copy_direction(&src->scroll_x,value_x,6,7)");
+    ok &= require_text("a tag generation is keyed by time held mask and target window", final,
+                       "if(!copy->valid||copy->time!=event->time||"
+                       "copy->held_buttons!=held_buttons||copy->window!=event->event)");
+    ok &= require_text("a new tag generation clears all prior correlation state", final,
+                       "if(copy->valid)legacy_wheel_copy_reset(\"newemulatedXIreport\");"
+                       "copy->time=event->time;");
+    ok &= require_text("a later directionless XI report expires an older tag", final,
+                       "if(copy->valid&&copy->time!=event->time)legacy_wheel_copy_reset("
+                       "\"newemulatedXIreporthasnolegacycopy\");");
+    ok &= require_text("a tag stores the raw XI time mask and target", final,
+                       "copy->time=event->time;copy->held_buttons=held_buttons;"
+                       "copy->window=event->event;copy->wheel_buttons=0;copy->valid=TRUE;");
+    ok &= require_order("the emulated XI tag is captured before baselines advance", final,
+                        "legacy_wheel_copy_tag(event,src,have_x,value_x,have_y,value_y);",
+                        "if(have_x)smooth_scroll_delta(&src->scroll_x,value_x,TRUE,FALSE,NULL);");
+    ok &= require_text_between("only an emulated XI scroll report arms a legacy tag", final,
+                               "if(emulated){", "/*Forwardco-reportedpointermotion",
+                               "legacy_wheel_copy_tag(event,src,have_x,value_x,have_y,value_y);");
+
+    ok &= require_text("a different raw X timestamp expires the tag", final,
+                       "if(event->time!=copy->time){legacy_wheel_copy_reset("
+                       "\"legacycorewheeltimechanged\");returnFALSE;}");
+    ok &= require_text("only matching direction time window held state and server events suppress", final,
+                       "if(event->send_event||event->window!=copy->window||"
+                       "!(copy->wheel_buttons&button_bit)||!held_buttons||"
+                       "held_buttons!=copy->held_buttons)");
+    ok &= forbid_text_between("one same-time smooth report may suppress all of its legacy copies", final,
+                              "staticBOOLlegacy_wheel_copy_suppress(",
+                              "staticvoidlegacy_wheel_copy_button_release(",
+                              "copy->wheel_buttons&=");
+    ok &= require_text("tagged legacy copies are rejected before physical-wheel routing", final,
+                       "if(legacy_wheel_copy_suppress(event,event_button_mask)){"
+                       "pinch_button_release(event->button);returnTRUE;}"
+                       "#endifsend_discrete_wheel_input(");
+
+    ok &= require_text("ordinary button presses reset a pending legacy tag", final,
+                       "if(!pinch_button_is_wheel(event->button))legacy_wheel_copy_reset("
+                       "\"corebuttonpressboundary\");");
+    ok &= require_text("button releases apply the legacy-tag boundary", final,
+                       "legacy_wheel_copy_button_release(event);");
+    ok &= require_text("later or non-wheel releases expire a legacy tag", final,
+                       "if(!pinch_button_is_wheel(event->button)||event->time!=copy->time)"
+                       "legacy_wheel_copy_reset(\"corebuttonreleaseboundary\");");
+    ok &= require_text("scroll baseline invalidation expires a legacy tag", final,
+                       "legacy_wheel_copy_reset(\"scrollbaselineinvalidation\");");
+    ok &= require_text("scroll metadata changes expire a legacy tag", final,
+                       "legacy_wheel_copy_reset(\"scrolldevicemetadatachanged\");");
+    ok &= require_text("scroll device removal expires a legacy tag", final,
+                       "legacy_wheel_copy_reset(\"scrolldeviceremovedordisabled\");");
+    if (ok) pass("held-button legacy smooth-scroll copies require exact X event correlation");
+}
+
+static void check_direct_packet_bounds(const char *stack, const char *safety,
+                                       const char *final)
+{
+    int ok = 1;
+
+    if (count_occurrences(safety, "staticconstintmax_delta=WHEEL_DELTA;") != 2)
     {
         fail("smooth and pinch reports are each limited to one notch",
              "expected one exact limit in each final decoder");
         ok = 0;
     }
-    ok &= require_text("large smooth jumps reset their baseline", override,
+    ok &= require_text("large smooth jumps reset their baseline", safety,
                        "if(fabs(units)>2.0*max_delta){axis->value=value;"
                        "if(discontinuity)*discontinuity=TRUE;return0;}");
     ok &= require_text("smooth excess is discarded after one notch", stack,
                        "if((delta=round(units))>max_delta||delta<-max_delta){axis->value=value;"
                        "returndelta>0?max_delta:-max_delta;}");
-    ok &= require_text("middle-drag vertical movement is bounded before sampling", stack,
+    ok &= require_text("middle-drag vertical movement is bounded before delivery", final,
                        "delta_y=middle_drag_delta(&drag->accum_y,notched);");
-    ok &= require_text("middle-drag horizontal movement is bounded before sampling", stack,
+    ok &= require_text("middle-drag horizontal movement is bounded before delivery", final,
                        "delta_x=middle_drag_delta(&drag->accum_x,notched);");
     ok &= require_text_between("pinch reports are limited to one notch", stack,
                                "staticBOOLX11DRV_GesturePinchEvent(",
@@ -417,96 +554,159 @@ static void check_direct_packet_bounds(const char *stack, const char *override)
                        "elseif(delta<-max_delta)delta=-max_delta;");
     ok &= require_text("pinch output stays at its begin point", stack,
                        "send_wheel_control_input(hwnd,anchor,delta,time);");
-    ok &= require_text("unknown mouse buttons also block pinch output", override,
+    ok &= require_text("unknown mouse buttons also block pinch output", safety,
                        "returnpinch_state.buttons_down||pinch_state.other_buttons_down||"
                        "pinch_state.wheel_requests;");
-    ok &= require_text("unknown button counts cannot wrap", override,
+    ok &= require_text("unknown button counts cannot wrap", safety,
                        "elseif(pinch_state.other_buttons_down!=~0u)pinch_state.other_buttons_down++;");
     if (ok) pass("direct scroll, middle drag, and pinch packets are bounded");
 }
 
-static void check_delivered_samples_and_stops(const char *stack, const char *override)
-{
-    int ok = 1, deadline_evaluates;
-
-    ok &= require_text("middle-drag speed uses bounded delivered units", stack,
-                       "pointer_inertia_sample(x11drv_thread_data(),INERTIA_SOURCE_MIDDLE_DRAG,"
-                       "drag->hwnd,drag->origin,delta_x,-delta_y,time);");
-    ok &= require_text("smooth-scroll speed uses bounded delivered units", stack,
-                       "pointer_inertia_sample(data,event->sourceid,hwnd,pt,delta_x,-delta_y,time);");
-    ok &= forbid_text("smooth-scroll speed cannot use raw valuator units", override,
-                      "pointer_inertia_sample(data,event->sourceid,hwnd,pt,units_");
-    ok &= forbid_text("middle-drag speed cannot use raw pixel movement", override,
-                      "drag->origin,move_x,-move_y,time)");
-    ok &= require_text("unchanged scroll input is the explicit stop marker", stack,
-                       "stop_marker=(have_x||have_y)&&");
-    ok &= require_text("only a positive stop marker evaluates smooth coasting", override,
-                       "if(stop_marker)pointer_inertia_stop_marker(data,event->sourceid,hwnd,time);"
-                       "elseif(delta_x||delta_y)pointer_inertia_sample(");
-    ok &= require_text("zero delivered movement cancels old history", override,
-                       "elseif(delta_x||delta_y)pointer_inertia_sample(data,event->sourceid,hwnd,pt,"
-                       "delta_x,-delta_y,time);elsepointer_inertia_cancel();");
-    ok &= require_text_between("a discontinuity cancels prior history", override,
-                               "if(buttons_down||discontinuity){",
-                               "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
-                               "pointer_inertia_cancel();");
-    ok &= require_text_between("a discontinuity zeros both output axes", override,
-                               "if(buttons_down||discontinuity){",
-                               "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
-                               "if(discontinuity)delta_x=delta_y=0;");
-    deadline_evaluates = text_between_has(stack, "caseINERTIA_TRACKING:",
-                                           "caseINERTIA_COASTING:", "pointer_inertia_evaluate(");
-    if (deadline_evaluates != 0)
-    {
-        fail("silence alone cannot start coasting",
-             deadline_evaluates < 0 ? "tracking block not found" : "tracking timeout evaluates history");
-        ok = 0;
-    }
-    if (ok) pass("coasting uses delivered movement and requires a positive stop marker");
-}
-
-static void check_accumulator_routing(const char *override)
+static void check_continuation_sources(const char *final)
 {
     int ok = 1;
 
-    ok &= require_text("accumulated motion has an explicit pending state", override,
+    ok &= require_text("middle continuation has independent enablement", final,
+                       "if(kind==POINTER_INERTIA_KIND_MIDDLE_DRAG)returnpointer_config."
+                       "middle_drag_throw==POINTER_MIDDLE_DRAG_THROW_ENABLED;");
+    ok &= require_text("fine continuation requires explicit enabled mode", final,
+                       "returnpointer_config.touchpad_inertia==POINTER_INERTIA_ENABLED;");
+    ok &= require_text("middle throw starts with a press-time zero-motion anchor", final,
+                       "middle_drag_throw_sample(x11drv_thread_data(),hwnd,pt,0.0,0.0,time);");
+    ok &= require_text("middle throw records raw pointer movement", final,
+                       "middle_drag_throw_sample(x11drv_thread_data(),drag->hwnd,drag->origin,"
+                       "move_x,-move_y,time);");
+    ok &= require_order("inside-slop motion is retained for an eventual middle throw", final,
+                        "if(move_x||move_y)middle_drag_throw_sample(", "if(!drag->moved)");
+    ok &= require_text("a completed middle drag evaluates its release", final,
+                       "middle_drag_throw_release(data,drag->hwnd,time);");
+    ok &= require_text("a middle click cancels continuation state", final,
+                       "elsepointer_inertia_cancel();");
+    ok &= require_text("middle throw uses an explicit Button2 release reason", final,
+                       "pointer_inertia_release(data,POINTER_INERTIA_KIND_MIDDLE_DRAG,"
+                       "INERTIA_SOURCE_MIDDLE_DRAG,hwnd,time,"
+                       "POINTER_INERTIA_END_MIDDLE_RELEASE);");
+    ok &= require_text("fine and middle estimators have distinct minimum spans", final,
+                       "#defineINERTIA_MIN_SPAN_MS10");
+    ok &= require_text("middle estimator accepts a short but timed terminal flick", final,
+                       "#defineMIDDLE_THROW_MIN_SPAN_MS4");
+    ok &= require_text("middle estimator measures its window from physical release", final,
+                       "if(release_time-si->history[j].time<=MIDDLE_THROW_HISTORY_MS)"
+                       "{start=i?i-1:i;break;}");
+    ok &= require_text("middle estimator discards motion before a terminal pause", final,
+                       "if(!used||sample_time-previous>MIDDLE_THROW_MAX_GAP_MS)");
+    ok &= require_text("middle estimator rejects a jittering or reversed suffix", final,
+                       "coherence=path>0.0?distance/path:0.0;"
+                       "if(used<2||span<MIDDLE_THROW_MIN_SPAN_MS||"
+                       "coherence<MIDDLE_THROW_MIN_COHERENCE)");
+    ok &= require_text("raw middle motion converts to wheel units only after estimation", final,
+                       "*vx=sum_x*1000.0*WHEEL_DELTA/(span*MIDDLE_DRAG_STEP);"
+                       "*vy=sum_y*1000.0*WHEEL_DELTA/(span*MIDDLE_DRAG_STEP);");
+    ok &= require_text("middle release uses its own terminal-gap gate", final,
+                       "UINTrelease_gate=kind==POINTER_INERTIA_KIND_MIDDLE_DRAG?"
+                       "MIDDLE_THROW_MAX_GAP_MS:INERTIA_RELEASE_GATE_MS;");
+    ok &= require_text_between("middle tracking never arms the inactivity timer", final,
+                               "staticvoidpointer_inertia_record(",
+                               "staticvoidpointer_scroll_inertia_activity(",
+                               "if(kind==POINTER_INERTIA_KIND_FINE_SCROLL)"
+                               "inertia_nudge_arm(hwnd,INERTIA_DEADLINE_MS,FALSE);");
+    ok &= require_text("stray timer ticks cannot release a middle throw", final,
+                       "if(si->kind==POINTER_INERTIA_KIND_MIDDLE_DRAG){"
+                       "TRACE(\"middlethrowignoresstraytimertick;awaitingButton2release\\n\");"
+                       "return;}");
+
+    ok &= require_text("unchanged scroll input remains the preferred explicit marker", final,
+                       "stop_marker=(have_x||have_y)&&");
+    ok &= require_text("changed cumulative valuators are tracked before baselines advance", final,
+                       "scroll_changed=(have_x&&src->scroll_x.last_value_valid&&"
+                       "value_x!=src->scroll_x.last_value)||"
+                       "(have_y&&src->scroll_y.last_value_valid&&"
+                       "value_y!=src->scroll_y.last_value);");
+    ok &= require_order("changed-but-rounded-zero XI2 activity is not discarded", final,
+                        "scroll_changed=(have_x&&", "if(have_x){src->scroll_x.last_value=value_x;");
+    ok &= require_text("explicit marker wins over changed-scroll activity", final,
+                       "if(stop_marker)pointer_inertia_stop_marker(data,event->sourceid,hwnd,time);"
+                       "elseif(scroll_changed)pointer_scroll_inertia_activity(");
+    ok &= require_text("fine activity records even zero delivered wheel units", final,
+                       "pointer_inertia_record(data,POINTER_INERTIA_KIND_FINE_SCROLL,sourceid,hwnd,"
+                       "anchor,dx,dy,time);");
+    ok &= require_text_between("every accepted activity sample stores its terminal axis and time", final,
+                               "staticvoidpointer_inertia_record(",
+                               "staticvoidpointer_scroll_inertia_activity(",
+                               "si->history[i].dy=dy;si->history[i].time=time;");
+    ok &= require_text_between("a discontinuity cancels only prior fine-scroll history", final,
+                               "if(buttons_down||discontinuity){",
+                               "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
+                               "if(!data->middle_drag.active)pointer_inertia_cancel();");
+    ok &= require_text_between("a discontinuity zeros both output axes", final,
+                               "if(buttons_down||discontinuity){",
+                               "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
+                               "if(discontinuity)delta_x=delta_y=0;");
+    ok &= require_text("fine inactivity fallback requires explicit enablement", final,
+                       "if(si->kind==POINTER_INERTIA_KIND_FINE_SCROLL&&"
+                       "pointer_inertia_enabled(POINTER_INERTIA_KIND_FINE_SCROLL)&&"
+                       "now-si->last_time<=2*INERTIA_DEADLINE_MS)");
+    ok &= require_text("late inactivity abandons rather than fabricating a coast", final,
+                       "else{TRACE(\"%strackingabandonedafter%umsinactive\\n\",");
+    ok &= require_text("inactivity fallback uses its distinct conservative reason", final,
+                       "pointer_inertia_evaluate(data,now,POINTER_INERTIA_END_XI2_INACTIVITY);");
+    ok &= require_text("inactivity needs twice the explicit-marker starting speed", final,
+                       "if(reason==POINTER_INERTIA_END_XI2_INACTIVITY)start_speed*=2.0;");
+    ok &= require_text("co-reported scroll motion does not split continuation history", final,
+                       "if(!co_reported_scroll)pointer_inertia_cancel();");
+    ok &= require_text("native XI motion is tagged as part of its scroll frame", final,
+                       "if(saw_motion)forward_xinput2_core_event(hwnd,event,TRUE);");
+    ok &= require_text("an emulated XI duplicate preserves an active middle throw", final,
+                       "if(!data->middle_drag.active)pointer_inertia_cancel();returnTRUE;");
+    if (ok) pass("fine inertia and middle throw have independent, explicit end policies");
+}
+
+static void check_accumulator_routing(const char *safety)
+{
+    int ok = 1;
+
+    ok &= require_text("accumulated motion has an explicit pending state", safety,
                        "BOOLmouse_motion_pending;");
-    ok &= require_text("accumulated motion remembers its routing flags", override,
+    ok &= require_text("accumulated motion remembers its routing flags", safety,
                        "UINTmouse_motion_flags;");
-    ok &= require_text("empty pending state is checked explicitly", override,
+    ok &= require_text("empty pending state is checked explicitly", safety,
                        "if(!info->mouse_motion_pending)returnSTATUS_SUCCESS;");
-    ok &= require_text("pending motion is flushed with its own flags", override,
+    ok &= require_text("pending motion is flushed with its own flags", safety,
                        "if(info->mouse_motion_pending&&flags!=info->mouse_motion_flags){"
                        "NTSTATUSstatus=send_mouse_motion(info->mouse_motion_flags);if(status)returnstatus;}");
-    ok &= require_text("new pending motion stores its flags", override,
+    ok &= require_text("new pending motion stores its flags", safety,
                        "info->mouse_motion_flags=flags;info->mouse_motion_pending=TRUE;");
-    ok &= require_text("submitted motion clears its pending state", override,
+    ok &= require_text("submitted motion clears its pending state", safety,
                        "info->mouse_motion_flags=0;info->mouse_motion_pending=FALSE;");
     if (ok) pass("queued cursor movement keeps its own routing flags");
 }
 
-static void check_inertia_limits(const char *stack, const char *override)
+static void check_inertia_limits(const char *stack, const char *safety, const char *final)
 {
     int ok = 1;
 
-    ok &= require_text("coast integration is limited to 16 ms", override,
+    ok &= require_text("coast integration is limited to 16 ms", final,
                        "#defineINERTIA_MAX_FRAME_MS16");
-    ok &= require_text("one coast packet is limited to 15 units", override,
+    ok &= require_text("one coast packet is limited to 15 units", final,
                        "#defineINERTIA_MAX_PACKET(WHEEL_DELTA/8)");
-    ok &= require_text("each coast axis is limited to 120 units", override,
-                       "#defineINERTIA_MAX_TRAVELWHEEL_DELTA");
-    ok &= require_text("one coast is limited to 16 messages total", override,
-                       "#defineINERTIA_MAX_MESSAGES16");
-    ok &= require_text("coast starting speed is limited to 1200 units per second", override,
+    ok &= require_text("each coast axis is limited to four notches", final,
+                       "#defineINERTIA_MAX_TRAVEL(4*WHEEL_DELTA)");
+    ok &= require_text("one coast is limited to 192 messages total", final,
+                       "#defineINERTIA_MAX_MESSAGES192");
+    ok &= require_text("the final policy retains the bounded packet helper", final,
+                       "staticintpointer_inertia_packet(double*remainder,double*velocity,int*travel)");
+    ok &= require_text("the final policy retains the guarded timer tick", final,
+                       "voidpointer_inertia_tick(void)");
+    ok &= require_text("coast starting speed is limited to 1200 units per second", safety,
                        "#defineINERTIA_MAX_SPEED1200.0");
-    ok &= require_text("the shared coast message counter is stored", override,
+    ok &= require_text("the shared coast message counter is stored", safety,
                        "unsignedintmessage_count;");
-    ok &= require_text("a new coast resets travel and message counts", override,
+    ok &= require_text("a new coast resets travel and message counts", safety,
                        "si->travel_x=si->travel_y=0;si->message_count=0;");
     ok &= require_text("whole-unit packet excess is discarded", stack,
                        "intavailable=(int)*remainder;intremaining=INERTIA_MAX_TRAVEL-*travel;"
                        "intdelta;*remainder-=available;");
-    ok &= require_text("packet output is clamped to one quarter notch", stack,
+    ok &= require_text("packet output is clamped to one eighth notch", stack,
                        "if(available>INERTIA_MAX_PACKET)delta=INERTIA_MAX_PACKET;"
                        "elseif(available<-INERTIA_MAX_PACKET)delta=-INERTIA_MAX_PACKET;");
     ok &= require_text("travel is counted separately per axis", stack,
@@ -520,162 +720,165 @@ static void check_inertia_limits(const char *stack, const char *override)
     ok &= require_text("only the newest bounded frame is integrated", stack,
                        "frame_ms=elapsed_ms>INERTIA_MAX_FRAME_MS?INERTIA_MAX_FRAME_MS:elapsed_ms;"
                        "elapsed_dt=elapsed_ms/1000.0;frame_dt=frame_ms/1000.0;");
-    ok &= require_text("vertical output checks the total message budget", override,
+    ok &= require_text("vertical output checks the total message budget", safety,
                        "if(si->message_count<INERTIA_MAX_MESSAGES&&"
                        "(delta=pointer_inertia_packet(&si->rem_y,&si->vy,&si->travel_y)))"
                        "{si->message_count++;");
-    ok &= require_text("horizontal output checks the remaining message budget", override,
+    ok &= require_text("horizontal output checks the remaining message budget", safety,
                        "if(si->message_count<INERTIA_MAX_MESSAGES&&"
                        "(delta=pointer_inertia_packet(&si->rem_x,&si->vx,&si->travel_x)))"
                        "{si->message_count++;");
-    if (count_occurrences(override, "si->message_count++;") != 2)
+    if (count_occurrences(safety, "si->message_count++;") != 2)
     {
         fail("each coast packet consumes one total message slot", "expected exactly two guarded send paths");
         ok = 0;
     }
-    ok &= require_text("coasting stops when the message budget is used", override,
+    ok &= require_text("coasting stops when the message budget is used", safety,
                        "if(si->message_count>=INERTIA_MAX_MESSAGES||");
+    ok &= require_text("coasting retains the independent four-second backstop", final,
+                       "now-si->start_time>INERTIA_CAP_MS+1000");
     if (ok) pass("coast frame, packet, travel, and total-message limits are active");
 }
 
-static void check_inertia_generation(const char *stack, const char *override)
+static void check_inertia_generation(const char *stack, const char *safety,
+                                     const char *final)
 {
     int ok = 1;
 
     ok &= require_text("pointer input uses one process-wide generation", stack,
                        "staticpthread_mutex_tpointer_input_mutex=PTHREAD_MUTEX_INITIALIZER;"
                        "staticvolatileLONGpointer_input_serial;");
-    ok &= require_text("a sample compares its prior generation", override,
+    ok &= require_text("a sample compares its prior generation and continuation kind", final,
                        "previous_serial=InterlockedCompareExchange(&pointer_input_serial,0,0);"
-                       "current=si->state==INERTIA_TRACKING&&si->sourceid==sourceid&&"
+                       "current=si->state==INERTIA_TRACKING&&si->kind==kind&&si->sourceid==sourceid&&"
                        "si->hwnd==hwnd&&si->input_serial==previous_serial;");
-    ok &= require_text("an accepted sample advances the generation", override,
+    ok &= require_text("an accepted sample advances the generation", final,
                        "input_serial=InterlockedIncrement(&pointer_input_serial);"
-                       "pthread_mutex_unlock(&pointer_input_mutex);new_sequence=!current;");
-    ok &= require_text("a non-current sample clears old history", override,
+                       "pthread_mutex_unlock(&pointer_input_mutex);");
+    ok &= require_text("a non-current sample clears old history", safety,
                        "if(!current&&si->state!=INERTIA_IDLE){HWNDold_hwnd=si->hwnd;"
                        "si->state=INERTIA_IDLE;si->count=0;si->pos=0;");
-    ok &= require_text("a new sequence stores only its own point", override,
+    ok &= require_text("a new sequence stores only its own point", safety,
                        "if(new_sequence)si->anchor=anchor;");
-    ok &= require_text("release validates and advances the same generation", override,
-                       "current=si->state==INERTIA_TRACKING&&si->sourceid==sourceid&&"
-                       "si->hwnd==hwnd&&si->input_serial==input_serial;"
+    ok &= require_text("release validates kind source window and generation", final,
+                       "current=si->state==INERTIA_TRACKING&&si->kind==kind&&"
+                       "si->sourceid==sourceid&&si->hwnd==hwnd&&si->input_serial==input_serial;"
                        "input_serial=InterlockedIncrement(&pointer_input_serial);");
     ok &= require_text("ticks reject a superseded tracker", stack,
                        "if(si->state!=INERTIA_IDLE&&si->input_serial!="
                        "InterlockedCompareExchange(&pointer_input_serial,0,0)){"
                        "si->state=INERTIA_IDLE;si->count=0;inertia_nudge_stop(si->hwnd);return;}");
-    ok &= require_text("guarded submission rejects a stale generation", override,
+    ok &= require_text("guarded submission rejects a stale generation", safety,
                        "if(*expected_serial!=InterlockedCompareExchange(&pointer_input_serial,0,0))"
                        "{pthread_mutex_unlock(&pointer_input_mutex);returnFALSE;}");
-    ok &= require_text("hardware-input status is normalised to Boolean success", override,
+    ok &= require_text("hardware-input status is normalised to Boolean success", safety,
                        "ret=!NtUserSendHardwareInput(hwnd,SEND_HWMSG_RAWINPUT|SEND_HWMSG_FIXED_POSITION|");
-    ok &= require_text("vertical coast output carries the saved generation", override,
+    ok &= require_text("vertical coast output carries the saved generation", safety,
                        "send_wheel_at_input(si->hwnd,si->anchor,MOUSEEVENTF_WHEEL,delta,now,"
                        "&si->input_serial,FALSE)");
-    ok &= require_text("horizontal coast output carries the saved generation", override,
+    ok &= require_text("horizontal coast output carries the saved generation", safety,
                        "send_wheel_at_input(si->hwnd,si->anchor,MOUSEEVENTF_HWHEEL,delta,now,"
                        "&si->input_serial,FALSE)");
-    ok &= forbid_text_between("stale output cannot invalidate newer input", override,
+    ok &= forbid_text_between("stale output cannot invalidate newer input", safety,
                               "staticBOOLsend_wheel_at_input(", "staticBOOLpointer_button_down(",
                               "InterlockedIncrement(");
     if (ok) pass("new pointer input invalidates older tracking and coast output");
 }
 
-static void check_button_serial_and_middle_mode(const char *override)
+static void check_button_serial_and_middle_mode(const char *safety)
 {
     int ok = 1;
 
-    ok &= require_text("the driver reports every physical button early", override,
+    ok &= require_text("the driver reports every physical button early", safety,
                        "SERVER_START_REQ(update_driver_button){req->win=wine_server_user_handle(hwnd);"
                        "req->button=button;req->state=pinch_button_is_wheel(button)?-1:down;");
-    ok &= require_text_between("every core press is recorded before range handling", override,
+    ok &= require_text_between("every core press is recorded before range handling", safety,
                                "TRACE(\"hwnd%p/%lxbutton%upos%s\\n\"",
                                "if(button>=NB_BUTTONS)returnFALSE;",
                                "notify_button_transition(hwnd,event->button,TRUE);");
-    if (count_occurrences(override, "notify_button_transition(hwnd,event->button,FALSE);") != 3)
+    if (count_occurrences(safety, "notify_button_transition(hwnd,event->button,FALSE);") != 3)
     {
         fail("every core release path clears early state",
              "expected unknown-button, middle-drag, and ordinary release notifications");
         ok = 0;
     }
-    ok &= require_text("the server accepts early button updates", override,
+    ok &= require_text("the server accepts early button updates", safety,
                        "DECL_HANDLER(update_driver_button)");
-    ok &= require_text("invalid early button reports are rejected", override,
+    ok &= require_text("invalid early button reports are rejected", safety,
                        "if(!req->button||req->state<-1||req->state>1){"
                        "set_error(STATUS_INVALID_PARAMETER);return;}");
-    ok &= require_text("all physical buttons map to a tracked bucket", override,
+    ok &= require_text("all physical buttons map to a tracked bucket", safety,
                        "case1:return0;case2:return1;case3:return2;case8:return3;"
                        "case9:return4;default:return5;");
-    ok &= require_text("early button counts cannot wrap to released", override,
+    ok &= require_text("early button counts cannot wrap to released", safety,
                        "if(shared->driver_button_count[bucket]!=0xff)"
                        "shared->driver_button_count[bucket]++;"
                        "elseshared->driver_button_overflow|=1u<<bucket;");
-    ok &= require_text("overflowed early state remains held", override,
+    ok &= require_text("overflowed early state remains held", safety,
                        "elseif(!(shared->driver_button_overflow&(1u<<bucket))&&"
                        "shared->driver_button_count[bucket])shared->driver_button_count[bucket]--;");
-    ok &= require_text("every early report advances the serial", override,
+    ok &= require_text("every early report advances the serial", safety,
                        "advance_mouse_button_serial(desktop);release_object(desktop);");
 
-    if (count_occurrences(override, "time,NULL,TRUE);") != 2)
+    if (count_occurrences(safety, "time,NULL,TRUE);") != 2)
     {
         fail("only two live middle-drag sends request the exception",
              "expected vertical and horizontal middle_drag_motion sends only");
         ok = 0;
     }
-    ok &= require_text("vertical live middle drag requests the exception", override,
+    ok &= require_text("vertical live middle drag requests the exception", safety,
                        "send_wheel_at_input(drag->hwnd,drag->origin,MOUSEEVENTF_WHEEL,-delta_y,"
                        "time,NULL,TRUE)");
-    ok &= require_text("horizontal live middle drag requests the exception", override,
+    ok &= require_text("horizontal live middle drag requests the exception", safety,
                        "send_wheel_at_input(drag->hwnd,drag->origin,MOUSEEVENTF_HWHEEL,delta_x,"
                        "time,NULL,TRUE)");
-    ok &= require_text("the helper adds the middle-drag flag only on request", override,
+    ok &= require_text("the helper adds the middle-drag flag only on request", safety,
                        "(middle_drag?SEND_HWMSG_MIDDLE_DRAG:0),&input,0);");
-    ok &= require_text("the server derives the narrow middle-drag mode", override,
+    ok &= require_text("the server derives the narrow middle-drag mode", safety,
                        "boolmiddle_drag=!!(req->flags&SEND_HWMSG_MIDDLE_DRAG);"
                        "unsignedintfixed_position=req->flags&SEND_HWMSG_FIXED_POSITION?"
                        "(middle_drag?HWMSG_FIXED_POSITION_MIDDLE_DRAG:"
                        "HWMSG_FIXED_POSITION_NO_BUTTONS):HWMSG_FIXED_POSITION_NONE;");
-    ok &= require_text("invalid middle-drag flag combinations are rejected", override,
+    ok &= require_text("invalid middle-drag flag combinations are rejected", safety,
                        "if(middle_drag&&(!(req->flags&SEND_HWMSG_FIXED_POSITION)||force_mk_control||"
                        "origin!=IMO_HARDWARE||req->input.type!=INPUT_MOUSE||"
                        "(req->input.mouse.flags!=MOUSEEVENTF_WHEEL&&"
                        "req->input.mouse.flags!=MOUSEEVENTF_HWHEEL))){"
                        "set_error(STATUS_INVALID_PARAMETER);return;}");
-    ok &= require_text("ordinary fixed output requires no early buttons", override,
+    ok &= require_text("ordinary fixed output requires no early buttons", safety,
                        "if(fixed_position==HWMSG_FIXED_POSITION_NO_BUTTONS)expected_mask=0;");
-    ok &= require_text("middle-drag output requires exactly the middle mask", override,
+    ok &= require_text("middle-drag output requires exactly the middle mask", safety,
                        "elseif(fixed_position==HWMSG_FIXED_POSITION_MIDDLE_DRAG)expected_mask=1u<<1;"
                        "elsereturn1;");
-    ok &= require_text("server gates require unchanged serial and exact mask", override,
+    ok &= require_text("server gates require unchanged serial and exact mask", safety,
                        "if(button_serial!=current_serial||desktop_shm->driver_button_mask!=expected_mask)"
                        "return1;");
-    ok &= require_text("server gates reject all Win32 button state", override,
+    ok &= require_text("server gates reject all Win32 button state", safety,
                        "(desktop_shm->keystate[VK_LBUTTON]|desktop_shm->keystate[VK_MBUTTON]|"
                        "desktop_shm->keystate[VK_RBUTTON]|desktop_shm->keystate[VK_XBUTTON1]|"
                        "desktop_shm->keystate[VK_XBUTTON2])&0x80)return1;");
-    ok &= require_text("server middle mode requires one non-overflowed Button2", override,
+    ok &= require_text("server middle mode requires one non-overflowed Button2", safety,
                        "if(expected_mask&&(desktop_shm->driver_button_count[1]!=1||"
                        "(desktop_shm->driver_button_overflow&expected_mask)))return1;");
-    ok &= require_text("client gates require the same exact mask", override,
+    ok &= require_text("client gates require the same exact mask", safety,
                        "stale=desktop_shm->mouse_button_serial!=button_serial||"
                        "desktop_shm->driver_button_mask!=expected_mask||");
-    ok &= require_text("client middle mode requires one non-overflowed Button2", override,
+    ok &= require_text("client middle mode requires one non-overflowed Button2", safety,
                        "(expected_mask&&(desktop_shm->driver_button_count[1]!=1||"
                        "(desktop_shm->driver_button_overflow&expected_mask)));");
-    if (count_occurrences(override, "fixed_wheel_is_stale(fixed_position,fixed_button_serial)") != 4)
+    if (count_occurrences(safety, "fixed_wheel_is_stale(fixed_position,fixed_button_serial)") != 4)
     {
         fail("client delivery rechecks fixed wheel mode after every delay",
              "expected entry, two process-return, and post-hook checks");
         ok = 0;
     }
-    if (count_occurrences(override, "fixed_wheel_is_stale(") < 8)
+    if (count_occurrences(safety, "fixed_wheel_is_stale(") < 8)
     {
         fail("server and client both enforce fixed wheel mode",
              "expected definitions plus initial, post-hook, dequeue, and client checks");
         ok = 0;
     }
-    ok &= require_text("fixed messages carry their mode and button serial", override,
+    ok &= require_text("fixed messages carry their mode and button serial", safety,
                        "msg->fixed_button_serial=desktop->mouse_button_serial;"
                        "msg_data->fixed_position=fixed_position;"
                        "msg_data->fixed_button_serial=msg->fixed_button_serial;");
@@ -834,16 +1037,159 @@ static int safe_axis_tick(struct safe_axis *axis, unsigned int elapsed_ms, doubl
     return packet;
 }
 
+enum reference_wheel_route
+{
+    REFERENCE_WHEEL_FIXED,
+    REFERENCE_WHEEL_STOCK,
+    REFERENCE_WHEEL_SUPPRESSED,
+};
+
+static enum reference_wheel_route reference_wheel_route(
+    int enabled, unsigned int event_mask, unsigned int held_mask, int middle_drag)
+{
+    if (enabled && event_mask && event_mask == held_mask && !middle_drag)
+        return REFERENCE_WHEEL_STOCK;
+    if (event_mask || held_mask || middle_drag) return REFERENCE_WHEEL_SUPPRESSED;
+    return REFERENCE_WHEEL_FIXED;
+}
+
+static void check_held_wheel_provenance(void)
+{
+    unsigned int i;
+    int ok = 1;
+
+    for (i = 0; i < 5; i++)
+        if (reference_wheel_route(1, 1u << i, 1u << i, 0) != REFERENCE_WHEEL_STOCK)
+            ok = 0;
+    if (reference_wheel_route(1, 5u, 5u, 0) != REFERENCE_WHEEL_STOCK ||
+        reference_wheel_route(1, 1u, 2u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 1u, 0u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 0u, 1u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(0, 1u, 1u, 0) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 2u, 2u, 1) != REFERENCE_WHEEL_SUPPRESSED ||
+        reference_wheel_route(1, 0u, 0u, 0) != REFERENCE_WHEEL_FIXED)
+        ok = 0;
+    if (!ok)
+        fail("held-wheel routing requires exact physical provenance",
+             "an unstable, disabled, or middle-drag case reached stock delivery");
+    else
+        pass("held-wheel routing requires exact physical provenance");
+}
+
+static int reference_legacy_copy_suppress(
+    int valid, unsigned int tag_time, unsigned int event_time,
+    unsigned long tag_window, unsigned long event_window,
+    unsigned int wheel_buttons, unsigned int tag_held, unsigned int event_held,
+    unsigned int button, int send_event)
+{
+    unsigned int button_bit;
+
+    if (!valid || event_time != tag_time) return 0;
+    button_bit = button <= 7 ? 1u << button : 0;
+    return !send_event && event_window == tag_window &&
+           (wheel_buttons & button_bit) && event_held && event_held == tag_held;
+}
+
+static void check_legacy_wheel_copy_model(void)
+{
+    const unsigned int vertical_up = 1u << 4;
+    const unsigned int horizontal_left = 1u << 6;
+    const unsigned int held = 1u << 0;
+    int ok = 1;
+
+    /* Direction bits deliberately survive repeated generated notches carrying
+     * the same X timestamp. All other identity fields remain exact. */
+    if (!reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
+        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
+        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, horizontal_left, held, held, 6, 0) ||
+        reference_legacy_copy_suppress(0, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 101, 9, 9, vertical_up, held, held, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 10, vertical_up, held, held, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 5, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, 2u, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, 0u, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 1) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 8, 0))
+        ok = 0;
+    if (!ok)
+        fail("legacy wheel-copy model admits only an exact generated event",
+             "time, window, direction, held mask, or send_event isolation failed");
+    else
+        pass("legacy wheel-copy model admits only an exact generated event");
+}
+
+struct coast_result
+{
+    struct safe_axis axes[2];
+    unsigned int messages;
+    unsigned int elapsed_ms;
+    unsigned int maximum_packet;
+    int stopped_by_speed;
+    int stopped_by_travel;
+    int stopped_by_messages;
+};
+
+static struct coast_result run_reference_coast(double vx, double vy, double rate)
+{
+    struct coast_result result = {{{vx, 0.0, 0}, {vy, 0.0, 0}}, 0, 0, 0, 0, 0, 0};
+    unsigned int i, axis;
+
+    for (i = 0; i < 1000; i++)
+    {
+        if (hypot(result.axes[0].velocity, result.axes[1].velocity) < 60.0)
+        {
+            result.stopped_by_speed = 1;
+            break;
+        }
+        if (result.messages >= MAX_MESSAGES_VALUE)
+        {
+            result.stopped_by_messages = 1;
+            break;
+        }
+        if (result.axes[0].travel >= MAX_TRAVEL_VALUE &&
+            result.axes[1].travel >= MAX_TRAVEL_VALUE)
+        {
+            result.stopped_by_travel = 1;
+            break;
+        }
+
+        result.elapsed_ms += 8;
+        for (axis = 0; axis < 2 && result.messages < MAX_MESSAGES_VALUE; axis++)
+        {
+            int packet = safe_axis_tick(&result.axes[axis], 8, rate);
+            unsigned int magnitude = (unsigned int)abs(packet);
+
+            if (!packet) continue;
+            if (magnitude > result.maximum_packet) result.maximum_packet = magnitude;
+            result.messages++;
+        }
+    }
+    if (result.messages >= MAX_MESSAGES_VALUE) result.stopped_by_messages = 1;
+    if (result.axes[0].travel >= MAX_TRAVEL_VALUE &&
+        result.axes[1].travel >= MAX_TRAVEL_VALUE)
+        result.stopped_by_travel = 1;
+    return result;
+}
+
+static int coast_within_envelope(const struct coast_result *result)
+{
+    return result->maximum_packet <= MAX_PACKET_VALUE &&
+           result->axes[0].travel <= MAX_TRAVEL_VALUE &&
+           result->axes[1].travel <= MAX_TRAVEL_VALUE &&
+           result->axes[0].travel + result->axes[1].travel <= MAX_TOTAL_VALUE &&
+           result->messages <= MAX_MESSAGES_VALUE && result->elapsed_ms <= 4000;
+}
+
 static void check_math_envelope(void)
 {
+    const double diagonal = MAX_SPEED_VALUE / sqrt(2.0);
     struct safe_axis normal = {MAX_SPEED_VALUE, 0.0, 0};
     struct safe_axis stalled = {MAX_SPEED_VALUE, 0.0, 0};
     struct safe_axis overflow = {1000000000.0, 0.0, 0};
     struct safe_axis reverse = {-1000000000.0, 0.0, 0};
-    struct safe_axis axes[2] = {{1000000000.0, 0.0, 0}, {1000000000.0, 0.0, 0}};
+    struct coast_result default_single, default_diagonal, slow_diagonal, packet_limited;
     double expected_velocity, expected_normal;
-    unsigned int messages = 0;
-    int packet, next, total = 0, i, axis;
+    int packet, next;
 
     packet = safe_axis_tick(&normal, 8, 4.0);
     expected_normal = MAX_SPEED_VALUE / 4.0 * (1.0 - exp(-4.0 * 0.008));
@@ -875,23 +1221,33 @@ static void check_math_envelope(void)
     else
         pass("negative packet excess is discarded");
 
-    for (i = 0; i < 1000; i++)
-    {
-        for (axis = 0; axis < 2 && messages < MAX_MESSAGES_VALUE; axis++)
-        {
-            packet = safe_axis_tick(&axes[axis], 8, 4.0);
-            if (!packet) continue;
-            messages++;
-            total += abs(packet);
-        }
-        if (messages == MAX_MESSAGES_VALUE) break;
-    }
-    if (messages != MAX_MESSAGES_VALUE || total != MAX_TOTAL_VALUE ||
-        axes[0].travel != MAX_TRAVEL_VALUE || axes[1].travel != MAX_TRAVEL_VALUE ||
-        safe_axis_tick(&axes[0], 8, 4.0) || safe_axis_tick(&axes[1], 8, 4.0))
-        fail("one coast obeys the combined message budget", "combined envelope was exceeded");
+    default_single = run_reference_coast(MAX_SPEED_VALUE, 0.0, 4.0);
+    default_diagonal = run_reference_coast(diagonal, diagonal, 4.0);
+    if (!coast_within_envelope(&default_single) || !default_single.stopped_by_speed ||
+        default_single.stopped_by_messages || default_single.stopped_by_travel ||
+        !coast_within_envelope(&default_diagonal) || !default_diagonal.stopped_by_speed ||
+        default_diagonal.stopped_by_messages || default_diagonal.stopped_by_travel)
+        fail("the default exponential coast reaches its natural stop",
+             "the default curve hit a safety backstop or escaped the envelope");
     else
-        pass("one coast emits at most 240 units in 16 bounded messages");
+        pass("the default single-axis and diagonal coasts reach a bounded natural stop");
+
+    slow_diagonal = run_reference_coast(diagonal, diagonal, 0.5);
+    if (!coast_within_envelope(&slow_diagonal) || !slow_diagonal.stopped_by_travel ||
+        slow_diagonal.axes[0].travel != MAX_TRAVEL_VALUE ||
+        slow_diagonal.axes[1].travel != MAX_TRAVEL_VALUE)
+        fail("slow custom curves stop at four notches per axis",
+             "the independent travel cap was not reached safely");
+    else
+        pass("slow custom curves stop at four notches per axis");
+
+    packet_limited = run_reference_coast(diagonal, diagonal, 1.67);
+    if (!coast_within_envelope(&packet_limited) || !packet_limited.stopped_by_messages ||
+        packet_limited.messages != MAX_MESSAGES_VALUE)
+        fail("the 192-message budget independently bounds custom curves",
+             "the reference curve did not terminate at the packet backstop");
+    else
+        pass("the 192-message budget independently bounds custom curves");
 }
 
 int main(int argc, char **argv)
@@ -904,57 +1260,67 @@ int main(int argc, char **argv)
         "patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch",
         "patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch",
         "patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch",
-        "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch"
+        "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch",
+        "patches/0095-winex11-separate-pointer-coast-sources.patch"
     };
-    struct text stack_source = {0}, override_source = {0}, warp_source = {0};
-    const char *paths[7];
-    char *stack, *override, *warp;
+    struct text stack_source = {0}, safety_source = {0}, warp_source = {0}, final_source = {0};
+    const char *paths[8];
+    char *stack, *safety, *warp, *final;
     int i;
 
-    if (argc != 1 && argc != 8)
+    if (argc != 1 && argc != 9)
     {
-        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094]\n", argv[0]);
+        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094 0095]\n", argv[0]);
         return 2;
     }
-    for (i = 0; i < 7; i++) paths[i] = argc == 8 ? argv[i + 1] : defaults[i];
-    for (i = 0; i < 7; i++)
+    for (i = 0; i < 8; i++) paths[i] = argc == 9 ? argv[i + 1] : defaults[i];
+    for (i = 0; i < 8; i++)
         if (!read_patch_new_side(paths[i], &stack_source)) return 2;
-    if (!read_patch_new_side(paths[4], &override_source)) return 2;
+    if (!read_patch_new_side(paths[4], &safety_source)) return 2;
     if (!read_patch_new_side(paths[6], &warp_source)) return 2;
+    if (!read_patch_new_side(paths[7], &final_source)) return 2;
 
     stack = compact(stack_source.data ? stack_source.data : "");
-    override = compact(override_source.data ? override_source.data : "");
+    safety = compact(safety_source.data ? safety_source.data : "");
     warp = compact(warp_source.data ? warp_source.data : "");
-    if (!stack || !override || !warp)
+    final = compact(final_source.data ? final_source.data : "");
+    if (!stack || !safety || !warp || !final)
     {
         fprintf(stderr, "FAIL: out of memory while compacting patch sources\n");
         free(stack_source.data);
-        free(override_source.data);
+        free(safety_source.data);
         free(warp_source.data);
+        free(final_source.data);
         free(stack);
-        free(override);
+        free(safety);
         free(warp);
+        free(final);
         return 2;
     }
 
-    check_pointer_setting_fallback(stack, override);
+    check_pointer_setting_fallback(stack, safety, final);
     check_warp_emulation(stack, warp);
-    check_held_and_direct_input(stack, override);
-    check_direct_packet_bounds(stack, override);
-    check_delivered_samples_and_stops(stack, override);
-    check_accumulator_routing(override);
-    check_inertia_limits(stack, override);
-    check_inertia_generation(stack, override);
-    check_button_serial_and_middle_mode(override);
+    check_held_and_direct_input(stack, safety, final);
+    check_legacy_wheel_copy_guard(final);
+    check_direct_packet_bounds(stack, safety, final);
+    check_continuation_sources(final);
+    check_accumulator_routing(safety);
+    check_inertia_limits(stack, safety, final);
+    check_inertia_generation(stack, safety, final);
+    check_button_serial_and_middle_mode(safety);
+    check_held_wheel_provenance();
+    check_legacy_wheel_copy_model();
     check_warp_probe_math();
     check_math_envelope();
 
     free(stack_source.data);
-    free(override_source.data);
+    free(safety_source.data);
     free(warp_source.data);
+    free(final_source.data);
     free(stack);
-    free(override);
+    free(safety);
     free(warp);
+    free(final);
     if (failures)
     {
         fprintf(stderr, "pointer safety checks: %u failure%s\n",

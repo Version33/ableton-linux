@@ -15,6 +15,7 @@ XInput2 path does not own them.
 
 See notes/ABLETON-WINE-POINTER-GESTURES.md for the data flow and checks.
 ---
+
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index ee5a274..106b110 100644
 --- a/dlls/winex11.drv/event.c
@@ -811,4 +812,3 @@ index e82739e..aa6e747 100644
  #endif /* HAVE_X11_EXTENSIONS_XINPUT2_H */
  
      struct display_state desired_state;       /* display state tracking the desired / win32 state */
-

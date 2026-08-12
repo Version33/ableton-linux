@@ -394,13 +394,26 @@ env WINE_X11_SMOOTH_SCROLLING=disabled ableton-live
 env WINE_X11_PINCH_ZOOM=disabled ableton-live
 env WINE_X11_MIDDLE_DRAG=disabled ableton-live
 env WINE_X11_TOUCHPAD_INERTIA=disabled ableton-live
+env WINE_X11_MIDDLE_DRAG_THROW=disabled ableton-live
+env WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled ableton-live
 ```
 
-The current build forwards pointer movement during a drag, but drops ordinary
-fine-scroll, wheel, pinch-generated wheel, and delayed wheel output while any
-button is held. Saved fine-scroll positions are still advanced, so ignored
-movement cannot catch up after release. Middle-button drag navigation is the
-only exception and accepts only its one withheld middle press.
+Fine-scroll inertia and middle-drag throw already default to `disabled`. To
+test either experimental continuation explicitly, use:
+
+```bash
+env WINE_X11_TOUCHPAD_INERTIA=enabled ableton-live
+env WINE_X11_MIDDLE_DRAG_THROW=enabled ableton-live
+```
+
+The current build forwards pointer movement during a drag, but drops
+fine-scroll valuators, pinch-generated wheel, and delayed wheel output while
+any button is held. Saved fine-scroll positions are still advanced, so ignored
+movement cannot catch up after release. A physical discrete wheel follows
+Wine's ordinary capture and button-state path by default when the device event
+and Wine agree on the held buttons; `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled`
+blocks that compatibility path too. Middle-button drag navigation accepts only
+its one withheld middle press and owns the chord while active.
 
 If scrolling only feels too fine, keep whole steps:
 

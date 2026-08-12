@@ -1,7 +1,7 @@
 From 751fa15aaa4466bbe038a8332271246ba5f8039b Mon Sep 17 00:00:00 2001
 From: ableton-wine <local@ableton-wine>
 Date: Mon, 3 Aug 2026 15:50:00 +0200
-Subject: [PATCH 93/94] winex11: release stale cursor clipping state when X
+Subject: [PATCH 93/95] winex11: release stale cursor clipping state when X
  focus leaves the process
 
 A Max for Live device UI is a JUCE child window owned by a separate
@@ -105,4 +105,3 @@ index d0859c0..008e773 100644
      if (!(clip_window = init_clip_window())) return TRUE;
 -- 
 2.55.0
-

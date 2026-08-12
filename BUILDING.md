@@ -164,8 +164,19 @@ compatibility defaults.
   middle-button drag navigation for one launch (registry value `MiddleDrag`).
   Navigation is on by default.
 - `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` controls continued movement
-  after a fast fine scroll or middle drag. It is on by default; `auto` is
-  disabled on XInput2.
+  after a fast fine scroll. It defaults to `disabled`; `auto` is also disabled
+  on XInput2 because XI2 cannot identify the device class. Explicit `enabled`
+  permits the normal repeated-value end hint and a conservative 100 ms
+  inactivity fallback.
+- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls movement after a fast
+  middle drag and its real Button2 release (registry value
+  `MiddleDragThrow`). It defaults to `disabled` and does not change direct
+  middle-drag navigation.
+- `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
+  discrete wheel notches during a stable held-button chord (registry value
+  `WheelWhileButtonHeld`). It defaults to `enabled`, preserving Wine's normal
+  capture and `MK_*` state. It never enables fine-scroll valuators, pinch, or
+  delayed wheel packets during a drag.
 - `WINE_X11_INERTIA_CURVE=exponential|linear` and
   `WINE_X11_INERTIA_RATE=<0.5..16.0>` override the inertia decay for one
   launch (registry values `InertiaCurve` and `InertiaRate`).
@@ -174,6 +185,11 @@ compatibility defaults.
   defaults to `disabled` pending the desktop test matrix. Opt-in `auto`
   activates only after two raw/cooked event correlations show that XWayland
   did not apply the warp; `enabled` is a diagnostic override.
+
+Named pointer values are case-insensitive. `off` and `0` are aliases for
+`disabled` wherever `disabled` is an accepted value. Malformed values are
+reported on the `winediag` channel and Wine continues to the next
+configuration source.
 
 The registry names, defaults, safety limits, and manual acceptance tests are in
 [the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).

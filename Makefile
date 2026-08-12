@@ -43,7 +43,8 @@ pointer-safety-check:
 		patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch \
 		patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch \
 		patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch \
-		patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch
+		patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch \
+		patches/0095-winex11-separate-pointer-coast-sources.patch
 
 clean:                        ## remove build outputs
 	rm -rf dist

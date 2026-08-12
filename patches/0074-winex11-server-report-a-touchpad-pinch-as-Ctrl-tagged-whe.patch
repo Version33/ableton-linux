@@ -15,6 +15,7 @@ horizontal messages under the same rule.
 
 See notes/ABLETON-WINE-POINTER-GESTURES.md for the complete safety contract.
 ---
+
 diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index 00f6eb4..850d727 100644
 --- a/dlls/win32u/message.c
@@ -742,4 +743,3 @@ index d4ae52e..a967041 100644
          break;
      case INPUT_KEYBOARD:
          wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
-

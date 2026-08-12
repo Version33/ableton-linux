@@ -3,9 +3,9 @@
 This document describes the pointer behaviour produced by the complete Wine
 patch series. It is for reviewers and testers. Patch 0092 contains the final
 gesture safety rules, patch 0093 repairs stale cross-process clipping state,
-and patch 0094 adds guarded XWayland warp handling. Review the applied Wine
-source rather than treating the older pointer patches as separate
-implementations.
+patch 0094 adds guarded XWayland warp handling, and patch 0095 contains the
+final direct-wheel and continuation policy. Review the applied Wine source
+rather than treating the older pointer patches as separate implementations.
 
 A Windows wheel notch is 120 wheel units. Fine scrolling and continued
 movement may send part of a notch. XInput2 is the X11 interface that provides
@@ -16,17 +16,19 @@ high-resolution pointer and touchpad reports.
 - fine vertical and horizontal scrolling from XInput2 scroll reports;
 - touchpad pinch reported as Ctrl+wheel;
 - middle-button drag navigation;
-- bounded movement after a fast scroll or middle-button release;
+- optional, separately controlled movement after a fast scroll or
+  middle-button release;
 - screen coordinates for both vertical and horizontal wheel messages;
 - cleanup of stale clipping state after an embedded M4L process loses focus;
   and
 - guarded relative fader and knob dragging when XWayland does not apply a
   visible-cursor pointer warp.
 
-The gesture defaults are unchanged. Fine scrolling, pinch, middle drag, and
-continued movement remain enabled. XWayland warp handling is opt-in and
-defaults to `disabled` until the desktop and cursor-visibility matrix below is
-complete.
+Fine scrolling, pinch, and direct middle-drag navigation are enabled by
+default. Fine-scroll inertia and middle-drag throw are separate opt-ins and
+both default to `disabled`; turning either off changes no direct input.
+XWayland warp handling is also opt-in and defaults to `disabled` until the
+desktop and cursor-visibility matrix below is complete.
 
 ## Code map
 
@@ -74,17 +76,31 @@ and clears the warp state before its release handler returns.
 
 ## The safety rule
 
-Ordinary wheel output must not reach a control while any mouse button is
-held. This covers:
+Stored, synthesized, or delayed wheel output must not reach a control while
+an ordinary mouse button is held. This covers:
 
-- fine scroll reports;
-- core and XInput2 wheel buttons;
+- XInput2 fine-scroll valuators;
 - pinch-generated Ctrl+wheel; and
-- movement left over from an earlier scroll.
+- movement left over from an earlier scroll or middle drag.
+
+A physical discrete wheel notch is direct input, not delayed gesture output.
+With the default `WheelWhileButtonHeld=enabled`, it follows Wine's ordinary
+input path when the button mask in the device event agrees with Wine's current
+button state. Capture and the corresponding `MK_*` state therefore behave as
+they do in stock Wine. Set `WheelWhileButtonHeld=disabled` for the earlier,
+more conservative policy that drops these notches too.
+
+XInput2 can also mirror one smooth-scroll report as legacy core Button4-7
+events. Wine tags those copies by X display thread, timestamp, target,
+direction, and held-button mask, then suppresses them before the direct-wheel
+compatibility path. A held clickpad scroll therefore cannot be reclassified as
+a physical wheel notch.
 
 Pointer movement is still forwarded during a drag. Fine-scroll values are
 advanced without sending wheel input, so ignored movement cannot catch up
-after the button is released.
+after the button is released. A wheel packet created before a press remains
+invalidated by the process input serial regardless of the direct-wheel
+setting.
 
 Middle-button drag navigation is the only exception. Its own middle press is
 withheld from the application. A drag packet is accepted only while exactly
@@ -97,6 +113,11 @@ delayed drag packet.
 Fine scrolling, pinch, middle drag, and continued movement use a stored Wine
 window and screen point. Wine sends the wheel message at that point without
 moving the desktop cursor.
+
+Physical discrete wheel notches use this fixed path when no button is down.
+The enabled held-button compatibility path above deliberately uses Wine's
+ordinary routing instead, so a current capture and button-state flags are not
+erased.
 
 For this stored-position input, Wine:
 
@@ -131,23 +152,38 @@ Wine's normal drag distance is replayed as a normal middle click.
 
 ## Continued movement limits
 
-Only wheel movement that was actually accepted for delivery is used to measure
-ending speed. Fine scrolling starts continued movement only after a matching
-unchanged-value report from the same device and window. Middle drag uses its
-button release. Silence alone never starts it.
+Fine-scroll inertia and middle-drag throw are independent opt-ins. Only
+fine-scroll movement actually accepted for delivery is used to measure its
+ending speed. An unchanged cumulative XI2 value remains the preferred scroll
+end hint. Because XI2 has no guaranteed end event, explicit
+`TouchpadInertia=enabled` may also infer an end after 100 ms without a report;
+that fallback requires twice the normal starting speed. `auto` and the
+built-in default never infer an end.
+
+Middle-drag throw instead records the recent raw pointer path, beginning with
+a zero-motion sample at the press. It starts only at the real Button2 release,
+never from a timer. A pause, reversal, or incoherent final path is rejected.
+Direct middle-drag navigation is independent and remains enabled when throw
+is disabled.
 
 | Limit | Value |
 | --- | --- |
-| Recent movement used for speed | 100 ms |
-| Latest accepted end signal | 70 ms after movement |
+| Fine-scroll history used for speed | 100 ms |
+| Fine-scroll inactivity fallback | 100 ms; explicit `enabled` only |
+| Latest explicit fine-scroll end hint | 70 ms after movement |
+| Middle-drag terminal history | 80 ms |
+| Latest middle release | 40 ms after movement |
+| Minimum middle-drag sample span | 4 ms |
+| Minimum middle-drag path coherence | 0.65 |
 | Minimum starting speed | 240 units per second |
+| Inactivity-fallback starting speed | 480 units per second |
 | Maximum starting speed | 1,200 units per second |
 | Stop speed | 60 units per second |
 | Maximum delayed frame used for output | 16 ms |
 | Maximum one message | 15 units per axis |
-| Maximum attempted messages | 16 total across both axes |
-| Maximum travel guard | 120 units per axis |
-| Maximum total output | 240 units across both axes |
+| Maximum attempted messages | 192 total across both axes |
+| Maximum travel guard | 480 units per axis |
+| Maximum total output | 960 units across both axes |
 | Slow-curve correction begins | 3 seconds |
 | Final time limit | 4 seconds |
 
@@ -155,9 +191,10 @@ If Wine's interface thread is delayed, speed is reduced over the full delay,
 but output is calculated from only the newest 16 ms. Missed frames are
 discarded instead of arriving as a burst.
 
-At the default decay rate, the strongest single-axis continuation is about
-120 units over 128 ms. Ordinary, slower releases keep their existing response;
-the lower speed and output limits tame only forceful releases.
+The four-notch axis guard lets the default exponential curve decay naturally.
+The independent 192-message backstop can still stop deliberately slow custom
+rates before the travel guard. Ordinary direct scrolling and navigation do
+not pass through any of these limits.
 
 New pointer or key input and changes such as focus, capture, or device removal
 cancel recorded movement across the process. A queued packet that was already
@@ -168,16 +205,24 @@ submitted is still subject to the stored-position and button checks above.
 | Registry value | Built-in default | Accepted values |
 | --- | --- | --- |
 | `SmoothScrolling` | `precise` | `disabled`, `precise`, `notched` |
-| `TouchpadInertia` | `enabled` | `disabled`, `auto`, `enabled` |
+| `TouchpadInertia` | `disabled` | `disabled`, `auto`, `enabled` |
 | `PinchZoom` | `legacy-wheel` | `disabled`, `legacy-wheel` |
 | `MiddleDrag` | `navigate` | `disabled`, `navigate`, `navigate-notched` |
+| `MiddleDragThrow` | `disabled` | `disabled`, `enabled` |
+| `WheelWhileButtonHeld` | `enabled` | `disabled`, `enabled` |
 | `InertiaCurve` | `exponential` | `exponential`, `linear` |
 | `InertiaRate` | `4.0` | decimal value from 0.5 to 16.0 |
 | `WarpEmulation` | `disabled` | `disabled`, `auto`, `enabled` |
 
 `SmoothScrolling=disabled` turns off only the XInput2 fine-scroll path.
-Ordinary wheel input remains available. `TouchpadInertia` controls continued
-movement for both fine scrolling and middle drag.
+Ordinary wheel input remains available. `TouchpadInertia` controls only
+fine-scroll inertia; `MiddleDragThrow` controls only movement after a real
+middle-button release. Users who previously set `TouchpadInertia=enabled` to
+enable both must now opt into `MiddleDragThrow` separately.
+
+Named values are case-insensitive. For every setting whose accepted values
+begin with `disabled`, `off` and `0` are aliases for `disabled`. The aliases do
+not apply to `InertiaCurve` or the numeric `InertiaRate`.
 
 Wine tries each setting source in this order:
 
@@ -186,9 +231,10 @@ Wine tries each setting source in this order:
 3. `HKCU\Software\Wine\X11 Driver`;
 4. the built-in default.
 
-An invalid value produces a warning and Wine continues to the next source. A
-mistyped high-priority value therefore cannot hide a valid lower-priority
-disable.
+An invalid value produces a `winediag` warning and Wine continues to the next
+source. The launcher's normal `WINEDEBUG=-all,+winediag` log therefore shows
+the error, and a mistyped high-priority value cannot hide a valid
+lower-priority disable.
 
 | Registry value | Environment variable |
 | --- | --- |
@@ -196,6 +242,8 @@ disable.
 | `TouchpadInertia` | `WINE_X11_TOUCHPAD_INERTIA` |
 | `PinchZoom` | `WINE_X11_PINCH_ZOOM` |
 | `MiddleDrag` | `WINE_X11_MIDDLE_DRAG` |
+| `MiddleDragThrow` | `WINE_X11_MIDDLE_DRAG_THROW` |
+| `WheelWhileButtonHeld` | `WINE_X11_WHEEL_WHILE_BUTTON_HELD` |
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` |
 | `InertiaRate` | `WINE_X11_INERTIA_RATE` |
 | `WarpEmulation` | `WINE_X11_WARP_EMULATION` |
@@ -203,6 +251,8 @@ disable.
 The launcher sets none of these variables. `TouchpadInertia=auto` is disabled
 on XInput2 because that interface does not identify whether a scroll report
 came from a touchpad, a high-resolution wheel, or a free-spinning wheel.
+`enabled` is experimental and permits the inactivity fallback described
+above.
 
 `WarpEmulation=disabled` leaves every warp native. The opt-in `auto` mode
 observes only XWayland and activates after two correlated failed warps during
@@ -255,20 +305,35 @@ cell.
 - Hold a clickpad press on a fader and move another finger. Pointer movement
   may continue, but the control must receive no scroll change during the drag
   or after release.
-- While any ordinary mouse button is held on a control, turn every available
-  wheel and try a pinch. The control must not change from wheel input.
+- With `WheelWhileButtonHeld=enabled`, hold left or right on the receiver and
+  turn a physical discrete wheel. Each notch must arrive through the ordinary
+  captured path with the matching `MK_*` state. Repeat with X1 and X2 where
+  the device and display path expose them. Disable `MiddleDrag` before using
+  middle as an ordinary held button; active middle navigation deliberately
+  owns that chord.
+- Repeat with `WheelWhileButtonHeld=disabled`; the physical wheel must be
+  suppressed. Under both settings, try a clickpad two-finger scroll and pinch
+  while holding a fader. The correlated legacy Button4-7 copies must also be
+  suppressed; none may change the control or catch up after release.
 - Start a fast scroll, move to a fader, and press it. No older wheel message
   may reach the fader.
-- Scroll quickly in every Live scroll area, vertically and horizontally.
-  Continued movement must be short, arrive in small steps, and stop on new
-  input.
+- With the defaults, scroll quickly in every Live scroll area, vertically and
+  horizontally. Direct movement must stop with the physical input; no delayed
+  packet may follow.
+- Opt into `TouchpadInertia=enabled` separately. Test both a desktop that
+  supplies the repeated-value end hint and KDE/XWayland's inactivity fallback.
+  Continued movement must arrive in steps no larger than 15 units, stay within
+  480 units per axis, and stop on new input.
 - If Live pauses while loading a plug-in or opening a large browser folder,
   start a fast scroll just before the pause. No catch-up burst may appear when
   the interface responds. Treat this as an opportunistic check when a pause
   occurs, not as a required way to force one.
-- Test a normal middle click, slow and fast middle drags, release, and a second
-  button pressed during the drag. Navigation must remain bounded, and no drag
-  packet may arrive after the button state changes.
+- With the default `MiddleDragThrow=disabled`, test a normal middle click,
+  slow and fast middle drags, release, and a second button pressed during the
+  drag. Direct navigation must work and stop at release. Then opt into
+  `MiddleDragThrow=enabled`: a short coherent flick may continue only after
+  the real release, while a pause, reversal, click, abort, or second-button
+  chord must not throw.
 - Test pinch begin, updates, end, cancellation, and a physically held Ctrl
   key.
 - Repeat the held-drag cases in Live's main window and in a separate plug-in
@@ -280,12 +345,16 @@ and pass or failure for each case.
 ## Known limits
 
 - XInput2 cannot distinguish touchpads from high-resolution or free-spinning
-  wheels. With `TouchpadInertia=enabled`, all three can continue after a fast
-  end signal.
+  wheels. With experimental `TouchpadInertia=enabled`, all three can continue
+  after a fast end hint or the conservative inactivity fallback. This is why
+  the built-in default and `auto` are disabled.
 - KDE/XWayland may omit the repeated cumulative scroll value that marks the
-  end of a smooth scroll. Direct fine scrolling still works, but continued
-  movement does not start. The clipping and warp repairs do not change this
-  condition.
+  end of a smooth scroll. Explicit `TouchpadInertia=enabled` can use 100 ms of
+  inactivity instead, but the ambiguity cannot be removed at the XI2 layer.
+  Direct fine scrolling is unaffected when continuation stays disabled.
+- Middle-drag throw is a separate experimental opt-in. It has a real release
+  event, but compositor coalescing, a pause longer than 40 ms, or an
+  incoherent terminal path can still reject a throw.
 - Automatic warp handling requires a raw and cooked XInput2 frame from the
   same Wine X connection, device source, warp generation, and timestamp.
   Conflicting, delayed, small, or otherwise ambiguous evidence keeps native

@@ -4,6 +4,7 @@ WM_MOUSEWHEEL and WM_MOUSEHWHEEL both store screen coordinates in lParam and
 neither has a non-client form. Keep both messages out of client-coordinate
 conversion and non-client message prediction.
 ---
+
 diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
 index a0f0e58..00f6eb4 100644
 --- a/dlls/win32u/message.c
@@ -34,4 +35,3 @@ index 437c4fa..d4ae52e 100644
          /* all other messages can become non-client messages */
          if (check_msg_filter( msg_code + (WM_NCMOUSEFIRST - WM_MOUSEFIRST), first, last )) return 1;
  
-

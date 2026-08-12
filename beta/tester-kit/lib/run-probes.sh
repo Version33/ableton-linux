@@ -292,7 +292,7 @@ test_prefix_configuration() {
         printf '\n[File dialogue portal policy]\n'
         timeout --foreground 30 "$WINE_BIN" reg query 'HKCU\Software\Wine\X11 Driver' /v FileDialogPortal 2>&1 || true
         printf '\n[Pointer settings]\n'
-        for v in SmoothScrolling TouchpadInertia PinchZoom MiddleDrag InertiaCurve InertiaRate WarpEmulation; do
+        for v in SmoothScrolling TouchpadInertia PinchZoom MiddleDrag MiddleDragThrow WheelWhileButtonHeld InertiaCurve InertiaRate WarpEmulation; do
             timeout --foreground 30 "$WINE_BIN" reg query 'HKCU\Software\Wine\X11 Driver' /v "$v" 2>&1 || true
         done
         printf '\n[Wine drivers]\n'

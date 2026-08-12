@@ -15,6 +15,7 @@ Cancel on new pointer, button, key, focus, grab, device, or scroll input.
 See notes/ABLETON-WINE-POINTER-GESTURES.md for the formula, constants, and
 manual safety acceptance tests.
 ---
+
 diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
 index 106b110..1551a0d 100644
 --- a/dlls/winex11.drv/event.c

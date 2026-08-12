@@ -1,7 +1,7 @@
 From dfc4b343d9286a86944fbefa314875be61181ba8 Mon Sep 17 00:00:00 2001
 From: ableton-wine <local@ableton-wine>
 Date: Wed, 12 Aug 2026 18:51:13 +0200
-Subject: [PATCH 94/94] winex11: emulate only observed failed pointer warps on
+Subject: [PATCH 94/95] winex11: emulate only observed failed pointer warps on
  XWayland
 
 Live implements relative fader and knob dragging by repeatedly calling SetCursorPos to re-anchor the pointer. A visible-cursor XWayland warp can change the virtual X cursor without moving the compositor pointer, so the next cooked motion resumes from the pre-warp point and Live multiplies the physical delta.
@@ -629,4 +629,3 @@ index e9a40d7..d606b44 100644
          pointer_inertia_cancel();
 -- 
 2.55.0
-

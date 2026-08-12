@@ -13,6 +13,7 @@ the Wine interface thread and move the cursor to the real point on release.
 
 See notes/ABLETON-WINE-POINTER-GESTURES.md for the settings and review order.
 ---
+
 diff --git a/dlls/winex11.drv/mouse.c b/dlls/winex11.drv/mouse.c
 index 2c394b6..807ae1e 100644
 --- a/dlls/winex11.drv/mouse.c
@@ -555,4 +556,3 @@ index 500a013..f0cc453 100644
      NtClose( appkey );
      NtClose( hkey );
  }
-
