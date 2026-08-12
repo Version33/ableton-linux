@@ -185,6 +185,31 @@ bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
 The repair moves Max 8's incompatible preferences to a timestamped backup.
 Max creates a clean preferences file when it next starts.
 
+## A newly installed font does not show up inside Live
+
+Close Live, then start it with the saved font list turned off:
+
+```bash
+env WINE_DISABLE_HOST_FONT_CACHE=1 ableton-live
+```
+
+Live keeps a saved list of the fonts on your computer, which makes Live
+start faster. The list refreshes itself when your fonts change, so a new
+font normally appears at the next launch with no action from you. The
+launch above reads your fonts directly and skips the saved list.
+
+If the missing font appears now, delete the saved list and start Live
+normally. Live rebuilds the list with your new font in it:
+
+```bash
+rm ~/.wine-ableton/drive_c/windows/wine-host-font.cache
+ableton-live
+```
+
+If the font is still missing with the list turned off, the list is not
+the cause. [Open an issue](https://github.com/shibco/ableton-linux/issues)
+and name the font and where you installed it from.
+
 ## Live 11: media files can crash Live
 
 Do not preview or import WMA or video files in Live 11. Wine's current
