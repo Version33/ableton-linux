@@ -15,14 +15,34 @@ ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 NAME="wine-d2d1-nspa-11.13"
 VERSION="$(cat VERSION)"
-# exact-version runtime if present, else the newest built one, never an
-# incomplete developer -debug tree
+[[ "$VERSION" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] \
+    && [ "$(wc -l < VERSION)" -eq 1 ] || {
+    echo "!! VERSION must contain exactly one release version" >&2; exit 1; }
 tarball="dist/${NAME}-${VERSION}.tar.zst"
-[ -f "$tarball" ] || tarball="$(find dist -maxdepth 1 -type f -name "${NAME}-*.tar.zst" \
-    ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -1 || true)"
+build_info="dist/BUILD-INFO-${VERSION}.txt"
+probe="dist/pipewire-version-probe"
 
-[ -n "$tarball" ] && [ -f "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst in dist/: run ./build.sh first" >&2; exit 1; }
+[ -f "$tarball" ] || { echo "!! exact runtime $(basename "$tarball") is missing: run ./build.sh first" >&2; exit 1; }
 [ -f "$tarball.sha256" ] || { echo "!! $tarball.sha256 missing" >&2; exit 1; }
+[ -s "$build_info" ] || { echo "!! exact BUILD-INFO-${VERSION}.txt is missing" >&2; exit 1; }
+[ -x "$probe" ] || { echo "!! dist/pipewire-version-probe is missing" >&2; exit 1; }
+if [ "$(grep -c '^dist-version:' "$build_info" || true)" -ne 1 ] \
+   || ! grep -qxF "dist-version: $VERSION" "$build_info"; then
+    echo "!! BUILD-INFO does not match VERSION $VERSION" >&2
+    exit 1
+fi
+probe_record="$(sed -n 's/^pipewire-version-probe: *//p' "$build_info")"
+[[ "$probe_record" =~ ^[0-9a-f]{64}$ ]] \
+    && [ "$probe_record" = "$(sha256sum "$probe" | awk '{print $1}')" ] || {
+    echo "!! PipeWire probe does not match BUILD-INFO" >&2; exit 1; }
+[ "$(wc -l < "$tarball.sha256")" -eq 1 ] || {
+    echo "!! exact runtime checksum record is invalid" >&2; exit 1; }
+read -r runtime_sha runtime_checksum_name runtime_checksum_extra < "$tarball.sha256"
+runtime_checksum_name="${runtime_checksum_name#\*}"
+[[ "$runtime_sha" =~ ^[0-9a-f]{64}$ ]] && [ -z "$runtime_checksum_extra" ] \
+    && [ "$runtime_checksum_name" = "$(basename "$tarball")" ] \
+    && [ "$runtime_sha" = "$(sha256sum "$tarball" | awk '{print $1}')" ] || {
+    echo "!! exact runtime checksum record is invalid" >&2; exit 1; }
 echo "   runtime: $(basename "$tarball")"
 
 echo "== [0/5] build audit (no unaudited runtime gets packed) =="
@@ -66,14 +86,16 @@ trap 'rm -rf "$stage"' EXIT
 kit="$stage/kit"
 mkdir -p "$kit/bin" "$kit/dist" "$kit/vendor" "$kit/scripts/lib"
 cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
-cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
+cp -a "$build_info" "$kit/"
 mkdir -p "$kit/scripts"
 cp -a scripts/installer.sh scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
       scripts/detect-theme.sh scripts/shortcut-hold.sh \
       scripts/check-live-audio.sh scripts/setup-link.sh scripts/ableton-linkctl \
       "$kit/scripts/"
-cp -a scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/manifest.sh \
+install -m755 scripts/setup-realtime.sh scripts/audio-report.sh scripts/rollback.sh \
+      "$kit/scripts/"
+cp -a scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/manifest.sh scripts/lib/pipeasio.sh \
       "$kit/scripts/lib/"
 install -m644 scripts/ableton-linkd.service "$kit/scripts/ableton-linkd.service"
 install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"
@@ -95,6 +117,7 @@ install -m644 vendor/fonts/bitstream-vera/*.ttf \
 cp -a VERSION README.md TROUBLESHOOTING.md BUILDING.md "$kit/"
 install -m755 dist/cabextract-static "$kit/bin/cabextract"
 install -m755 dist/ableton-linkd "$kit/bin/ableton-linkd"
+install -m755 "$probe" "$kit/bin/pipewire-version-probe"
 # Ableton Link is GPLv2+ with no linking exception, so the built daemon's
 # complete corresponding source travels with the kit: the pinned tarball in
 # vendor/ plus the license text and a pointer note in licenses/.
@@ -110,6 +133,19 @@ EOF
 # copy. The fonts here are byte-identical upstream 1.10 files.
 install -m644 vendor/fonts/bitstream-vera/COPYRIGHT.TXT \
               "$kit/licenses/bitstream-vera-COPYRIGHT.txt"
+
+for staged_executable in \
+    "$kit/scripts/setup-realtime.sh" "$kit/scripts/audio-report.sh" \
+    "$kit/scripts/rollback.sh" "$kit/bin/pipewire-version-probe"; do
+    [ -x "$staged_executable" ] || {
+        echo "!! staged installer helper is not executable: $staged_executable" >&2
+        exit 1
+    }
+done
+cmp -s -- "$probe" "$kit/bin/pipewire-version-probe" || {
+    echo "!! staged PipeWire compatibility check changed while packing" >&2; exit 1; }
+cmp -s -- "$build_info" "$kit/BUILD-INFO-${VERSION}.txt" || {
+    echo "!! staged BUILD-INFO changed while packing" >&2; exit 1; }
 
 echo "== [4/5] pack + seal =="
 payload="$stage/payload.tar"

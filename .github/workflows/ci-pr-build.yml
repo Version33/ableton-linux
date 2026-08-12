@@ -26,10 +26,12 @@ on:
   pull_request:
     paths:
       - patches/**
+      - desktop/**
       - Containerfile
+      - Makefile
+      - VERSION
       - build.sh
-      - scripts/container-build.sh
-      - scripts/build-ableton-linkd.sh
+      - scripts/**
       - tools/**
       - vendor/**
       - .github/workflows/ci-pr-build.yml
@@ -37,10 +39,12 @@ on:
     branches: [main]
     paths:
       - patches/**
+      - desktop/**
       - Containerfile
+      - Makefile
+      - VERSION
       - build.sh
-      - scripts/container-build.sh
-      - scripts/build-ableton-linkd.sh
+      - scripts/**
       - tools/**
       - vendor/**
       - .github/workflows/ci-pr-build.yml
@@ -56,8 +60,16 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
+
+      - name: Test installer and launcher lifecycle
+        run: make test
+
+      - name: Read runtime version
+        id: runtime_version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache (compiled-object cache, keyed loosely on purpose)
         uses: actions/cache@v6
@@ -102,6 +114,64 @@ jobs:
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" dist .ccache
 
+      # The generic artifact format permits an explicitly recorded no-Qt
+      # driver build. The official release image installs Qt, so its artifact
+      # must carry the panel binary, desktop entry and icon together, as well
+      # as evidence for the no-Qt and sanitizer gates exercised in-container.
+      - name: Verify official PipeASIO runtime payload
+        run: |
+          version="$(cat VERSION)"
+          info="dist/BUILD-INFO-$version.txt"
+          tarball="dist/wine-d2d1-nspa-11.13-$version.tar.zst"
+          probe="dist/pipewire-version-probe"
+          test -s "$info"
+          test -s "$tarball"
+          test -x "$probe"
+          grep -Fx 'pipeasio-panel: built' "$info"
+          grep -Eq '^pipeasio-settings: [0-9a-f]{64} \(Qt 6\.2 link\)$' "$info"
+          grep -Fx 'pipeasio-no-qt: CMake driver build/install + non-integration CTest passed' "$info"
+          grep -Fx 'pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed' "$info"
+          grep -Fx 'pipewire-version-probe-tests: client-stub+ASan+UBSan passed' "$info"
+          probe_hash="$(sed -n 's/^pipewire-version-probe: *//p' "$info")"
+          [[ "$probe_hash" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum "$probe" | awk '{print $1}')" = "$probe_hash"
+          inventory="$(mktemp /tmp/pipeasio-runtime-inventory.XXXXXX)"
+          tar -I zstd -tf "$tarball" > "$inventory"
+          for path in \
+              wine-d2d1-nspa-11.13/bin/pipewire-version-probe \
+              wine-d2d1-nspa-11.13/bin/pipeasio-settings \
+              wine-d2d1-nspa-11.13/share/applications/pipeasio-settings.desktop \
+              wine-d2d1-nspa-11.13/share/icons/hicolor/scalable/apps/pipeasio.svg; do
+              grep -Fx "$path" "$inventory"
+          done
+          ./scripts/build-audit.sh "$tarball"
+
+      - name: Build and inspect self-extracting installer
+        run: |
+          version="$(cat VERSION)"
+          ENGINE=docker ./scripts/make-installer.sh
+          wrapper="dist/ableton-wine-setup-$version.run"
+          test -x "$wrapper"
+          test -s "$wrapper.sha256"
+          (
+            cd dist
+            sha256sum -c "$(basename "$wrapper.sha256")"
+          )
+          extracted="$(mktemp -d /tmp/ableton-installer-ci.XXXXXX)"
+          sh "$wrapper" extract "$extracted"
+          for path in \
+              scripts/setup-realtime.sh \
+              scripts/audio-report.sh \
+              scripts/rollback.sh \
+              bin/pipewire-version-probe; do
+              test -x "$extracted/$path"
+          done
+          cmp -s \
+              "dist/BUILD-INFO-$version.txt" \
+              "$extracted/BUILD-INFO-$version.txt"
+          cmp -s dist/pipewire-version-probe "$extracted/bin/pipewire-version-probe"
+          bash "$extracted/scripts/installer.sh" --help >/dev/null
+
       - name: ccache stats
         if: always()
         continue-on-error: true
@@ -114,7 +184,10 @@ jobs:
           path: |
             dist/wine-d2d1-nspa-11.13-*.tar.zst
             dist/wine-d2d1-nspa-11.13-*.tar.zst.sha256
+            dist/ableton-wine-setup-*.run
+            dist/ableton-wine-setup-*.run.sha256
             dist/ableton-linkd
-            dist/BUILD-INFO-*.txt
+            dist/pipewire-version-probe
+            dist/BUILD-INFO-${{ steps.runtime_version.outputs.version }}.txt
           if-no-files-found: error
           retention-days: 14

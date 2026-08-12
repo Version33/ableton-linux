@@ -43,8 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ccache \
       flex bison perl gettext pkg-config \
       git xz-utils zstd python3 \
-      # PipeASIO builds through upstream CMake (drives winebuild/winegcc, the
-      # Qt AUTOMOC panel build, and the in-container CTest scope)
+      # PipeASIO builds and installs through upstream CMake (drives
+      # winebuild/winegcc, the optional Qt AUTOMOC panel, CTest, and the
+      # ASan+UBSan/TSan gates). GCC's sanitizer runtimes come with this
+      # toolchain/build-essential closure.
       cmake ninja-build \
       # X11 / GL / Vulkan (the d2d1-dcomp + winex11 stack the fixes live in)
       libx11-dev libxext-dev libxrandr-dev libxrender-dev libxi-dev \
@@ -59,14 +61,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # driver. PipeASIO builds against the vendored PipeWire SDK below, not a
       # jammy package (jammy's 0.3.48 is far below upstream's 1.4.2 floor).
       libasound2-dev libpulse-dev \
-      # pipeasio-settings (the native Qt panel shipped with the runtime, issue
-      # #60). Built against jammy's Qt 6.2 so the binary runs on any host
+      # pipeasio-settings (the native Qt panel shipped in the official
+      # runtime, issue #60). Built against jammy's Qt 6.2 so the binary runs on any host
       # Qt >= 6.2. Discovery is CMake-only: jammy's Qt 6.2.4 packaging ships
       # CMake config files but no pkg-config .pc files (Qt gained those in
       # 6.3 — probing with pkg-config here fails silently, CI run
       # 31287663024). qt6-base-dev-tools carries moc for AUTOMOC;
       # qt6-qpa-plugins carries the offscreen platform plugin the headless
-      # test_panel run needs.
+      # test_panel run needs. The packaging gate also configures with Qt
+      # discovery forcibly disabled and proves that a driver-only CMake
+      # build/install remains valid.
       qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
       # media import: without these, configure silently drops winegstreamer
       # and mp3/mp4/wma import just fails (issue #44). Actual codec plugins

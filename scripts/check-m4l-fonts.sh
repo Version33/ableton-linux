@@ -151,7 +151,7 @@ else
     if [ "${reg:-0}" -ge "${#VERA_FILES[@]}" ]; then
         ok "all ${#VERA_FILES[@]} faces registered in the prefix ($reg entries)"
     else
-        bad "only ${reg:-0}/${#VERA_FILES[@]} Vera faces registered - run scripts/setup-prefix.sh"
+        bad "only ${reg:-0}/${#VERA_FILES[@]} Vera faces registered - run ./scripts/installer.sh prefix update"
     fi
 
     # Wine's font list is built once per wineserver session and then held in

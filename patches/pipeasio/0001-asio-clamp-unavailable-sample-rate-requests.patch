@@ -1,4 +1,4 @@
-From defe8ba365a179df17f85f144edddd2eff160f5d Mon Sep 17 00:00:00 2001
+From bb513a29320eda0267d22e85cb9d5585f82a1cbd Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Sun, 9 Aug 2026 01:50:31 +0200
 Subject: [PATCH 1/7] asio: clamp unavailable sample-rate requests instead of
@@ -12,15 +12,54 @@ success, let GetSampleRate tell the host the truth.
 Narrowed from the 1.2.2-era patch 0001: since 1.4.1/1.5.0 the driver
 follows and can set real graph rates, so this path only fires with a
 config.ini sample_rate pin or follow_device_clock.
----
- src/asio.c | 20 +++++++++++++++++++-
- 1 file changed, 19 insertions(+), 1 deletion(-)
 
+Treat SetSampleRate as ownership of the next activation request even when
+the requested rate already equals the measured graph rate. This replaces a
+stale earlier host request after a daemon correction; a refused pinned-rate
+request clears the stale value instead. A focused state test covers the
+request, correction, equality confirmation, reactivation, and refusal path.
+---
+ include/pipeasio_rate_state.h | 16 ++++++++++++++++
+ src/asio.c                    | 36 ++++++++++++++++++++++++++++++++++--
+ tests/unit/CMakeLists.txt     |  1 +
+ tests/unit/test_rate_state.c  | 36 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 87 insertions(+), 2 deletions(-)
+
+diff --git a/include/pipeasio_rate_state.h b/include/pipeasio_rate_state.h
+new file mode 100644
+index 0000000..f319477
+--- /dev/null
++++ b/include/pipeasio_rate_state.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#pragma once
++
++#include <stdbool.h>
++#include <stdint.h>
++
++/* SetSampleRate owns the next-activation request.  An accepted request must
++ * replace an older one even when it equals the measured current rate (the
++ * graph may just have corrected an earlier request).  A configured/device
++ * pin that refuses the request owns the rate instead, so any stale host
++ * request is cleared. */
++static inline uint32_t
++pipeasio_rate_request_after_set(bool accepted, uint32_t requested)
++{
++    return accepted ? requested : 0;
++}
 diff --git a/src/asio.c b/src/asio.c
-index 7eb4c2d..423483f 100644
+index 7eb4c2d..4212510 100644
 --- a/src/asio.c
 +++ b/src/asio.c
-@@ -1825,8 +1825,26 @@ SetSampleRate(LPPIPEASIO iface, double sampleRate)
+@@ -59,6 +59,7 @@
+ #include "pipeasio_offsets.h"
+ #include "pipeasio_config.h"
+ #include "pipeasio_parse.h"
++#include "pipeasio_rate_state.h"
+ #include "pipeasio_rt.h"
+ #include "pipeasio_admission_gate.h"
+ #ifdef PIPEASIO_WOW64_PE
+@@ -1825,14 +1826,43 @@ SetSampleRate(LPPIPEASIO iface, double sampleRate)
          return -1000;
      if (!rate_is_available(This, sampleRate))
      {
@@ -42,12 +81,94 @@ index 7eb4c2d..423483f 100644
 +             "where it is -- keeping the current rate "
 +             "(pipeasio-clamp-sample-rate)\n",
 +             sampleRate);
++        /* A config/device pin owns the next activation.  Do not let an older
++         * accepted host request reappear after the graph is rebuilt. */
++        atomic_store_explicit(&This->host_requested_rate,
++                              pipeasio_rate_request_after_set(false, 0),
++                              memory_order_release);
          method_end(&token);
 -        return -995;
 +        return 0;
      }
- 
-     uint32_t current   = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
--- 
-2.55.0
 
+     uint32_t current   = atomic_load_explicit(&This->host_sample_rate, memory_order_acquire);
+     uint32_t requested = (uint32_t)sampleRate;
+     if (requested == current)
+     {
++        /* Equality can mean the daemon corrected a previous request and the
++         * host is acknowledging the measured rate.  Replace, rather than
++         * preserve, that stale request so reactivation keeps this rate. */
++        atomic_store_explicit(&This->host_requested_rate,
++                              pipeasio_rate_request_after_set(true, requested),
++                              memory_order_release);
+         atomic_store_explicit(&This->host_announced_rate, current, memory_order_release);
+         method_end(&token);
+         return 0;
+@@ -1842,7 +1872,9 @@ SetSampleRate(LPPIPEASIO iface, double sampleRate)
+      * on the next activation.  Report the requested rate now anyway: the host
+      * reads GetSampleRate straight after this and must see what it asked for,
+      * and the first process cycle corrects it if the daemon lands elsewhere. */
+-    atomic_store_explicit(&This->host_requested_rate, requested, memory_order_release);
++    atomic_store_explicit(&This->host_requested_rate,
++                          pipeasio_rate_request_after_set(true, requested),
++                          memory_order_release);
+     atomic_store_explicit(&This->host_sample_rate, requested, memory_order_release);
+     atomic_store_explicit(&This->host_announced_rate, requested, memory_order_release);
+
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 5533f4e..793ad65 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -24,6 +24,7 @@ endfunction()
+
+ pipeasio_add_unit_test(test_offsets test_offsets.c)
+ pipeasio_add_unit_test(test_config test_config.c ${CMAKE_SOURCE_DIR}/src/config.c)
++pipeasio_add_unit_test(test_rate_state test_rate_state.c)
+ find_package(Threads REQUIRED)
+ pipeasio_add_unit_test(test_admission_gate test_admission_gate.c)
+ target_link_libraries(test_admission_gate PRIVATE Threads::Threads)
+diff --git a/tests/unit/test_rate_state.c b/tests/unit/test_rate_state.c
+new file mode 100644
+index 0000000..c567ed2
+--- /dev/null
++++ b/tests/unit/test_rate_state.c
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#include "pipeasio_rate_state.h"
++
++#include <stdint.h>
++#include <stdio.h>
++
++static int failures;
++
++#define EXPECT_EQ(actual, expected)                                                               \
++    do                                                                                             \
++    {                                                                                              \
++        uint32_t a_ = (actual), e_ = (expected);                                                   \
++        if (a_ != e_)                                                                              \
++        {                                                                                          \
++            fprintf(stderr, "%s:%d: got %u, expected %u\n", __FILE__, __LINE__, a_, e_);        \
++            ++failures;                                                                            \
++        }                                                                                          \
++    } while (0)
++
++int
++main(void)
++{
++    /* Host asks for 96 kHz, but the daemon later corrects the live graph to
++     * 48 kHz.  Confirming that measured rate must replace the stale 96 kHz
++     * request so the next activation stays at the correction. */
++    uint32_t next_activation = pipeasio_rate_request_after_set(true, 96000);
++    EXPECT_EQ(next_activation, 96000);
++    next_activation = pipeasio_rate_request_after_set(true, 48000);
++    EXPECT_EQ(next_activation, 48000);
++
++    /* A config/device pin refuses host control and therefore clears any old
++     * host request instead of resurrecting it on reactivation. */
++    next_activation = pipeasio_rate_request_after_set(false, 44100);
++    EXPECT_EQ(next_activation, 0);
++    return failures ? 1 : 0;
++}
+
+--
+2.43.0

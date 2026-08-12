@@ -7,22 +7,79 @@ Two devices in one graph mean PipeWire resamples one to match clocks;
 normal and meant to be inaudible, audible resync is a headroom fault
 (C8/C9 in the ableton-linux crackle note).
 
-When no capture default is configured, prefer a source on the playback
-card over the lowest-id one, so tie-breaking never adds a second
-hardware clock. The playback side resolves FIRST in CreateBuffers so
-the fallback anchors to the card actually selected for output, an
-explicit output_device included: resolving inputs first anchored
-capture to the system default, often the onboard card, while a USB
-interface played, and the log line then named the wrong card. The
-warning now names the chosen source, the playback device it shares a
-card with, and the lowest-id candidate it displaced.
+When input_device is unset, prefer a physical source on the playback
+card over both PipeWire's default source and the lowest-id source, so a
+stale desktop default cannot add a second hardware clock. The playback
+side resolves FIRST in CreateBuffers so the fallback anchors to the
+card actually selected for output, an explicit output_device included:
+resolving inputs first anchored capture to the system default, often
+the onboard card, while a USB interface played. An explicit
+input_device remains authoritative. The warning names the chosen source,
+the playback device it shares a card with, and the default it displaced.
 
 When capture and playback do resolve to different cards, log the pair
 once (pipeasio-clock-domains) so the topology is in the capture.
 ---
- src/asio.c  |  14 +++--
- src/audio.c | 152 ++++++++++++++++++++++++++++++++++++++++++++++++++--
- 2 files changed, 159 insertions(+), 7 deletions(-)
+ include/pipeasio_parse.h |  11 ++++
+ src/asio.c               |  14 +++--
+ src/audio.c              | 134 ++++++++++++++++++++++++++++++++++++++++++-----
+ tests/unit/test_config.c |   8 +++
+ 4 files changed, 153 insertions(+), 14 deletions(-)
+
+diff --git a/include/pipeasio_parse.h b/include/pipeasio_parse.h
+--- a/include/pipeasio_parse.h
++++ b/include/pipeasio_parse.h
+@@ -4,6 +4,7 @@
+ #include <ctype.h>
+ #include <errno.h>
+ #include <limits.h>
++#include <stdint.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -104,6 +105,42 @@ pipeasio_quantum_should_restore(int adopted_quantum, int pending_quantum, int ob
+            && !foreign_forcer_present;
+ }
+
++/* Resolve an unset capture device.  A source on the selected playback card
++ * wins over PipeWire's default source; the explicit input_device path never
++ * calls this helper.  This keeps same-device duplex on one hardware clock even
++ * when the desktop default still names an onboard microphone. */
++static inline uint32_t
++pipeasio_unset_capture_target(uint32_t same_card, uint32_t default_source, uint32_t first_source)
++{
++    return same_card != UINT32_MAX ? same_card
++                                   : (default_source != UINT32_MAX ? default_source : first_source);
++}
++
++/* Parse a PipeWire object id without accepting strtoul's partial, signed, or
++ * overflowing forms.  UINT32_MAX is SPA_ID_INVALID and is never a real id. */
++static inline bool
++pipeasio_parse_u32_id(const char *text, uint32_t *result)
++{
++    char              *end;
++    unsigned long long value;
++    if (!text || !result)
++        return false;
++    while (isspace((unsigned char)*text))
++        ++text;
++    if (!*text || *text == '+' || *text == '-')
++        return false;
++    errno = 0;
++    value = strtoull(text, &end, 10);
++    if (errno == ERANGE || end == text || value >= UINT32_MAX)
++        return false;
++    while (isspace((unsigned char)*end))
++        ++end;
++    if (*end)
++        return false;
++    *result = (uint32_t)value;
++    return true;
++}
++
+ static inline bool
+ pipeasio_parse_bool(const char *text, bool *result)
+ {
 
 diff --git a/src/asio.c b/src/asio.c
 index 5059a3c..3a61703 100644
@@ -89,7 +146,7 @@ index 3fcd83b..073b137 100644
      c->default_metadata_id  = SPA_ID_INVALID;
      c->settings_metadata_id = SPA_ID_INVALID;
  #ifndef PIPEASIO_AUDIO_UNIXLIB
-@@ -1247,6 +1258,73 @@ audio_find_node_id(audio_client_t *client, const char *node_name)
+@@ -1247,6 +1258,55 @@ audio_find_node_id(audio_client_t *client, const char *node_name)
      return SPA_ID_INVALID;
  }
  
@@ -101,24 +158,6 @@ index 3fcd83b..073b137 100644
 +{
 +    struct audio_node_info *n = audio_find_node(c, node_id);
 +    return n ? n->device_id : SPA_ID_INVALID;
-+}
-+
-+/* What a FLAGS query with no explicit device resolves to: the configured
-+ * PipeWire default when it is cached, else the lowest-id discovered match.
-+ * Kept in step with the selection in audio_collect_device_port_objects. */
-+static uint32_t
-+audio_resolve_default_node(audio_client_t *client, uint64_t flags)
-+{
-+    const char *default_name = flags & AUDIO_PORT_IS_INPUT ? client->default_sink_name
-+                                                           : client->default_source_name;
-+    uint32_t    target       = SPA_ID_INVALID;
-+    if (default_name[0])
-+        return audio_find_node_id(client, default_name);
-+    for (uint32_t i = 0; i < client->n_discovered; ++i)
-+        if ((client->discovered[i]->flags & flags) == flags
-+            && (target == SPA_ID_INVALID || client->discovered[i]->pw_node_id < target))
-+            target = client->discovered[i]->pw_node_id;
-+    return target;
 +}
 +
 +/* Record the hardware node a direction resolved to and report, once per
@@ -163,74 +202,61 @@ index 3fcd83b..073b137 100644
  static audio_port_t **
  audio_collect_device_port_objects(audio_client_t *client, const char *node_name, uint64_t flags,
                                    uint32_t *count_out)
-@@ -1264,13 +1342,73 @@ audio_collect_device_port_objects(audio_client_t *client, const char *node_name,
-         if (default_name[0])
-             target = audio_find_node_id(client, default_name);
-         else
-+        {
-+            /* No configured default for this direction: the lowest-id match
-+             * is the baseline.  For capture, prefer a source on the card the
-+             * playback side actually resolved to, so the driver's own
-+             * tie-breaking never puts a second hardware clock in the graph
-+             * (C9).  CreateBuffers resolves the playback side FIRST for
-+             * exactly this reason: an explicit output_device must anchor
-+             * this fallback, not the system default (which is often the
-+             * onboard card while a USB interface plays).  A default the user
-+             * set is honored above; when it is other hardware, that is
-+             * reported instead of overridden (recording from a device the
-+             * user did not pick is worse than resampling). */
-+            uint32_t first = SPA_ID_INVALID;
-             for (uint32_t i = 0; i < client->n_discovered; ++i)
-                 if ((client->discovered[i]->flags & flags) == flags
+@@ -1264,13 +1324,55 @@ audio_collect_device_port_objects(audio_client_t *client, const char *node_name,
+-        if (default_name[0])
+-            target = audio_find_node_id(client, default_name);
+-        else
+-            for (uint32_t i = 0; i < client->n_discovered; ++i)
+-                if ((client->discovered[i]->flags & flags) == flags
 -                    && (target == SPA_ID_INVALID || client->discovered[i]->pw_node_id < target))
 -                    target = client->discovered[i]->pw_node_id;
-+                    && (first == SPA_ID_INVALID || client->discovered[i]->pw_node_id < first))
-+                    first = client->discovered[i]->pw_node_id;
-+            target = first;
-+            if (flags & AUDIO_PORT_IS_OUTPUT)
++        uint32_t default_target = default_name[0] ? audio_find_node_id(client, default_name)
++                                                  : SPA_ID_INVALID;
++        uint32_t first = SPA_ID_INVALID;
++        for (uint32_t i = 0; i < client->n_discovered; ++i)
++            if ((client->discovered[i]->flags & flags) == flags
++                && (first == SPA_ID_INVALID || client->discovered[i]->pw_node_id < first))
++                first = client->discovered[i]->pw_node_id;
++
++        if (flags & AUDIO_PORT_IS_OUTPUT)
++        {
++            /* input_device is unset: prefer physical capture on the card the
++             * playback side already resolved, including an explicit
++             * output_device.  This must outrank default.audio.source; desktop
++             * metadata commonly still names the onboard microphone while Live
++             * is playing through a selected USB interface.  An explicit input
++             * name took the branch above and is never overridden. */
++            uint32_t same_card = SPA_ID_INVALID;
++            uint32_t pb_node   = client->chosen_node[1];
++            uint32_t pb_dev    = audio_node_device(client, pb_node);
++            if (pb_dev != SPA_ID_INVALID)
 +            {
-+                /* The playback card: the node the output side resolved to in
-+                 * this pass (playback resolves before capture), with the
-+                 * metadata default as fallback when playback has not
-+                 * resolved yet. */
-+                uint32_t pb_node = client->chosen_node[1];
-+                if (pb_node == SPA_ID_INVALID)
++                uint64_t want = flags | AUDIO_PORT_IS_PHYSICAL;
++                for (uint32_t i = 0; i < client->n_discovered; ++i)
 +                {
-+                    uint64_t pb_flags = (flags & ~(uint64_t)AUDIO_PORT_IS_OUTPUT)
-+                                        | AUDIO_PORT_IS_INPUT | AUDIO_PORT_IS_PHYSICAL;
-+                    pb_node = audio_resolve_default_node(client, pb_flags);
-+                }
-+                uint32_t pb_dev = audio_node_device(client, pb_node);
-+                if (pb_dev != SPA_ID_INVALID)
-+                {
-+                    uint64_t want = flags | AUDIO_PORT_IS_PHYSICAL;
-+                    for (uint32_t i = 0; i < client->n_discovered; ++i)
-+                    {
-+                        audio_port_t *p = client->discovered[i];
-+                        if ((p->flags & want) != want)
-+                            continue;
-+                        if (audio_node_device(client, p->pw_node_id) == pb_dev)
-+                        {
-+                            target = p->pw_node_id;
-+                            break;
-+                        }
-+                    }
-+                }
-+                if (target != SPA_ID_INVALID && first != SPA_ID_INVALID && target != first)
-+                {
-+                    struct audio_node_info *tn = audio_find_node(client, target);
-+                    struct audio_node_info *pn = audio_find_node(client, pb_node);
-+                    WARN("no capture default configured: using \"%s\" on the same card "
-+                         "as playback device \"%s\" (pipeasio-clock-domains); the "
-+                         "lowest-id candidate was \"%s\". Set input_device in "
-+                         "config.ini to override.\n",
-+                         tn ? tn->node_name : "?", pn ? pn->node_name : "?",
-+                         audio_find_node(client, first)
-+                                 ? audio_find_node(client, first)->node_name
-+                                 : "?");
++                    audio_port_t *p = client->discovered[i];
++                    if ((p->flags & want) == want
++                        && audio_node_device(client, p->pw_node_id) == pb_dev
++                        && (same_card == SPA_ID_INVALID || p->pw_node_id < same_card))
++                        same_card = p->pw_node_id;
 +                }
 +            }
++            target = pipeasio_unset_capture_target(same_card, default_target, first);
++            if (same_card != SPA_ID_INVALID && same_card != default_target)
++            {
++                struct audio_node_info *tn = audio_find_node(client, target);
++                struct audio_node_info *pn = audio_find_node(client, pb_node);
++                struct audio_node_info *dn = audio_find_node(client, default_target);
++                WARN("input_device is unset: using capture \"%s\" on the same card as "
++                     "playback device \"%s\" (pipeasio-clock-domains), instead of "
++                     "PipeWire default source \"%s\". Set input_device in config.ini "
++                     "to override.\n",
++                     tn ? tn->node_name : "?", pn ? pn->node_name : "?",
++                     dn ? dn->node_name : "none");
++            }
 +        }
++        else
++            target = default_target != SPA_ID_INVALID ? default_target : first;
      }
      if (target == SPA_ID_INVALID)
          return NULL;
@@ -252,10 +278,10 @@ index 3fcd83b..073b137 100644
      if (!n)
          return;
 -    n->id = id;
-+    n->id        = id;
-+    n->device_id = device_id_s && audio_registry_property_valid(device_id_s)
-+                           ? (uint32_t)strtoul(device_id_s, NULL, 10)
-+                           : SPA_ID_INVALID;
++    n->id = id;
++    n->device_id = SPA_ID_INVALID;
++    if (device_id_s && audio_registry_property_valid(device_id_s))
++        pipeasio_parse_u32_id(device_id_s, &n->device_id);
      /* Track foreign quantum forcers so the watcher can tell when the
       * forcing condition ends (issue #49).  Our own node's force is not
       * foreign.  Best effort: a node that turns its force on after being
@@ -270,6 +296,35 @@ index 3fcd83b..073b137 100644
              free(node->node_name);
              free(node->display_name);
              free(node->media_class);
+diff --git a/tests/unit/test_config.c b/tests/unit/test_config.c
+--- a/tests/unit/test_config.c
++++ b/tests/unit/test_config.c
+@@ -201,6 +201,26 @@ main(void)
+         EXPECT_EQ(pipeasio_quantum_commit_target(128, 256, 128), 128);
+     }
+
++    TEST_GROUP("unset capture selection policy")
++    {
++        EXPECT_EQ(pipeasio_unset_capture_target(42, 7, 3), 42);
++        EXPECT_EQ(pipeasio_unset_capture_target(UINT32_MAX, 7, 3), 7);
++        EXPECT_EQ(pipeasio_unset_capture_target(UINT32_MAX, UINT32_MAX, 3), 3);
++        EXPECT_EQ(pipeasio_unset_capture_target(UINT32_MAX, UINT32_MAX, UINT32_MAX), UINT32_MAX);
++    }
++
++    TEST_GROUP("PipeWire object id parsing")
++    {
++        uint32_t id = UINT32_MAX;
++        EXPECT_TRUE(pipeasio_parse_u32_id(" 42 ", &id));
++        EXPECT_EQ(id, 42);
++        EXPECT_TRUE(!pipeasio_parse_u32_id("7x", &id));
++        EXPECT_TRUE(!pipeasio_parse_u32_id("-1", &id));
++        EXPECT_TRUE(!pipeasio_parse_u32_id("+1", &id));
++        EXPECT_TRUE(!pipeasio_parse_u32_id("4294967295", &id));
++        EXPECT_TRUE(!pipeasio_parse_u32_id("18446744073709551616", &id));
++    }
++
+     /* Comments, stray whitespace, unknown keys, bool spellings, no header. */
+     TEST_GROUP("lenient parse")
+     {
 -- 
 2.55.0
-

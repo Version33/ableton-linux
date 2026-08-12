@@ -100,7 +100,5 @@ fi
 
 export ABLETON_INSTALLER_MEDIA_DIR="$media_dir"
 export ABLETON_INSTALLER_VERSION="$VERSION"
-# Delegate without exec: the EXIT trap must still remove $workdir.  The exit
-# keeps bash from reading past the payload marker after a successful install.
-bash "$kit/scripts/installer.sh" "$@"; exit $?
+bash "$kit/scripts/installer.sh" "$@"
 __PAYLOAD_BELOW__

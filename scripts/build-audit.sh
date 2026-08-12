@@ -134,6 +134,59 @@ else
     bad "BUILD-INFO patch count" "missing or != $n_series (see $binfo)"
 fi
 
+# The Qt panel is optional, but its provenance is not. A normal value starts
+# with the shipped binary's sha256; a no-Qt/driver-only build says why it was
+# skipped. Later structural checks enforce the corresponding complete trio or
+# complete absence.
+panel_built=-1
+panel_hash=""
+panel_record=""
+panel_mode=""
+pipewire_probe_hash=""
+if [ -f "$binfo" ]; then
+    panel_mode="$(sed -n 's/^pipeasio-panel: *//p' "$binfo")"
+    panel_record="$(sed -n 's/^pipeasio-settings: *//p' "$binfo")"
+    panel_hash="${panel_record%% *}"
+    if [[ "$panel_hash" =~ ^[0-9a-f]{64}$ ]] && [ "$panel_mode" = built ]; then
+        panel_built=1
+        ok "BUILD-INFO panel provenance" "state=built; binary hash recorded"
+    elif { [ "$panel_record" = 'skipped (disabled)' ] \
+            || [ "$panel_record" = 'skipped (Qt6 Widgets unavailable)' ]; } \
+            && [ "$panel_mode" = skipped ]; then
+        panel_built=0
+        ok "BUILD-INFO panel provenance" "state=skipped; $panel_record"
+    else
+        bad "BUILD-INFO panel provenance" \
+            "inconsistent/malformed state='$panel_mode' settings='$panel_record'"
+    fi
+
+    if grep -q '^pipeasio-no-qt: .*passed$' "$binfo"; then
+        ok "no-Qt build/install gate" "recorded passed"
+    else
+        bad "no-Qt build/install gate" "missing from BUILD-INFO"
+    fi
+    if grep -q '^pipeasio-sanitizers: ASan+UBSan .*; TSan unit passed$' "$binfo"; then
+        ok "PipeASIO sanitizer gate" "ASan+UBSan and TSan recorded passed"
+    else
+        bad "PipeASIO sanitizer gate" "missing/incomplete in BUILD-INFO"
+    fi
+    pipewire_probe_hash="$(sed -n 's/^pipewire-version-probe: *//p' "$binfo")"
+    if [[ "$pipewire_probe_hash" =~ ^[0-9a-f]{64}$ ]]; then
+        ok "PipeWire probe provenance" "binary hash recorded"
+    else
+        bad "PipeWire probe provenance" "missing/malformed hash in BUILD-INFO"
+    fi
+    if grep -qxF \
+            'pipewire-version-probe-tests: client-stub+ASan+UBSan passed' \
+            "$binfo"; then
+        ok "PipeWire probe test gate" "client stub + ASan/UBSan recorded passed"
+    else
+        bad "PipeWire probe test gate" "missing/incomplete in BUILD-INFO"
+    fi
+else
+    bad "BUILD-INFO PipeASIO gates" "missing $binfo"
+fi
+
 # --- [3/4] per-patch verification ----------------------------------------------
 # FINGERPRINTS: patch|encoding(ascii|wide=UTF-16LE)|module|pattern. STAMP_ONLY: patch|reason.
 FINGERPRINTS='
@@ -256,6 +309,17 @@ for f in $(awk '{print $2}' "$SERIES" | sort); do
     stamp_note="stamp✓"
     [ "$stamp_ok" = 1 ] || stamp_note="stamp✗"
     fps="$(printf '%s\n' "$FINGERPRINTS" | grep "^$num|" || true)"
+    if [ "$num" = pipeasio/0010 ] && [ "$panel_built" = 0 ]; then
+        # 0010 changes only the optional Qt GUI. With no panel there is no
+        # honest binary fingerprint to inspect, so require source integrity,
+        # the exact stack stamp and the explicit no-panel provenance above.
+        if [ "${sha_ok[$f]:-0}" = 1 ] && [ "$stamp_ok" = 1 ]; then
+            ok "$f" "$integrity $stamp_note (optional panel not built)"
+        else
+            bad "$f" "$integrity $stamp_note (optional panel not built)"
+        fi
+        continue
+    fi
     if [ -z "$fps" ] && printf '%s\n' "$PIPEASIO_MARKER_TODO" | grep -qxF "$num"; then
         # Transitional: the series is being rewritten and the marker strings
         # are not final. Integrity and stamp still gate; the binary marker is
@@ -318,9 +382,87 @@ must lib/wine/x86_64-windows/pipeasio64.dll
 must lib/wine/x86_64-unix/pipeasio64.dll.so
 must lib/wine/x86_64-windows/pipeasio.dll
 must lib/wine/x86_64-unix/pipeasio.dll.so
-must bin/pipeasio-settings
-must share/applications/pipeasio-settings.desktop
-must share/icons/hicolor/scalable/apps/pipeasio.svg
+must bin/pipewire-version-probe
+
+if [ -x "$tree/bin/pipewire-version-probe" ]; then
+    ok "pipewire-version-probe mode" "executable"
+else
+    bad "pipewire-version-probe mode" "not executable"
+fi
+actual_pipewire_probe_hash="$(
+    sha256sum "$tree/bin/pipewire-version-probe" 2>/dev/null \
+        | awk '{print $1}' \
+        || true
+)"
+if [ -n "$pipewire_probe_hash" ] \
+        && [ "$actual_pipewire_probe_hash" = "$pipewire_probe_hash" ]; then
+    ok "pipewire-version-probe sha256" "matches BUILD-INFO"
+else
+    bad "pipewire-version-probe sha256" \
+        "BUILD-INFO=$pipewire_probe_hash artifact=$actual_pipewire_probe_hash"
+fi
+
+# Upstream's CMake install owns the unified Wine aliases. Requiring relative
+# links proves the packaging used that install contract and keeps relocation
+# safe; a copied or absolute alias can silently diverge from the versioned DLL.
+for alias_spec in \
+    'lib/wine/x86_64-windows/pipeasio.dll|pipeasio64.dll' \
+    'lib/wine/x86_64-unix/pipeasio.dll.so|pipeasio64.dll.so'; do
+    alias_path="${alias_spec%%|*}"
+    alias_target="${alias_spec#*|}"
+    if [ -L "$tree/$alias_path" ] && [ "$(readlink "$tree/$alias_path")" = "$alias_target" ]; then
+        ok "$alias_path alias" "relative -> $alias_target"
+    else
+        bad "$alias_path alias" "not the upstream relative symlink -> $alias_target"
+    fi
+done
+
+panel_paths=(
+    bin/pipeasio-settings
+    share/applications/pipeasio-settings.desktop
+    share/icons/hicolor/scalable/apps/pipeasio.svg
+)
+panel_count=0
+for panel_path in "${panel_paths[@]}"; do
+    [ -e "$tree/$panel_path" ] && panel_count=$((panel_count+1))
+done
+if [ "$panel_count" -ne 0 ] && [ "$panel_count" -ne 3 ]; then
+    bad "settings panel payload" "partial deployment ($panel_count/3 files)"
+elif [ "$panel_built" = 1 ] && [ "$panel_count" -eq 3 ]; then
+    for panel_path in "${panel_paths[@]}"; do must "$panel_path"; done
+    if [ -x "$tree/bin/pipeasio-settings" ]; then
+        ok "pipeasio-settings mode" "executable"
+    else
+        bad "pipeasio-settings mode" "not executable"
+    fi
+    actual_panel_hash="$(sha256sum "$tree/bin/pipeasio-settings" | awk '{print $1}')"
+    if [ "$actual_panel_hash" = "$panel_hash" ]; then
+        ok "pipeasio-settings sha256" "matches BUILD-INFO"
+    else
+        bad "pipeasio-settings sha256" \
+            "BUILD-INFO=$panel_hash artifact=$actual_panel_hash"
+    fi
+    if grep -qxF 'Exec=pipeasio-settings' \
+            "$tree/share/applications/pipeasio-settings.desktop"; then
+        ok "panel desktop Exec" "pipeasio-settings"
+    else
+        bad "panel desktop Exec" "missing/wrong"
+    fi
+    if grep -qxF 'Icon=pipeasio' \
+            "$tree/share/applications/pipeasio-settings.desktop"; then
+        ok "panel desktop Icon" "pipeasio"
+    else
+        bad "panel desktop Icon" "missing/wrong"
+    fi
+elif [ "$panel_built" = 0 ] && [ "$panel_count" -eq 0 ]; then
+    ok "settings panel payload" "deliberately absent (driver-only build)"
+elif [ "$panel_built" = 1 ]; then
+    bad "settings panel payload" "BUILD-INFO records a panel but payload is absent"
+elif [ "$panel_built" = 0 ]; then
+    bad "settings panel payload" "BUILD-INFO records no panel but payload is present"
+else
+    bad "settings panel payload" "cannot reconcile malformed BUILD-INFO provenance"
+fi
 must lib/wine/x86_64-windows/libusb-1.0.dll
 must lib/wine/x86_64-unix/libusb-1.0.so
 for absent in lib/wine/i386-windows/libusb-1.0.dll lib/wine/i386-unix/libusb-1.0.so; do
@@ -340,6 +482,37 @@ if command -v readelf >/dev/null; then
         bad "pipeasio.dll.so rpath" "carries a build-container rpath"
     else
         ok "pipeasio.dll.so rpath" "none (resolves via host loader)"
+    fi
+    pipewire_probe_needed="$(
+        readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
+            | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
+            | sort \
+            || true
+    )"
+    if [ "$pipewire_probe_needed" = $'libc.so.6\nlibpipewire-0.3.so.0' ]; then
+        ok "pipewire-version-probe DT_NEEDED" "host PipeWire soname + libc only"
+    else
+        bad "pipewire-version-probe DT_NEEDED" \
+            "unexpected libraries: ${pipewire_probe_needed//$'\n'/, }"
+    fi
+    if readelf -d "$tree/bin/pipewire-version-probe" 2>/dev/null \
+            | grep -qE 'RPATH|RUNPATH'; then
+        bad "pipewire-version-probe rpath" "carries a build/SDK rpath"
+    else
+        ok "pipewire-version-probe rpath" "none"
+    fi
+    if [ "$panel_built" = 1 ]; then
+        if readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null \
+                | grep -qF 'Shared library: [libQt6Widgets.so.6]'; then
+            ok "pipeasio-settings DT_NEEDED" "Qt6 Widgets"
+        else
+            bad "pipeasio-settings DT_NEEDED" "libQt6Widgets.so.6 not linked"
+        fi
+        if readelf -d "$tree/bin/pipeasio-settings" 2>/dev/null | grep -qE 'RPATH|RUNPATH'; then
+            bad "pipeasio-settings rpath" "carries a build-container rpath"
+        else
+            ok "pipeasio-settings rpath" "none"
+        fi
     fi
     readelf -d "$tree/lib/wine/x86_64-unix/winegstreamer.so" 2>/dev/null \
         | grep -qF 'Shared library: [libgstreamer-1.0.so.0]' \

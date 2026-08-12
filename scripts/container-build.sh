@@ -128,7 +128,7 @@ bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
 echo "   libusb bridge: PE $bridge_pe_sha / Unix $bridge_unix_sha"
 
-echo "== [4/8] build PipeASIO 1.5.0 against THIS Wine (upstream CMake + CTest) =="
+echo "== [4/8] build PipeWire probe + PipeASIO 1.5.0 against THIS Wine (upstream CMake + CTest) =="
 mkdir -p "$WORK/pipeasio"
 tar xzf "$SRC/vendor/pipeasio-1.5.0.tar.gz" -C "$WORK/pipeasio" --strip-components=1
 cd "$WORK/pipeasio"
@@ -162,97 +162,292 @@ export PATH="$PREFIX_ROOT/bin:$PATH"          # this Wine's winegcc/winebuild ta
 #   - CC/CXX name the PATH-resolved compilers so the ccache shims keep
 #     working; cmake's default /usr/bin/cc would bypass them.
 PW_SDK=/opt/pipewire-sdk
-PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
-PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
-CC=gcc CXX=g++ \
-cmake -S . -B build -G Ninja \
+PIPEASIO_BUILD_SETTINGS_PANEL="${PIPEASIO_BUILD_SETTINGS_PANEL:-ON}"
+case "$PIPEASIO_BUILD_SETTINGS_PANEL" in
+    ON|OFF) ;;
+    *)
+        echo "!! PIPEASIO_BUILD_SETTINGS_PANEL must be ON or OFF" >&2
+        exit 2
+        ;;
+esac
+
+# Install a tiny native preflight helper so setup can inspect both the loaded
+# client library and pw_core_info.version without requiring pw-cli/pw-dump.
+# It compiles on the oldest build host and records only PipeWire's stable
+# soname, so the host's selected client closure remains authoritative.
+pipewire_probe="$PREFIX_ROOT/bin/pipewire-version-probe"
+pipewire_sdk_lib="$PW_SDK/usr/lib/x86_64-linux-gnu/libpipewire-0.3.so"
+test -s "$SRC/tools/pipewire-version-probe.c"
+test -s "$pipewire_sdk_lib"
+read -r -a pipewire_probe_cflags <<< "$(
+    PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
+    PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
+        pkg-config --cflags libpipewire-0.3
+)"
+gcc -std=c11 -O2 -Wall -Wextra -Werror -fPIE -fstack-protector-strong \
+    -D_FORTIFY_SOURCE=2 "${pipewire_probe_cflags[@]}" \
+    "$SRC/tools/pipewire-version-probe.c" "$pipewire_sdk_lib" \
+    -pie -Wl,--allow-shlib-undefined,-z,relro,-z,now \
+    -o "$pipewire_probe"
+
+pipewire_probe_needed="$(
+    readelf -d "$pipewire_probe" \
+        | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' \
+        | sort
+)"
+if [ "$pipewire_probe_needed" != $'libc.so.6\nlibpipewire-0.3.so.0' ]; then
+    echo "!! pipewire-version-probe has unexpected DT_NEEDED entries:" >&2
+    printf '%s\n' "$pipewire_probe_needed" >&2
+    exit 1
+fi
+if readelf -d "$pipewire_probe" | grep -qE 'RPATH|RUNPATH'; then
+    echo "!! pipewire-version-probe carries an SDK/build rpath" >&2
+    exit 1
+fi
+
+# The vendored SDK library targets newer glibc than this floor container. Give
+# --client a complete symbol stub whose version result is deterministic; this
+# tests the helper's loader/API/output path without pretending to contact a
+# daemon. Also run that path under ASan+UBSan. The no-argument daemon path is a
+# release-machine integration test.
+probe_stub_dir="$(mktemp -d /tmp/pipewire-probe-smoke.XXXXXX)"
+printf '%s\n' \
+    'const char *pw_get_library_version(void) { return "probe-smoke-1.0.5"; }' \
+    > "$probe_stub_dir/stub.c"
+nm -D "$pipewire_probe" \
+    | awk '$1 == "U" && $2 ~ /^pw_/ && $2 != "pw_get_library_version" { print "void " $2 "(void) {}" }' \
+    | sort -u >> "$probe_stub_dir/stub.c"
+gcc -shared -fPIC -Wl,-soname,libpipewire-0.3.so.0 \
+    -o "$probe_stub_dir/libpipewire-0.3.so.0" "$probe_stub_dir/stub.c"
+test "$(LD_LIBRARY_PATH="$probe_stub_dir" "$pipewire_probe" --client)" = \
+    'client=probe-smoke-1.0.5'
+
+probe_sanitized="$probe_stub_dir/pipewire-version-probe-sanitized"
+gcc -std=c11 -O1 -g -Wall -Wextra -Werror -fPIE -fno-omit-frame-pointer \
+    -fsanitize=address,undefined "${pipewire_probe_cflags[@]}" \
+    "$SRC/tools/pipewire-version-probe.c" "$pipewire_sdk_lib" \
+    -pie -fsanitize=address,undefined \
+    -Wl,--allow-shlib-undefined,-z,relro,-z,now \
+    -o "$probe_sanitized"
+test "$(
+    LD_LIBRARY_PATH="$probe_stub_dir" \
+    ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
+    UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+        "$probe_sanitized" --client
+)" = 'client=probe-smoke-1.0.5'
+case "$probe_stub_dir" in
+    /tmp/pipewire-probe-smoke.*) rm -rf -- "${probe_stub_dir:?}" ;;
+    *) echo "!! refusing to remove unexpected probe smoke path: $probe_stub_dir" >&2; exit 1 ;;
+esac
+echo "   pipewire-version-probe: client stub + ASan/UBSan smoke passed"
+
+pipeasio_cmake_configure() {
+    local build_dir="$1"
+    shift
+    PKG_CONFIG_PATH="$PW_SDK/usr/lib/x86_64-linux-gnu/pkgconfig" \
+    PKG_CONFIG_SYSROOT_DIR="$PW_SDK" \
+    CC=gcc CXX=g++ \
+    cmake -S . -B "$build_dir" -G Ninja \
+        -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
+        -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
+        "$@"
+}
+
+# The SDK's libpipewire was built against a newer glibc than this reproducible
+# jammy container.  The selected unit tests use PipeWire types but make no
+# runtime pw_* calls, so give their loader a tiny symbol-compatible stub.  The
+# real driver is still linked by soname and the artifact gate below verifies it.
+pipeasio_make_test_stub() {
+    local build_dir="$1"
+    local stub_dir="$2"
+    printf '%s\n' 'void pipeasio_pw_test_stub(void) {}' > "$stub_dir/stub.c"
+    for t in "$build_dir"/tests/unit/test_*; do
+        [ -f "$t" ] && [ -x "$t" ] || continue
+        # || true: a statically-satisfied binary makes nm -D return nonzero,
+        # and pipefail must not turn that into a false build failure.
+        nm -D "$t" 2>/dev/null \
+            | awk '$1 == "U" && $2 ~ /^pw_/ { print "void " $2 "(void) {}" }' \
+            || true
+    done | sort -u >> "$stub_dir/stub.c"
+    gcc -shared -fPIC -Wl,-soname,libpipewire-0.3.so.0 \
+        -o "$stub_dir/libpipewire-0.3.so.0" "$stub_dir/stub.c"
+}
+
+pipeasio_ctest_units() {
+    local build_dir="$1"
+    shift
+    local stub_dir
+    stub_dir="$(mktemp -d /tmp/pipeasio-ctest.XXXXXX)"
+    pipeasio_make_test_stub "$build_dir" "$stub_dir"
+    env LD_LIBRARY_PATH="$stub_dir" "$@" \
+        ctest --test-dir "$build_dir" -L '^unit$' \
+            --no-tests=error --output-on-failure
+    case "$stub_dir" in
+        /tmp/pipeasio-ctest.*) rm -rf -- "${stub_dir:?}" ;;
+        *) echo "!! refusing to remove unexpected test stub path: $stub_dir" >&2; exit 1 ;;
+    esac
+}
+
+pipeasio_unit_targets() {
+    local build_dir="$1"
+    ctest --test-dir "$build_dir" -N -L '^unit$' 2>/dev/null \
+        | sed -n 's/^ *Test *#[0-9][0-9]*: *//p'
+}
+
+pipeasio_ctest_nonintegration() {
+    local build_dir="$1"
+    shift
+    local stub_dir
+    stub_dir="$(mktemp -d /tmp/pipeasio-ctest.XXXXXX)"
+    pipeasio_make_test_stub "$build_dir" "$stub_dir"
+    env LD_LIBRARY_PATH="$stub_dir" "$@" \
+        ctest --test-dir "$build_dir" -LE '^integration$' \
+            --no-tests=error --output-on-failure
+    case "$stub_dir" in
+        /tmp/pipeasio-ctest.*) rm -rf -- "${stub_dir:?}" ;;
+        *) echo "!! refusing to remove unexpected test stub path: $stub_dir" >&2; exit 1 ;;
+    esac
+}
+
+# Production build. BUILD_SETTINGS_PANEL=ON means "build when Qt is present",
+# matching upstream: Qt discovery is quiet and a missing toolkit does not stop
+# the driver. The official container has Qt and CI separately requires the
+# complete panel payload; a downstream/no-Qt build remains a valid driver-only
+# artifact and is recorded as such in BUILD-INFO.
+pipeasio_cmake_configure build \
     -DCMAKE_BUILD_TYPE=Release \
-    -DWINEBUILD="$PREFIX_ROOT/bin/winebuild" \
-    -DWINEGCC="$PREFIX_ROOT/bin/winegcc" \
+    -DCMAKE_INSTALL_PREFIX="$CONFIGURE_PREFIX" \
     -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
-    -DBUILD_SETTINGS_PANEL=ON \
+    -DBUILD_SETTINGS_PANEL="$PIPEASIO_BUILD_SETTINGS_PANEL" \
     -DBUILD_TESTS=ON
 cmake --build build -j "$JOBS"
 
-# The panel must exist here: this container installs qt6-base-dev, so a
-# configure that skipped gui/ means Qt6 CMake discovery broke in the image.
-# Fail rather than ship a runtime without the panel (issue #60 all over
-# again). Outside this container PIPEASIO_ALLOW_NO_PANEL=1 records the skip
-# and keeps the driver build; the build audit still refuses a tarball
-# without the panel, so nothing panel-less can ship.
-panel_state="built"
-if [ ! -x build/gui/pipeasio-settings ]; then
-    if [ "${PIPEASIO_ALLOW_NO_PANEL:-0}" = 1 ]; then
-        panel_state="skipped (no Qt6)"
-        echo "   panel: skipped (no Qt6)"
-    else
-        echo "!! pipeasio-settings did not build: CMake did not find Qt6 Widgets" >&2
-        echo "!! qt6-base-dev is pinned in the Containerfile; a skipped panel in this container is a broken image" >&2
-        exit 1
-    fi
+panel_state="skipped (disabled)"
+if [ -x build/gui/pipeasio-settings ]; then
+    panel_state="built"
+elif [ "$PIPEASIO_BUILD_SETTINGS_PANEL" = ON ]; then
+    panel_state="skipped (Qt6 Widgets unavailable)"
+fi
+echo "   panel: $panel_state"
+
+# Run upstream's complete non-integration CTest scope: registration/install
+# layout tests, Linux-native unit tests, the WoW64 ABI check and the headless Qt
+# panel test when available. Tests labelled integration need a live daemon,
+# installed Wine registration and real audio nodes; those remain release-machine
+# tests rather than being reported as exercised here.
+pipeasio_ctest_nonintegration build
+
+# Prove the actual missing-Qt contract, rather than inferring it from an option:
+# force Qt discovery off, build and test the driver, then run upstream's staged
+# install and require the driver aliases while forbidding a partial panel.
+pipeasio_cmake_configure build-noqt \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$CONFIGURE_PREFIX" \
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
+    -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=TRUE \
+    -DBUILD_SETTINGS_PANEL=ON \
+    -DBUILD_TESTS=ON
+mapfile -t noqt_unit_targets < <(pipeasio_unit_targets build-noqt)
+[ "${#noqt_unit_targets[@]}" -gt 0 ] || {
+    echo "!! no unit-labelled CTest targets found in the no-Qt build" >&2
+    exit 1
+}
+cmake --build build-noqt -j "$JOBS" --target \
+    pipeasio64 "${noqt_unit_targets[@]}"
+pipeasio_ctest_nonintegration build-noqt
+noqt_stage="$(mktemp -d /tmp/pipeasio-noqt-install.XXXXXX)"
+DESTDIR="$noqt_stage" cmake --install build-noqt
+noqt_root="$noqt_stage$CONFIGURE_PREFIX"
+test -s "$noqt_root/lib/wine/x86_64-windows/pipeasio64.dll"
+test -s "$noqt_root/lib/wine/x86_64-unix/pipeasio64.dll.so"
+test "$(readlink "$noqt_root/lib/wine/x86_64-windows/pipeasio.dll")" = pipeasio64.dll
+test "$(readlink "$noqt_root/lib/wine/x86_64-unix/pipeasio.dll.so")" = pipeasio64.dll.so
+test ! -e "$noqt_root/bin/pipeasio-settings"
+test ! -e "$noqt_root/share/applications/pipeasio-settings.desktop"
+test ! -e "$noqt_root/share/icons/hicolor/scalable/apps/pipeasio.svg"
+case "$noqt_stage" in
+    /tmp/pipeasio-noqt-install.*) rm -rf -- "${noqt_stage:?}" ;;
+    *) echo "!! refusing to remove unexpected no-Qt stage: $noqt_stage" >&2; exit 1 ;;
+esac
+echo "   no-Qt gate: CMake build, non-integration CTest and staged driver install passed"
+
+# Sanitizer gates. Upstream's PIPEASIO_ASAN mode instruments both the driver
+# and native targets with ASan+UBSan; CTest verifies the imports before running
+# the unit/panel suites. TSan is applied to the native unit targets (including
+# the threaded admission-gate and handle-table tests). Running the Wine driver
+# under TSan still needs a live PipeWire integration environment and is not
+# claimed by this build.
+pipeasio_cmake_configure build-asan \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
+    -DBUILD_SETTINGS_PANEL="$PIPEASIO_BUILD_SETTINGS_PANEL" \
+    -DBUILD_TESTS=ON \
+    -DPIPEASIO_ASAN=ON
+cmake --build build-asan -j "$JOBS"
+pipeasio_ctest_nonintegration build-asan \
+    ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0 \
+    UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+asan_panel_state="unavailable"
+if [ -x build-asan/gui/pipeasio-settings ]; then
+    asan_panel_state="passed"
 fi
 
-# In-container test scope: the Linux-native unit suite (ctest label "unit":
-# test_config, test_offsets, test_admission_gate, test_pw_buffer_region,
-# test_handle_table, plus whatever the patch series adds under that label)
-# and the headless Qt panel suite (test_panel, QT_QPA_PLATFORM=offscreen).
-# Everything else (asio_probe*, asio_loopback, pw_*_probe, register_script)
-# needs a running PipeWire daemon, a registered driver, or exercises install
-# paths we do not ship; those run on real machines, not here. The stub
-# satisfies the loader for test binaries carrying a libpipewire DT_NEEDED:
-# the SDK's real .so cannot load on this glibc, and the unit scope never
-# calls PipeWire at runtime (undefined pw_ symbols, if any, become no-ops).
-teststub="$(mktemp -d)"
-for t in build/tests/unit/test_*; do
-    [ -f "$t" ] && [ -x "$t" ] || continue
-    # || true: a statically-satisfied binary makes nm -D return nonzero, and
-    # under pipefail that would kill the build from inside this generator.
-    nm -D "$t" 2>/dev/null | awk '$1 == "U" && $2 ~ /^pw_/ { print "void " $2 "(void) {}" }' || true
-done | sort -u > "$teststub/stub.c"
-gcc -shared -fPIC -Wl,-soname,libpipewire-0.3.so.0 \
-    -o "$teststub/libpipewire-0.3.so.0" "$teststub/stub.c"
-LD_LIBRARY_PATH="$teststub" ctest --test-dir build -L '^unit$' \
-    --no-tests=error --output-on-failure
-if [ "$panel_state" = built ]; then
-    LD_LIBRARY_PATH="$teststub" ctest --test-dir build -R '^test_panel$' \
-        --no-tests=error --output-on-failure
-fi
-rm -rf "$teststub"
+pipeasio_cmake_configure build-tsan \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
+    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -Wl,--allow-shlib-undefined" \
+    -DBUILD_SETTINGS_PANEL=OFF \
+    -DBUILD_TESTS=ON
+mapfile -t tsan_unit_targets < <(pipeasio_unit_targets build-tsan)
+[ "${#tsan_unit_targets[@]}" -gt 0 ] || {
+    echo "!! no unit-labelled CTest targets found in the TSan build" >&2
+    exit 1
+}
+cmake --build build-tsan -j "$JOBS" --target "${tsan_unit_targets[@]}"
+pipeasio_ctest_units build-tsan TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1
+echo "   sanitizers: ASan+UBSan unit/panel=$asan_panel_state; TSan unit passed"
 
-# Install by hand, not `cmake --install`: the four driver names stay copies
-# (not upstream's symlinks) at the exact paths every release has shipped, and
-# upstream's pipeasio-register does not ride along. kernelbase is linked by
-# upstream's CMake itself (add_wine_dll LIBS, needed since 1.3.0 for the
-# generation-based Stop's WaitOnAddress/WakeByAddressAll).
-# Must link the host's PipeWire by soname, no SDK path baked in.
-readelf -d build/pipeasio64.dll.so | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
-if readelf -d build/pipeasio64.dll.so | grep -qE 'RPATH|RUNPATH'; then
+# Install through upstream CMake so its layout, Qt data files and Wine alias
+# contract are exercised. The project has its own atomic registration path, so
+# discard upstream's generic helper after testing its install rule.
+DESTDIR="$DESTDIR" cmake --install build
+rm -f -- "$PREFIX_ROOT/bin/pipeasio-register"
+
+# Must link the host's PipeWire by soname, with no SDK/build path baked in.
+readelf -d "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" \
+    | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
+if readelf -d "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -qE 'RPATH|RUNPATH'; then
     echo "!! pipeasio64.dll.so carries an rpath into the build container" >&2
     exit 1
 fi
-install -m644 build/pipeasio64.dll    "$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
-install -m644 build/pipeasio64.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so"
-# Wine resolves pipeasio64.dll to builtin name "pipeasio.dll" (from its spec file) and looks for the
-# unix half under that name: install both names or LoadLibrary fails with STATUS_DLL_NOT_FOUND.
-install -m644 build/pipeasio64.dll    "$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio.dll"
-install -m644 build/pipeasio64.dll.so "$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio.dll.so"
 
+# Panel deployment is all-or-nothing. A complete trio is optional for generic
+# builds, but a binary without its desktop file/icon (or vice versa) is never a
+# valid artifact.
+panel_payload=(
+    "$PREFIX_ROOT/bin/pipeasio-settings"
+    "$PREFIX_ROOT/share/applications/pipeasio-settings.desktop"
+    "$PREFIX_ROOT/share/icons/hicolor/scalable/apps/pipeasio.svg"
+)
+panel_payload_count=0
+for f in "${panel_payload[@]}"; do
+    [ -e "$f" ] && panel_payload_count=$((panel_payload_count+1))
+done
 if [ "$panel_state" = built ]; then
-    # pipeasio-settings: the native Qt panel the Hardware Setup dialog points
-    # at (issue #60). Links the container's Qt 6.2 by soname, so it runs
-    # against any host Qt >= 6.2; a host without Qt6 gets a load error from
-    # this one binary and nothing else is affected (install.sh checks and
-    # says which package to add). src/config.c is compiled into the panel,
-    # so it writes exactly what the driver reads.
-    if readelf -d build/gui/pipeasio-settings | grep -qE 'RPATH|RUNPATH'; then
+    [ "$panel_payload_count" -eq 3 ] || {
+        echo "!! incomplete settings-panel payload after CMake install ($panel_payload_count/3)" >&2
+        exit 1
+    }
+    test -x "$PREFIX_ROOT/bin/pipeasio-settings"
+    test -s "$PREFIX_ROOT/share/applications/pipeasio-settings.desktop"
+    test -s "$PREFIX_ROOT/share/icons/hicolor/scalable/apps/pipeasio.svg"
+    if readelf -d "$PREFIX_ROOT/bin/pipeasio-settings" | grep -qE 'RPATH|RUNPATH'; then
         echo "!! pipeasio-settings carries an rpath into the build container" >&2
         exit 1
     fi
-    install -m755 build/gui/pipeasio-settings "$PREFIX_ROOT/bin/pipeasio-settings"
-    install -D -m644 gui/pipeasio-settings.desktop \
-        "$PREFIX_ROOT/share/applications/pipeasio-settings.desktop"
-    install -D -m644 docs/icon.svg \
-        "$PREFIX_ROOT/share/icons/hicolor/scalable/apps/pipeasio.svg"
+elif [ "$panel_payload_count" -ne 0 ]; then
+    echo "!! panel was skipped but CMake installed a partial payload ($panel_payload_count/3)" >&2
+    exit 1
 fi
 
 echo "== [5/8] strip + prune (dev files served their purpose in [4/8]; nothing below runs on user machines) =="
@@ -260,7 +455,7 @@ echo "== [5/8] strip + prune (dev files served their purpose in [4/8]; nothing b
 # resources, .rodata literals (the audit fingerprints) and the builtin signature
 # all live outside the symtab; the relocation gate re-runs the stripped tree.
 # .dll16/.tlb/.vxd etc. are not COFF and stay untouched.
-find "$PREFIX_ROOT/lib/wine" \( -name '*.dll' -o -name '*.exe' -o -name '*.sys' \
+find "$PREFIX_ROOT/lib/wine" -type f \( -name '*.dll' -o -name '*.exe' -o -name '*.sys' \
     -o -name '*.drv' -o -name '*.cpl' -o -name '*.ocx' \) -exec llvm-strip --strip-all {} +
 strip --strip-unneeded "$PREFIX_ROOT"/lib/wine/*-unix/*.so
 for f in "$PREFIX_ROOT"/bin/*; do strip --strip-unneeded "$f" 2>/dev/null || true; done  # sh wrappers in bin/ are not ELF
@@ -274,6 +469,7 @@ rm -f "$PREFIX_ROOT"/bin/widl "$PREFIX_ROOT"/bin/winebuild "$PREFIX_ROOT"/bin/wi
 bridge_pe_sha="$(sha256sum "$bridge_pe" | awk '{print $1}')"
 bridge_unix_sha="$(sha256sum "$bridge_unix" | awk '{print $1}')"
 portal_unix_sha="$(sha256sum "$portal_unix" | awk '{print $1}')"
+pipewire_probe_sha="$(sha256sum "$pipewire_probe" | awk '{print $1}')"
 
 pipeasio_pe="$PREFIX_ROOT/lib/wine/x86_64-windows/pipeasio64.dll"
 pipeasio_unix="$PREFIX_ROOT/lib/wine/x86_64-unix/pipeasio64.dll.so"
@@ -301,15 +497,25 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
     echo "patch-stack:  $stack_sha"
     echo "pipeasio:     1.5.0"
     echo "pipewire-floor: 1.4.2 (upstream's build-time minimum; Ubuntu 24.04/Mint 22 ship 1.0.5, below it)"
+    echo "pipewire-version-probe: $pipewire_probe_sha"
+    echo "pipewire-version-probe-tests: client-stub+ASan+UBSan passed"
     if [ "$panel_state" = built ]; then
+        echo "pipeasio-panel: built"
         echo "pipeasio-settings: $(sha256sum "$PREFIX_ROOT/bin/pipeasio-settings" | awk '{print $1}') (Qt 6.2 link)"
     else
-        echo "pipeasio-settings: skipped (no Qt6)"
+        echo "pipeasio-panel: skipped"
+        echo "pipeasio-settings: $panel_state"
     fi
     if [ "$panel_state" = built ]; then
-        echo "pipeasio-tests: ctest unit scope + test_panel, passed in-container"
+        echo "pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, ABI, panel)"
     else
-        echo "pipeasio-tests: ctest unit scope passed in-container (panel test skipped)"
+        echo "pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, ABI; panel skipped)"
+    fi
+    echo "pipeasio-no-qt: CMake driver build/install + non-integration CTest passed"
+    if [ "$asan_panel_state" = passed ]; then
+        echo "pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed"
+    else
+        echo "pipeasio-sanitizers: ASan+UBSan unit passed (driver imports verified; panel unavailable); TSan unit passed"
     fi
     echo "ntsync:       yes (vendored linux/ntsync.h $ntsync_hdr_sha)"
     echo "libusb-pe:    $bridge_pe_sha"
@@ -321,6 +527,8 @@ build_info="$PREFIX_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 } > "$build_info"
 cp "$build_info" "$OUT/BUILD-INFO-${VERSION}.txt"
 cp "$build_info" "$OUT/BUILD-INFO.txt"
+install -m755 "$pipewire_probe" "$OUT/pipewire-version-probe"
+test "$(sha256sum "$OUT/pipewire-version-probe" | awk '{print $1}')" = "$pipewire_probe_sha"
 tarball="$OUT/${NAME}-${VERSION}.tar.zst"
 # --long=27 (128 MiB window, zstd's default decode limit: no flags needed to unpack)
 # lets the i386/x86_64 builtin pairs dedup against each other.

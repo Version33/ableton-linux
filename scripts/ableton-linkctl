@@ -19,7 +19,7 @@ unit_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ableton-linkd.service"
 unit_is_project_owned()
 {
     local escaped
-    [ -f "$unit_file" ] || return 1
+    [ -f "$unit_file" ] && [ ! -L "$unit_file" ] || return 1
     grep -qxF 'X-AbletonLinuxOwned=true' "$unit_file" 2>/dev/null || return 1
     escaped="${ABLETON_LINKD//\\/\\\\}"
     escaped="${escaped//\"/\\\"}"
@@ -99,7 +99,15 @@ start_link()
         return 0
     fi
     rm -f -- "$pid_file"
-    nohup "$ABLETON_LINKD" --linger "$linger" >>"$log_dir/ableton-linkd.log" 2>&1 9>&- &
+    (
+        inherited_lock="${ABLETON_INSTALL_LOCK_FD:-}"
+        case "$inherited_lock" in
+            ''|*[!0-9]*) ;;
+            *) exec {inherited_lock}>&- ;;
+        esac
+        unset ABLETON_INSTALL_LOCK_FD ABLETON_RUNTIME_ONLY_LOCK
+        exec nohup "$ABLETON_LINKD" --linger "$linger"
+    ) >>"$log_dir/ableton-linkd.log" 2>&1 9>&- &
     pid=$!
     printf '%s\n' "$pid" > "$pid_file"
     sleep 0.1

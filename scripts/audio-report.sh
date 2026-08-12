@@ -2,22 +2,37 @@
 # scripts/audio-report.sh — one-shot snapshot of everything that decides audio
 # behaviour under this stack: PipeWire settings and forced quanta, default
 # devices, realtime threads, ntsync, the PipeASIO configuration, the tail of
-# the launcher session log, and a follower-resync check for two-device setups.
+# the launcher live log, and a follower-resync check for two-device setups.
 # Read-only: the script reports and changes nothing. Paste the output into an
 # issue report; home paths are shortened to ~ before printing.
 set -u
+
+here="$(cd "$(dirname "$0")" && pwd)"
+for config_lib in "$here/lib/config.sh" "$here/config.sh" \
+                  "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
+    # shellcheck disable=SC1090
+    if [ -r "$config_lib" ]; then . "$config_lib"; break; fi
+done
+declare -F ableton_config_init >/dev/null 2>&1 || {
+    echo "!! audio report cannot find its installation configuration" >&2; exit 1; }
+ableton_config_init
 
 redact() { sed "s|$HOME|~|g"; }
 sec() { printf '\n== %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
+WINE_ROOT="$ABLETON_WINE_ROOT"
 
 sec "versions"
 echo "kernel: $(uname -r)"
-have pw-cli && pw-cli --version 2>/dev/null | sed -n 's/^Linked with /pipewire client: /p'
-have pw-cli && timeout 5 pw-cli info 0 2>/dev/null \
-    | sed -n 's/.*version: "\([0-9][0-9.]*\)".*/pipewire daemon: \1/p' | head -n 1
+version_probe="$WINE_ROOT/bin/pipewire-version-probe"
+[ -x "$version_probe" ] || version_probe="$ABLETON_DATA_HOME/pipewire-version-probe"
+if [ -x "$version_probe" ] && probe_output="$("$version_probe" 2>/dev/null)"; then
+    printf '%s\n' "$probe_output" \
+        | sed -e 's/^client=/pipewire client: /' -e 's/^daemon=/pipewire daemon: /'
+else
+    echo "pipewire client/daemon: unavailable (audio service stopped or compatibility check missing)"
+fi
 [ -r "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" ] \
     && sed -n 's/^dist-version: /runtime: /p' "$WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt"
 
@@ -43,10 +58,16 @@ if have pw-dump; then
             printf "  %s: node.force-quantum %s\n", name, v
         }')"
     if [ -n "$forced" ]; then printf '%s\n' "$forced" | redact; else echo "  none: no node forces a quantum"; fi
+else
+    echo "  unavailable: pw-dump is not installed"
 fi
 
 sec "graph, 3 s"
-have pw-top && LC_ALL=C timeout 3 pw-top -b 2>/dev/null | tail -n 25 | redact
+if have pw-top; then
+    LC_ALL=C timeout 3 pw-top -b 2>/dev/null | tail -n 25 | redact
+else
+    echo "unavailable: pw-top is not installed"
+fi
 
 sec "realtime threads"
 ps -eLo pid,tid,cls,rtprio,comm 2>/dev/null | awk '$3 == "RR" || $3 == "FF"' | head -n 20 | redact
@@ -56,22 +77,38 @@ cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 [ -r "$cfg" ] && redact < "$cfg" || echo "no config.ini (driver defaults apply)"
 env | grep -E '^(PIPEASIO|ABLETON)_' | redact
 
-sec "launcher session log tail"
-slog="${XDG_STATE_HOME:-$HOME/.local/state}/ableton-wine/session.log"
-[ -r "$slog" ] && tail -n 40 "$slog" | redact || echo "no session log yet (launch Live once)"
+sec "launcher live log tail"
+slog="$ABLETON_STATE_HOME/logs/live.log"
+[ -r "$slog" ] && tail -n 40 "$slog" | redact || echo "no live log yet (launch Live once)"
 
 sec "follower resync (two-device setups)"
-# When input and output live on different devices, one device follows the
-# other's clock, and a follower short on buffer room resyncs audibly. This
-# section only detects and reports; extra buffer room for a device is user
-# configuration (api.alsa.headroom, a WirePlumber rule), not driver state.
-resync_lines=""
-[ -r "$slog" ] && resync_lines="$(grep -iE 'resync|xrun' "$slog" 2>/dev/null | tail -n 8)"
-if [ -n "$resync_lines" ]; then
-    echo "resync/xrun lines in the session log:"
-    printf '%s\n' "$resync_lines" | sed 's/^/  /' | redact
+# api.alsa.headroom is specifically compensation for inaccurate ALSA hardware
+# pointers.  It is not generic clock-drift compensation, so a rule is printed
+# only when a bounded PipeWire/WirePlumber journal query contains spa.alsa
+# pointer/resync evidence.  Launcher lines remain useful context but cannot
+# enable the experiment on their own.
+live_resync_lines=""
+[ -r "$slog" ] && live_resync_lines="$(grep -iE 'resync|xrun' "$slog" 2>/dev/null | tail -n 8)"
+journal_resync_lines=""
+if have journalctl; then
+    journal_resync_lines="$({
+        timeout 6 journalctl --user --since '-30 minutes' -n 500 --no-pager -o cat \
+            _COMM=pipewire 2>/dev/null || true
+        timeout 6 journalctl --user --since '-30 minutes' -n 500 --no-pager -o cat \
+            _COMM=wireplumber 2>/dev/null || true
+    } | grep -iE 'spa\.alsa.*(resync|xrun|pointer)|(resync|xrun|pointer).*spa\.alsa' | tail -n 8)"
+fi
+if [ -n "$live_resync_lines" ]; then
+    echo "resync/xrun lines in $slog:"
+    printf '%s\n' "$live_resync_lines" | sed 's/^/  /' | redact
 else
-    echo "no resync or xrun lines in the session log"
+    echo "no resync or xrun lines in $slog"
+fi
+if [ -n "$journal_resync_lines" ]; then
+    echo "spa.alsa pointer/resync evidence in the last 30 minutes of the user journal:"
+    printf '%s\n' "$journal_resync_lines" | sed 's/^/  /' | redact
+else
+    echo "no recent spa.alsa pointer/resync evidence (or user journal unavailable)"
 fi
 
 # Graph shape from a short pw-top sample: two iterations, keep the last one.
@@ -108,20 +145,23 @@ node_for_alsa_path() {
 }
 
 target_node=""
-if [ -n "$resync_lines" ]; then
-    for dev in $(printf '%s\n' "$resync_lines" | grep -oE '(plug)?hw:[A-Za-z0-9_,+-]+' | sort -u); do
+if [ -n "$journal_resync_lines" ]; then
+    for dev in $(printf '%s\n' "$journal_resync_lines" | grep -oE '(plug)?hw:[A-Za-z0-9_,+-]+' | sort -u); do
         n="$(node_for_alsa_path "$dev")"
-        [ -n "$n" ] && { target_node="$n"; break; }
+        if [ -n "$n" ] \
+           && printf '%s\n' "$follower_nodes" | grep -Fx -- "$n" >/dev/null 2>&1; then
+            target_node="$n"
+            break
+        fi
     done
-    # Fall back to the graph shape when the log names no mappable device.
-    [ -z "$target_node" ] && target_node="$(printf '%s\n' "$follower_nodes" | head -n 1)"
 fi
 
 if [ -n "$target_node" ]; then
     echo
-    echo "device $target_node follows another device's clock and shows resyncs." | redact
-    echo "Extra buffer room for a follower device is user configuration:"
-    echo "api.alsa.headroom, set by a WirePlumber rule (WirePlumber 0.5 or newer)."
+    echo "device $target_node is a follower and the journal shows spa.alsa pointer/resync evidence." | redact
+    echo "The following api.alsa.headroom rule is a reversible experiment for an"
+    echo "inaccurate ALSA hardware pointer; it is not a clock-drift fix. 512 frames"
+    echo "adds about 10.7 ms at 48 kHz if applied. No improvement is assumed."
     echo "Copy this block to a file in ~/.config/wireplumber/wireplumber.conf.d/,"
     echo "then log out and back in, or run: systemctl --user restart wireplumber"
     echo
@@ -141,7 +181,9 @@ monitor.alsa.rules = [
 ]
 EOF
     echo
-    echo "Remove the file again if it does not help."
-elif [ -n "$resync_lines" ]; then
-    echo "resyncs recorded, but no follower device identified: attach this report to an issue"
+    echo "After testing, remove the file if it does not clearly help; the report does not claim success."
+elif [ -n "$journal_resync_lines" ]; then
+    echo "spa.alsa evidence recorded, but no follower device identified: attach this report to an issue"
+elif [ -n "$live_resync_lines" ]; then
+    echo "launcher resync/xrun lines alone do not justify changing api.alsa.headroom"
 fi

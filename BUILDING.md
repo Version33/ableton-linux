@@ -27,13 +27,13 @@ ableton-live
 
 `build.sh` creates the patched Wine runtime and `dist/ableton-linkd`.
 `installer.sh` validates and stages the selected components. If a step fails,
-it restores the state from before the command.
-The lower-level `install.sh`, `setup-prefix.sh`, and `setup-link.sh` scripts are
-component implementations rather than the public command interface.
+it restores the state from before the command. The lower-level `install.sh`,
+`setup-prefix.sh`, and `setup-link.sh` scripts are component implementations,
+not the public command interface.
 
 ## Manage individual components
 
-Use the component commands when you do not want a complete installation:
+Use component commands when you do not want a complete installation:
 
 ```bash
 # Copy only the Wine runtime.
@@ -68,6 +68,7 @@ Run the shortcut and installer lifecycle checks:
 ```bash
 scripts/test-shortcut-hold.sh
 scripts/test-installer-lifecycle.sh
+scripts/test-pipeasio-installer.sh
 ```
 
 Build the Wine menu test with all compiler warnings enabled. Then run its two
@@ -126,8 +127,11 @@ compatibility defaults.
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
 - `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
   installer, Live launcher, Max launcher, service, and uninstaller.
-- `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
-  this exact resolved path.
+- `ABLETON_LINKD` selects the Link daemon path. Only the canonical daemon under
+  the resolved Ableton data directory is installed and owned by this project.
+  Any other resolved path must already be executable; the installer may use it
+  but never installs, claims, restores, or removes it. The generated user unit
+  uses the selected resolved path.
 - `ABLETON_SHORTCUTS=take` temporarily turns off exact Ctrl+Alt+Up and
   Ctrl+Alt+Down entries in the related GNOME settings. Live 11 also turns off
   the exact Ctrl+Alt+Delete entry. The default value, `preserve`, does not
