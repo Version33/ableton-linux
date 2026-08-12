@@ -14,20 +14,20 @@
 - The installer and audio driver require PipeWire 1.4.2 or newer.
 - PipeASIO real-time scheduling is off by default. Its environment override now
   accepts `1/0`, `true/false`, `yes/no`, `on/off`, and `enabled/disabled`.
-- The installer can update individual parts, restore the previous runtime, and
-  remove files while preserving user changes.
-- A failed install or update now restores the saved installer and PipeASIO
-  configuration as well as the previous runtime.
-- The single-file installer includes audio reporting, real-time setup, and
-  rollback tools.
-- Official packages now require a completed ThreadSanitizer run. Local builds
-  that skip a recognised ThreadSanitizer startup limitation cannot be released.
-- Release checks now reject incomplete patch lists and mismatched build,
-  runtime, or installer records.
 - This PipeASIO update does not reduce Live's CPU use.
 
-### Installer and launcher
+### Installer, launcher, and desktop integration
 
+- Reworked the installer around explicit install, update, runtime, prefix,
+  Link, and uninstall operations. It can update individual parts and removes
+  managed files without overwriting or deleting user replacements.
+- A failed install or update restores the previous runtime, prefix, Link state,
+  installer configuration, and PipeASIO configuration.
+- The single-file installer includes audio reporting, real-time setup, and
+  rollback tools.
+- Link now supports `off`, session, and always-on policies. Session mode is the
+  default for new installations and runs `ableton-linkd` only while Live or Max
+  is in use. Updates preserve the selected policy.
 - Link setup retries after an incomplete service step.
 - The session power setting now stays active when Live starts from an
   `ableton://` URL or an `.auz` file.
@@ -36,8 +36,21 @@
   releases.
 - `ableton-linkd` rejects fractional linger values instead of treating them as
   a request to stay open forever.
+- Live 11 installers now run in passive mode. Newer WiX 4 bundles skip the
+  Windows-only Push USB audio driver, and setup removes stale driver autostart
+  entries and bounds waits for background installer processes. Older WiX 3
+  bundles can still show Live's own setup window.
+- Ableton authorisation URLs and `.auz` responses now use project-specific
+  desktop handlers. The installer verifies their MIME defaults, and the
+  launcher repairs changed handlers and routes callbacks before Live edition
+  discovery can reject an ambiguous installation.
+- Closing a native file dialog with Escape or its title-bar close button is
+  treated as cancellation on portal versions that report it as an error.
+- The Live application entry updates its name, icon, and window class after it
+  discovers the installed edition. Launcher descriptions no longer expose Wine
+  build details.
 
-### Pointer input
+### Pointer input and shortcuts
 
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
   navigation. A plain middle click remains a click.
@@ -54,6 +67,15 @@
   than the pointer. Desktop testing remains open.
 - Named pointer values ignore letter case. `off` and `0` work wherever
   `disabled` works. Invalid settings appear in the normal launch log.
+- Live's handled Alt shortcuts no longer leave the menu bar armed, so the next
+  typed letter does not open a menu. Bare Alt and menu mnemonics keep their
+  normal behaviour.
+- On GNOME, `ABLETON_SHORTCUTS=take` temporarily removes the Ctrl+Alt desktop
+  bindings that conflict with Live and restores them after the last Live
+  session, including after a crash. The default `preserve` mode leaves desktop
+  shortcuts unchanged.
+
+### Graphics
 
 - Live's GPU renderer is available on the Intel graphics built into 2015
   through 2019 processors (Wine patch 0066). Wine's device table skipped 24
@@ -67,8 +89,13 @@
   `env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live` to try it. Reports sent
   to Ableton then name a different GPU model, and the device name Live
   shows marks the substitution.
+- A captioned Live window that exactly covers its monitor remains resizable
+  instead of receiving a fixed-size window-manager hint (Wine patch 0069).
+- Sustained fractional-scaling fallback now produces a normal launch-log entry
+  with the window, DPI, desktop, and GPU details needed to diagnose unexpectedly
+  high display CPU use (Wine patch 0071).
 
-## 2026.08.08.1
+### Text rendering and startup
 
 - Experimental ClearType-style subpixel rendering is now available to
   DirectWrite, Direct2D and GDI text. Prefix setup enables it by default and
@@ -82,6 +109,36 @@
   produces a false greyscale verdict.
 - Added a downstream `DesktopUIFont` integration hook for changing Wine's
   semantic desktop UI stock font without globally substituting Tahoma.
+- Wine caches the enumerated host font list in each prefix and reuses it on
+  later launches. Font, fontconfig, locale, and antialiasing changes invalidate
+  the cache automatically; `WINE_DISABLE_HOST_FONT_CACHE=1` turns it off.
+
+### Windows application compatibility
+
+- Per-monitor-DPI-aware windows use the target monitor's DPI during creation,
+  fixing a Wine 11.13 regression that could scale their initial size twice
+  (Wine patch 0078).
+- Disabled startup windows keep their minimise and maximise capabilities, so a
+  saved maximised placement can be restored by the application (Wine patch
+  0077).
+- Direct2D device-context render targets no longer scan every desktop window
+  when their owner already presents the surface, avoiding redundant work and
+  stray copies into unrelated same-sized windows (Wine patch 0079).
+- Applications no longer terminate on Wine stubs when they unregister a
+  recovery callback, derive a Chromium AppContainer SID, or process pointer
+  interaction frames (Wine patches 0075, 0076, and 0080).
+
+### Diagnostics, documentation, and release checks
+
+- The beta profiler adds privacy-checked, path-redacted filesystem diagnostics
+  for Live Browser clip and track save failures. This adds evidence collection,
+  not a runtime fix for issue 165.
+- Expanded the README and troubleshooting guidance for installation, updates,
+  Live 11, PipeASIO, Link, GPU diagnostics, shortcuts, and issue reports.
+- Official packages now require a completed ThreadSanitizer run. Local builds
+  that skip a recognised ThreadSanitizer startup limitation cannot be released.
+- Release checks reject incomplete patch lists and mismatched build, runtime,
+  or installer records.
 
 ## 2026.08.04.1
 

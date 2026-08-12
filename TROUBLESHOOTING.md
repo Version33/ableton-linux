@@ -1,54 +1,71 @@
 # Troubleshooting Ableton Live on Linux
 
-Use the action under the symptom you see. Update this project before reporting a problem:
+Here are some common ailments we've seen, and how to fix them.
+
+
+## The installer does not finish after Live installs
+
+Close any **Ableton USB Driver** window. If no window appears, wait 30 seconds.
+This delay comes from Ableton's own installer and clears by itself.
+
+If the installer still has not finished after a minute, press Ctrl-C, run the
+same command again, and note the last line it printed.
+
+## Online authorization does not return to Live
+
+Run the latest update:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run update
 ```
 
-An update keeps Live, its authorisation, projects, and PipeASIO settings. It may update compatibility-related Wine and Live settings.
-
-## The installer does not finish
-
-If an **Ableton USB Driver** window is open, close it and wait for setup to continue. If the current installer still stops, press Ctrl-C, run it again, and note the last line it printed.
-
-## Online authorisation does not return to Live
-
-Run the current project update, start Live once from the application menu, and try authorising again. If the browser still does not return to Live, check the registered handler:
+Start Live once from the application menu and try authorizing again. If the
+browser still does not return to Live, check the registered handler:
 
 ```bash
 xdg-mime query default x-scheme-handler/ableton
 ```
 
-It should print `io.github.shibco.ableton-linux.protocol.desktop`. Compare the launcher and desktop handoff with a harmless test address:
+It should print `io.github.shibco.ableton-linux.protocol.desktop`. Compare the
+launcher and desktop handoff with a harmless test address:
 
 ```bash
 ableton-live 'ableton://invalid-ableton-linux-probe'
 xdg-open 'ableton://invalid-ableton-linux-probe'
 ```
 
-The address cannot authorise Live. If the first command works and the second fails, log out and back in, then repeat both commands. If both work, compare a fresh browser profile or a browser package from another source.
+The address cannot authorize Live. If the first command works and the second
+fails, log out and back in, then repeat both commands. If both work, try a
+fresh browser profile or a browser package from another source.
 
-Never share a real authorisation address or `.auz` file. When reporting the problem, include the handler result, browser package, and which test commands opened Live.
+Never share a real authorization address or `.auz` file. When reporting the
+problem, include the handler result, browser package, and which test commands
+opened Live.
 
 ## Live cannot save a clip or track in the Browser
 
-Drag the same item into the User Library. If that works, Live cannot write to the original folder. Check the folder with:
+Drag the same item into the User Library. If that works, Live cannot write to
+the original folder. Check the folder with:
 
 ```bash
 test -w "/path/to/folder" && echo writable || echo not-writable
 stat -f -c 'filesystem=%T' -- "/path/to/folder"
 ```
 
-Choose another folder or correct its ownership if the first command prints `not-writable`. System folders, read-only mounts, and `/nix/store` cannot accept new Live files.
+Choose another folder or correct its ownership if the first command prints
+`not-writable`. System folders, read-only mounts, and `/nix/store` cannot
+accept new Live files.
 
-If the folder and User Library both fail, run the profiler from a repository checkout:
+If the folder and User Library both fail, run the profiler from a repository
+checkout:
 
 ```bash
 env ABLETON_LIBRARY_PATH="/path/to/folder" ./beta/scripts/ableton-linux-profiler.sh
 ```
 
-The profiler does not print the folder path. Include its output, the Live version and edition, and whether the User Library worked when reporting the problem.
+The profiler does not print the folder path. Include its output, the Live
+version and edition, and whether the User Library worked when reporting the
+problem.
 
 ## Live has no sound
 
@@ -57,9 +74,11 @@ Open **Settings > Audio** and select:
 - **Driver Type:** ASIO
 - **Audio Device:** PipeASIO
 
-Set **Audio Device** to **None**, then select **PipeASIO** again. If sound breaks up, open **PipeASIO Settings** from the application menu and choose a larger buffer.
+Set **Audio Device** to **None**, then select **PipeASIO** again. If the sound
+breaks up, open **PipeASIO Settings** from the application menu and select a
+larger buffer size.
 
-Try 512 frames for one launch with:
+You can also try a 512-frame buffer for one launch:
 
 ```bash
 env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
@@ -67,98 +86,117 @@ env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 
 ## PipeASIO Settings does not open
 
-Live can still use PipeASIO without the settings window. Run the project update. If a Qt package is missing, the update prints the install command for the detected distribution. Install that package and open PipeASIO Settings again.
-
-After saving a change, set Live's **Audio Device** to **None** and back to **PipeASIO**.
-
-## The installer says PipeWire is too old
-
-The installer has left the current installation unchanged. Install the normal Linux updates and try again. If the message remains, use a Linux release that provides PipeWire 1.4.2 or newer.
-
-## Audio pauses or plays at the wrong speed
-
-Wait a few seconds. PipeASIO normally asks Live to use the current PipeWire buffer size and resumes at the correct speed.
-
-If the problem remains, close Live, clear a forced PipeWire buffer size, and start Live again:
-
-```bash
-pw-metadata -n settings 0 clock.force-quantum 0
-```
-
-If it returns, run the installed audio report:
-
-```bash
-~/.local/share/ableton-wine/audio-report.sh
-```
-
-Read the output before sharing it. Remove private paths, environment values, or log text that you do not want to publish, then attach the relevant section to an issue.
-
-## A plugin window resizes repeatedly or shows stale pixels
-
-Right-click the plugin in Live's device rack, turn off **Auto-Scale Plugin Window**, and reopen it. Apply this only to the affected plugin.
-
-## Live does not let you enable the GPU renderer
-
-Run the current project update, restart Live, and open **Settings > Display & Input**. Turn on **Enable GPU Renderer**.
-
-If you're experiencing performance issues or high CPU usage when idle, Live
-may not be using your GPU. Live only uses graphics chips it recognises, and
-when this project cannot identify your chip, Live sees an old model it
-refuses to use.
-
-## CPU use rises when the pointer moves
-
-To solve it: **update this project**.
-
-Download [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
-and run the update. It keeps your Live installation, your license, and
-your projects:
+Live can still use PipeASIO without the settings window. Run the latest update:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run update
 ```
 
-Start Live, open **Settings > Display & Input**, and turn on **Enable GPU
-Renderer**. Live now names your real graphics card, and the setting stays
-on.
+If a Qt 6 package is missing, the update prints the exact install command
+for your Linux distribution. Run that command, then open PipeASIO Settings
+again. After changing a setting, set Live's **Audio Device** to **None** and
+back to **PipeASIO**.
 
-If the setting is still greyed out, start Live with:
+## The installer says PipeWire is too old
+
+Your current installation is unchanged. Install your normal Linux updates and
+try again. If the message remains, upgrade to a Linux release that includes
+PipeWire 1.4.2 or newer. Ubuntu 24.04 and Linux Mint 22 need that distribution
+upgrade before this version can install.
+
+## Crackle with two audio devices
+
+Select the same audio device for input and output when possible. If the
+crackle stops, the two-device setup caused it.
+
+Run the audio report after installation:
+
+```bash
+~/.local/share/ableton-wine/audio-report.sh
+```
+
+If you still hear crackle, read the report and remove any private paths,
+environment values, or log text that you do not want to publish. Attach the
+relevant section when you
+[open an issue](https://github.com/shibco/ableton-linux/issues).
+
+## Audio cuts out for a few seconds, or plays at the wrong speed
+
+Wait a few seconds. If audio returns at the correct speed, there is nothing
+else to do. Another audio programme changed the buffer size shared with Live,
+and PipeASIO paused while Live changed to the same size.
+
+If audio stays silent or plays too fast or too slow, update this project. Until
+you can update, close Live, run this command, then start Live again:
+
+```bash
+pw-metadata -n settings 0 clock.force-quantum 0
+```
+
+If the problem returns, run the audio report from the previous entry and attach
+it when you open an issue.
+
+## A plugin window resizes repeatedly or shows stale pixels
+
+Right-click the affected plugin in Live's device rack, disable
+**Auto-Scale Plugin Window**, then reopen the plugin.
+
+This workaround is only needed for affected plugins. See the
+[Pianoteq investigation](notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md) for the
+confirmed failure mode.
+
+## Live's "Enable GPU Renderer" setting is greyed out
+
+Open **Settings > Display & Input**. If **Enable GPU Renderer** is greyed out,
+or Live names the wrong graphics card, update this project:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+Restart Live and turn on **Enable GPU Renderer**.
+
+If the setting is still greyed out on an Intel GPU, start Live with:
 
 ```bash
 env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live
 ```
 
-Please note: while you use this flag, any report you send to Ableton names
-a different graphics card model than yours. Start Live without the flag to
-go back.
+This temporarily reports a supported Intel model to Live. The substituted
+model remains visible in Live, so start Live normally before sending a report
+to Ableton.
 
 If problems continue, [open an issue](https://github.com/shibco/ableton-linux/issues)
-and include your graphics card model.
+and include your real graphics card model.
 
 ## CPU spikes when moving your mouse
 
 Live keeps its current diagnostics in
 `$XDG_STATE_HOME/ableton-wine/logs/live.log` (by default,
-`~/.local/state/ableton-wine/logs/live.log`),
-whether you start it from the desktop menu or a terminal. If Live's CPU
-use jumps while you move the mouse, run:
+`~/.local/state/ableton-wine/logs/live.log`), whether you start it from the
+desktop menu or a terminal. If Live's CPU use jumps while you move the mouse,
+run:
 
 ```bash
-grep -i "sustained present-size mismatch:" ~/.local/state/ableton-wine/logs/live.log
+grep -i "sustained present-size mismatch:" \
+  "${XDG_STATE_HOME:-$HOME/.local/state}/ableton-wine/logs/live.log"
 ```
 
-If it prints a line, include that whole line when reporting the problem. It contains the desktop environment and window DPI but should still be read before sharing. If it prints nothing, describe the action that triggers the CPU increase instead.
+If that prints anything, [open an issue](https://github.com/shibco/ableton-linux/issues)
+and paste the whole line. If it prints nothing, describe what you were doing
+when the CPU use increased.
 
 ## Live 11: Max for Live fails after the first launch
 
-Close Live after its first run, extract the current project installer, and run the repair:
+After running Live 11 once, close Live and run:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run extract /tmp/ableton-kit
 bash /tmp/ableton-kit/scripts/installer.sh prefix repair-live11
 ```
 
-The repair moves the incompatible Max preferences to a timestamped backup. Max creates a clean file the next time it starts.
+The repair moves Max 8's incompatible preferences to a timestamped backup.
+Max creates a clean preferences file when it next starts.
 
 ## A newly installed font does not show up inside Live
 
@@ -169,9 +207,7 @@ env WINE_DISABLE_HOST_FONT_CACHE=1 ableton-live
 ```
 
 Live keeps a saved list of your computer's fonts so it can start faster.
-The list refreshes itself when your fonts change, so a new font normally
-appears at the next launch on its own. The launch above skips the list
-and reads your fonts directly.
+The launch above skips that list and reads your fonts directly.
 
 If the missing font appears now, delete the saved list and start Live
 normally. Live rebuilds the list with your new font:
@@ -212,31 +248,47 @@ and Live version. Do not save `enabled`; it is only for comparison.
 
 ## Live 11: media files can crash Live
 
-Do not preview or import WMA or video files in Live 11. The current Wine media implementation can crash Live on that path. Live 12 does not use the affected path.
+Do not preview or import WMA or video files in Live 11. Wine's current
+`wmvcore.dll` implementation can crash Live on that path. Live 12 does not use
+the affected path.
+
+See the [WMVCore investigation](notes/ABLETON-WINE-LIVE11-WMVCORE-STUB.md).
 
 ## The launcher finds more than one Live installation
 
-When Live 11 and Live 12 are both installed, `ableton-live` starts the newest major version. Start Live 11 with:
+When both Live 11 and Live 12 are installed, `ableton-live` starts the newest
+major version. Select Live 11 with:
 
 ```bash
 env ABLETON_LIVE_VERSION=11 ableton-live
 ```
 
-If one prefix contains several editions of the same major version, set `ABLETON_LIVE_EXE` to the exact executable you want to start.
+When one prefix contains multiple editions of the same major version, the
+launcher refuses to guess. Set `ABLETON_LIVE_EXE` to the exact executable you
+want to start.
 
 ## Using Linux-native plugins
 
-Direct Linux VST or CLAP loading is not implemented. Running a plugin in Carla and routing audio and MIDI through PipeWire remains experimental and is not configured by the installer.
+Linux-native VST and CLAP integration is not implemented in this project yet.
+The experimental workaround runs the plugin in Carla and routes audio and MIDI
+through PipeWire.
+
+See [Linux-native plugin routing](notes/ABLETON-WINE-PLUGIN-BRIDGING.md) for
+the current test procedure and limitations.
 
 ## Push 2 does not connect
 
-Configure one **Push2** control-surface row with **Ableton Push 2 Live Port** as both input and output. Remove duplicate **Push2** rows, close Live normally, reconnect Push 2, and start Live again.
+Configure exactly one `Push2` control-surface row with **Ableton Push 2 Live
+Port** as both its input and output. Remove duplicate `Push2` rows, close Live
+normally, then reconnect Push 2 and start Live again.
 
-If the display still does not start, include the result of `lsusb` and the selected control-surface row when you report the problem.
+See the [Push 2 display bridge note](notes/ABLETON-WINE-PUSH2-DISPLAY.md) for
+USB diagnostics.
 
 ## Ableton Link does not find peers
 
-Link peers must share a local network that carries multicast traffic. Guest networks, public Wi-Fi, and the far side of a VPN may block discovery.
+Link peers must share a local network that carries multicast. Guest networks,
+public Wi-Fi, and the far side of a VPN may block discovery.
 
 Check the current setting:
 
@@ -250,25 +302,41 @@ If it reports `policy: off`, enable Link for the current session:
 sh ~/Downloads/install-ableton-latest.run link enable --mode=session
 ```
 
-The command may ask for `sudo` when a supported firewall needs to allow UDP port 20808. Start Live, enable **Show Link Toggle**, and turn on Link in the control bar.
+The command may ask for `sudo` when a supported firewall needs to allow UDP
+port 20808. Start Live and enable **Show Link Toggle** and Link again. See
+[Ableton Link diagnostics](notes/ABLETON-WINE-LINK.md) if peers still do not
+appear.
 
 ## Audio latency remains high
 
-Open **PipeASIO Settings**, lower the buffer size, save, then set Live's **Audio Device** to **None** and back to **PipeASIO**. Raise the buffer again if sound breaks up. Buffer size changes latency, not the CPU used by Live or plugins.
+Lower the buffer size with **PipeASIO Settings** in your application menu
+(`pipeasio-settings` in a terminal), then set **Audio Device** in Live to
+**None** and back to **PipeASIO**. A lower value shortens the delay but gives
+Live less time to process audio. Raise it again if the sound breaks up. This
+setting does not reduce the CPU used by Live or plugins.
 
-Run the optional real-time setup once:
+Run the optional real-time audio setup once:
 
 ```bash
 ~/.local/share/ableton-wine/setup-realtime.sh
 ```
 
-The script changes system audio settings and asks for `sudo`. Log out and back in after it finishes. Running it again also removes the boot-time CPU setting used by early project releases.
+The script changes system audio settings and asks for `sudo`. Log out and back
+in after it finishes.
 
-On Pop!_OS and other System76 computers, do not install `power-profiles-daemon` solely for this project. Its installation can remove the System76 power-management tools. Use the desktop power settings instead.
+On Pop!_OS and other System76 computers, do not install the
+`power-profiles-daemon` package. The package manager removes the System76
+power management tools to make room for it. Use the power settings in your
+desktop instead.
+
+If an older release left the CPU at full speed after reboot, run the script
+again. It removes the old setting.
 
 ## Display scaling is wrong
 
-Restart Live after moving it between monitors with different scale factors. Automatic detection is already the default. If scaling remains wrong at 125%, compare one explicit launch.
+Restart Live after moving it between monitors with different scale factors.
+Automatic detection is already the default. If scaling remains wrong at 125%,
+compare one explicit launch.
 
 On GNOME, run:
 
@@ -282,27 +350,47 @@ On KDE, Sway, Hyprland, COSMIC, or X11, run:
 env ABLETON_DPI_MODE=dpi120 ableton-live
 ```
 
-The other supported values are listed in [Building](https://github.com/shibco/ableton-linux/blob/main/BUILDING.md#current-configuration).
+The other supported values are listed in
+[the build and configuration reference](BUILDING.md#current-configuration).
 
-## Full screen is shifted or does not close correctly
+## Full Screen shows shifted content or does not fully exit
 
-Update the project first. If the problem remains, compare one launch with the fullscreen adjustment disabled:
+If **View > Full Screen** or F11 shifts Live's content, makes clicks land away
+from their targets, or leaves the fullscreen image behind when you exit,
+update this project.
+
+Download [the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
+and run:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run update
+```
+
+If fullscreen is still wrong after the update, launch once with
+the fullscreen adjustment disabled:
 
 ```bash
 env WINE_WIN32_FULLSCREEN_CLASS=off ableton-live
 ```
 
-Open an issue and include the desktop environment, display scale, and whether that launch behaved differently.
+If that changes the result, [open an issue](https://github.com/shibco/ableton-linux/issues)
+and include your desktop environment and display scale.
 
 ## GNOME handles a Live shortcut instead of Live
 
-GNOME may use Ctrl+Alt+Up, Ctrl+Alt+Down, or Ctrl+Alt+Delete before Live sees it. Start Live with:
+GNOME reserves Ctrl+Alt+Up, Ctrl+Alt+Down, and Ctrl+Alt+Delete before Live can
+see them. Start Live with:
 
 ```bash
 env ABLETON_SHORTCUTS=take ableton-live
 ```
 
-The launcher temporarily removes only the conflicting GNOME entries and restores them after all Live sessions exit. Those shortcuts remain unavailable to other applications while Live runs.
+The launcher releases those shortcuts while Live runs and restores them after
+the last Live session exits. They remain unavailable to other applications
+during that time.
+
+The default `ABLETON_SHORTCUTS=preserve` leaves every desktop shortcut
+unchanged. For another desktop, change its shortcut settings when necessary.
 
 ## Scrolling, middle-button panning, or pinch zoom misbehaves
 
@@ -351,6 +439,12 @@ pointing device, Linux distribution, desktop, and Live version.
 
 ## Report a problem
 
-Use the [GitHub issue form](https://github.com/shibco/ableton-linux/issues/new/choose). Include the Live edition, project release, Linux distribution, desktop environment, and exact action that failed.
+Use the [GitHub issue form](https://github.com/shibco/ableton-linux/issues/new/choose).
+Include the Live edition, this project's release number, Linux distribution,
+desktop environment, and the exact action that failed.
 
-The current launcher log is `~/.local/state/ableton-wine/logs/live.log`. Read any log or audio report before sharing it. Do not attach Ableton installers, authorisation files, licence keys, Live Sets, samples, or plugin credentials.
+The current launcher log is
+`$XDG_STATE_HOME/ableton-wine/logs/live.log` (by default,
+`~/.local/state/ableton-wine/logs/live.log`). Read any log or audio report
+before sharing it. Do not attach Ableton installers, authorization files,
+licence keys, Live Sets, samples, or plugin credentials.
