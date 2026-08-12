@@ -235,9 +235,11 @@ ableton_txn_target_allowed()
         "$runtime_parent/$runtime_base-rollback-"*/.ableton-linux-rollback/pipeasio-config.ini|\
         "$runtime_parent/$runtime_base-rollback-"*/.ableton-linux-rollback/metadata)
             candidate="${path%/.ableton-linux-rollback/*}"
-            [ -d "$candidate" ] && [ ! -L "$candidate" ] \
-                && ableton_runtime_marker_valid "$candidate" "$ABLETON_RUNTIME_NAME"
-            return ;;
+            if [ -d "$candidate" ] && [ ! -L "$candidate" ] \
+               && ableton_runtime_marker_valid "$candidate" "$ABLETON_RUNTIME_NAME"; then
+                return 0
+            fi
+            return 1 ;;
     esac
 
     # Wine's menu builder may leave prefix-specific desktop files under the

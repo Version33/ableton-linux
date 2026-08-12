@@ -1205,6 +1205,42 @@ run_user_rollback()
         "$@" bash "$here/rollback.sh"
 }
 
+reverse_target_authorised_on_exit()
+{
+    local base="$1" candidate
+    candidate="$base/runtime-rollback-check"
+    run_isolated "$base" env \
+        ABLETON_WINE_ROOT="$base/runtime" \
+        ABLETON_WINEPREFIX="$base/prefix" \
+        CANDIDATE="$candidate" bash -c '
+        set -euo pipefail
+        . "$1/lib/config.sh"
+        ableton_config_init
+        . "$1/lib/manifest.sh"
+        target="$CANDIDATE/.ableton-linux-rollback/metadata"
+        check_on_exit()
+        {
+            trap - EXIT
+            ableton_txn_target_allowed present "$target" /unused || exit 1
+            exit 0
+        }
+        trap check_on_exit EXIT
+        exit 97
+    ' _ "$here"
+}
+
+base="$(new_env reverse-target-exit)"
+candidate="$base/runtime-rollback-check"
+mkdir -p -- "$candidate/.ableton-linux-rollback"
+printf 'format=1\nname=wine-d2d1-nspa-11.13\n' > "$candidate/.ableton-linux-runtime"
+reverse_target_authorised_on_exit "$base" \
+    || fail "valid reverse-runtime metadata target was refused during failure recovery"
+printf 'format=1\nmalformed=yes\n' > "$candidate/.ableton-linux-runtime"
+if reverse_target_authorised_on_exit "$base"; then
+    fail "malformed reverse-runtime marker authorised a recovery target"
+fi
+ok "failure recovery accepts only metadata inside an exactly marked reverse runtime"
+
 base="$(new_env staged-prefix-register)"
 make_registry_runtime "$base"
 (
