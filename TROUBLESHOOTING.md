@@ -12,6 +12,44 @@ An update keeps Live, its authorisation, projects, and PipeASIO settings. It may
 
 If an **Ableton USB Driver** window is open, close it and wait for setup to continue. If the current installer still stops, press Ctrl-C, run it again, and note the last line it printed.
 
+## Online authorisation does not return to Live
+
+Run the current project update, start Live once from the application menu, and try authorising again. If the browser still does not return to Live, check the registered handler:
+
+```bash
+xdg-mime query default x-scheme-handler/ableton
+```
+
+It should print `io.github.shibco.ableton-linux.protocol.desktop`. Compare the launcher and desktop handoff with a harmless test address:
+
+```bash
+ableton-live 'ableton://invalid-ableton-linux-probe'
+xdg-open 'ableton://invalid-ableton-linux-probe'
+```
+
+The address cannot authorise Live. If the first command works and the second fails, log out and back in, then repeat both commands. If both work, compare a fresh browser profile or a browser package from another source.
+
+Never share a real authorisation address or `.auz` file. When reporting the problem, include the handler result, browser package, and which test commands opened Live.
+
+## Live cannot save a clip or track in the Browser
+
+Drag the same item into the User Library. If that works, Live cannot write to the original folder. Check the folder with:
+
+```bash
+test -w "/path/to/folder" && echo writable || echo not-writable
+stat -f -c 'filesystem=%T' -- "/path/to/folder"
+```
+
+Choose another folder or correct its ownership if the first command prints `not-writable`. System folders, read-only mounts, and `/nix/store` cannot accept new Live files.
+
+If the folder and User Library both fail, run the profiler from a repository checkout:
+
+```bash
+env ABLETON_LIBRARY_PATH="/path/to/folder" ./beta/scripts/ableton-linux-profiler.sh
+```
+
+The profiler does not print the folder path. Include its output, the Live version and edition, and whether the User Library worked when reporting the problem.
+
 ## Live has no sound
 
 Open **Settings > Audio** and select:
@@ -65,6 +103,16 @@ Run the current project update, restart Live, and open **Settings > Display & In
 
 If the setting remains unavailable, open an issue and include the graphics card model shown by Linux and the name shown by Live.
 
+## CPU use rises when the pointer moves
+
+Check the launcher log for a repeated window-size diagnostic:
+
+```bash
+grep -i "sustained present-size mismatch:" ~/.local/state/ableton-wine/logs/live.log
+```
+
+If it prints a line, include that whole line when reporting the problem. It contains the desktop environment and window DPI but should still be read before sharing. If it prints nothing, describe the action that triggers the CPU increase instead.
+
 ## Live 11: Max for Live fails after the first launch
 
 Close Live after its first run, extract the current project installer, and run the repair:
@@ -90,6 +138,10 @@ env ABLETON_LIVE_VERSION=11 ableton-live
 
 If one prefix contains several editions of the same major version, set `ABLETON_LIVE_EXE` to the exact executable you want to start.
 
+## Using Linux-native plugins
+
+Direct Linux VST or CLAP loading is not implemented. Running a plugin in Carla and routing audio and MIDI through PipeWire remains experimental and is not configured by the installer.
+
 ## Push 2 does not connect
 
 Configure one **Push2** control-surface row with **Ableton Push 2 Live Port** as both input and output. Remove duplicate **Push2** rows, close Live normally, reconnect Push 2, and start Live again.
@@ -100,10 +152,16 @@ If the display still does not start, include the result of `lsusb` and the selec
 
 Link peers must share a local network that carries multicast traffic. Guest networks, public Wi-Fi, and the far side of a VPN may block discovery.
 
-Enable the session Link setup again:
+Check the current setting:
 
 ```bash
-~/.local/share/ableton-wine/setup-link.sh enable --mode=session
+sh ~/Downloads/install-ableton-latest.run link status
+```
+
+If it reports `policy: off`, enable Link for the current session:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run link enable --mode=session
 ```
 
 The command may ask for `sudo` when a supported firewall needs to allow UDP port 20808. Start Live, enable **Show Link Toggle**, and turn on Link in the control bar.

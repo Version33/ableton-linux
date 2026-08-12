@@ -6,6 +6,11 @@
 # command-line values naturally outrank the environment.
 
 ABLETON_RUNTIME_NAME="wine-d2d1-nspa-11.13"
+# Desktop IDs belong to this project, not to the compatibility runtime.  Wine's
+# generated wine-protocol-*.desktop names are global to a user session and can
+# be overwritten by any prefix that registers the same scheme.
+ABLETON_PROTOCOL_DESKTOP_ID="io.github.shibco.ableton-linux.protocol.desktop"
+ABLETON_AUZ_DESKTOP_ID="io.github.shibco.ableton-linux.auz.desktop"
 
 ableton_config_error()
 {
@@ -398,6 +403,7 @@ ableton_config_init()
     export ABLETON_WINE_ROOT ABLETON_WINEPREFIX ABLETON_LINK_MODE ABLETON_LINKD
     export ABLETON_DATA_HOME ABLETON_CONFIG_HOME ABLETON_STATE_HOME ABLETON_CACHE_HOME
     export ABLETON_BIN_HOME ABLETON_CONFIG_FILE
+    export ABLETON_PROTOCOL_DESKTOP_ID ABLETON_AUZ_DESKTOP_ID
     [ -n "${ABLETON_CONFIG_SNAPSHOT_PATH:-}" ] || ableton_config_snapshot_capture
 }
 

@@ -595,7 +595,12 @@ remove_legacy_files()
 
     for path in \
         "$ABLETON_BIN_HOME/ableton-live" "$ABLETON_BIN_HOME/max9" \
-        "$apps/ableton-live.desktop" "$apps/wine-protocol-ableton.desktop" \
+        "$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID" \
+        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID" \
+        "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop" \
+        "$ABLETON_DATA_HOME/wine-extension-auz.desktop" \
+        "$apps/ableton-live.desktop" "$apps/$ABLETON_PROTOCOL_DESKTOP_ID" \
+        "$apps/$ABLETON_AUZ_DESKTOP_ID" "$apps/wine-protocol-ableton.desktop" \
         "$apps/wine-extension-auz.desktop" "$apps/max9.desktop" \
         "$apps/wine-protocol-c74max.desktop" \
         "$mime/x-wine-extension-auz.xml" "$mime/application-ableton-live.xml"; do
@@ -693,7 +698,7 @@ if [ -r "$restore_mime" ] && command -v xdg-mime >/dev/null 2>&1; then
             uninstall_partial=1
             continue
         fi
-        case "$current" in ableton-live.desktop|wine-protocol-ableton.desktop|wine-extension-auz.desktop|max9.desktop|wine-protocol-c74max.desktop)
+        case "$current" in ableton-live.desktop|"$ABLETON_PROTOCOL_DESKTOP_ID"|"$ABLETON_AUZ_DESKTOP_ID"|wine-protocol-ableton.desktop|wine-extension-auz.desktop|max9.desktop|wine-protocol-c74max.desktop)
             if [ -n "$prior" ]; then
                 if ! xdg-mime default "$prior" "$type" \
                    || [ "$(xdg-mime query default "$type" 2>/dev/null || true)" != "$prior" ]; then
@@ -710,7 +715,8 @@ if [ -r "$restore_mime" ] && command -v xdg-mime >/dev/null 2>&1; then
                     echo "!! could not verify the MIME default for $type" >&2
                     uninstall_partial=1
                 elif case "$current" in
-                            ableton-live.desktop|wine-protocol-ableton.desktop|\
+                            ableton-live.desktop|"$ABLETON_PROTOCOL_DESKTOP_ID"|\
+                            "$ABLETON_AUZ_DESKTOP_ID"|wine-protocol-ableton.desktop|\
                             wine-extension-auz.desktop|max9.desktop|wine-protocol-c74max.desktop) true ;;
                             *) false ;;
                      esac; then

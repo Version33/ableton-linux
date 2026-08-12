@@ -586,9 +586,24 @@ exit 0
 EOF
     cat > "$base/fakebin/xdg-mime" <<'EOF'
 #!/bin/sh
+set -eu
+state="${XDG_CONFIG_HOME:?}/mimeapps.list"
 case "${1:-}" in
-    query) exit 0 ;;
-    default) exit 0 ;;
+    query)
+        [ "${2:-}" = default ] && [ "$#" -eq 3 ]
+        awk -F '=' -v type="$3" '$1 == type { value=$2 } END { print value }' \
+            "$state" 2>/dev/null || true ;;
+    default)
+        [ "$#" -ge 3 ]
+        application="$2"
+        shift 2
+        mkdir -p -- "$(dirname "$state")"
+        touch "$state"
+        for type in "$@"; do
+            awk -F '=' -v type="$type" '$1 != type' "$state" > "$state.tmp"
+            printf '%s=%s\n' "$type" "$application" >> "$state.tmp"
+            mv -- "$state.tmp" "$state"
+        done ;;
     *) exit 2 ;;
 esac
 EOF
@@ -867,13 +882,15 @@ manifest_has_path "$reconcile_manifest" "$reconcile_command" \
     || fail "runtime-only reconcile replaced the retained prestate backup"
 grep -qF $'present\t'"$reconcile_command"$'\t'"$reconcile_backup" "$reconcile_index" \
     || fail "runtime-only reconcile discarded the retained prestate index"
-run_isolated "$base" env \
+if ! run_isolated "$base" env \
     PATH="$base/fakebin:$PATH" \
     ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
     ABLETON_LINK_MODE=off \
     bash "$here/uninstall.sh" --keep-prefix --yes \
-    >"$base/uninstall.out" 2>"$base/uninstall.err" \
-    || fail "uninstall failed after runtime-only panel reconcile"
+    >"$base/uninstall.out" 2>"$base/uninstall.err"; then
+    sed -n '1,120p' "$base/uninstall.err" >&2
+    fail "uninstall failed after runtime-only panel reconcile"
+fi
 [ -L "$reconcile_command" ] \
     && [ "$(readlink -- "$reconcile_command")" = "$base/original-reconcile-command" ] \
     || fail "uninstall did not restore prestate retained across runtime-only reconcile"

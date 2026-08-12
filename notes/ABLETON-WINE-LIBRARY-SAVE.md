@@ -27,8 +27,8 @@ folder already shown in its Browser. The action does not use the host desktop
 handler for `.als` files, and it does not drag a file between Linux and Live.
 
 The launcher already sets `WINE_DISABLE_UNIX_MOUNT_REPARSE=1`. Patch 0033 then
-reports Unix mount boundaries as ordinary folders. Live can otherwise treat a
-mount boundary as a Windows junction that Wine cannot resolve. The existing
+reports Unix mount points as ordinary folders. Live can otherwise treat a
+mounted folder as a Windows junction that Wine cannot resolve. The existing
 setting makes that known failure less likely, but the issue does not show
 whether the affected installation used this launcher.
 

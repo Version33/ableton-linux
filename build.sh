@@ -218,4 +218,4 @@ for staged_output in $expected_outputs; do
     ls -lh -- "$here/dist/$staged_output"
 done
 echo
-echo "Next:  ./scripts/installer.sh install"
+echo "Next:  ./scripts/installer.sh install --skip-live-install"

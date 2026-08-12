@@ -150,13 +150,17 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/shortcut-hold.sh"|"$ABLETON_DATA_HOME/setup-realtime.sh"|\
         "$ABLETON_DATA_HOME/audio-report.sh"|"$ABLETON_DATA_HOME/rollback.sh"|\
         "$ABLETON_DATA_HOME/pipewire-version-probe"|"$ABLETON_DATA_HOME/setsyscolors.exe"|\
-        "$ABLETON_DATA_HOME/learnheal.exe"|"$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|\
+        "$ABLETON_DATA_HOME/learnheal.exe"|"$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
+        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
+        "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|\
         "$ABLETON_DATA_HOME/wine-extension-auz.desktop"|"$ABLETON_DATA_HOME/ableton-linkctl"|\
         "$ABLETON_DATA_HOME/setup-link.sh"|"$ABLETON_DATA_HOME/ableton-linkd.service"|\
         "$ABLETON_DATA_HOME/VERSION"|"$ABLETON_DATA_HOME/ableton-linkd"|\
         "$ABLETON_BIN_HOME/ableton-live"|"$ABLETON_BIN_HOME/max9"|\
         "$ABLETON_BIN_HOME/pipeasio-settings"|\
         "$data_root/applications/ableton-live.desktop"|\
+        "$data_root/applications/$ABLETON_PROTOCOL_DESKTOP_ID"|\
+        "$data_root/applications/$ABLETON_AUZ_DESKTOP_ID"|\
         "$data_root/applications/wine-protocol-ableton.desktop"|\
         "$data_root/applications/wine-extension-auz.desktop"|\
         "$data_root/applications/max9.desktop"|\
@@ -863,11 +867,13 @@ ableton_legacy_owned_path()
         "$ABLETON_DATA_HOME/ableton-linkctl") grep -qF 'Project-owned Ableton Link lifecycle controller' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/ableton-linkd.service") grep -qF 'ableton-linkd' "$path" 2>/dev/null ;;
         "$ABLETON_DATA_HOME/VERSION") return 1 ;;
+        "$ABLETON_DATA_HOME/$ABLETON_PROTOCOL_DESKTOP_ID"|\
         "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop")
             grep -qxF 'Type=Application' "$path" \
                 && grep -qxF 'MimeType=x-scheme-handler/ableton;' "$path" \
                 && grep -qxF "Exec=$ABLETON_BIN_HOME/ableton-live %u" "$path" \
                 && grep -qxF 'NoDisplay=true' "$path" ;;
+        "$ABLETON_DATA_HOME/$ABLETON_AUZ_DESKTOP_ID"|\
         "$ABLETON_DATA_HOME/wine-extension-auz.desktop")
             grep -qxF 'Type=Application' "$path" \
                 && grep -qxF 'MimeType=application/x-wine-extension-auz;' "$path" \
@@ -901,12 +907,16 @@ ableton_legacy_owned_path()
                 && grep -qxF 'Name=Max 9' "$path" \
                 && grep -qxF "Exec=$ABLETON_BIN_HOME/max9 %f" "$path" \
                 && grep -qxF 'MimeType=application/x-ableton-live-max-device;' "$path" ;;
+        "$data_root/applications/$ABLETON_PROTOCOL_DESKTOP_ID"|\
         "$data_root/applications/wine-protocol-ableton.desktop")
-            grep -qxF 'MimeType=x-scheme-handler/ableton;' "$path" \
+            grep -qxF 'Type=Application' "$path" \
+                && grep -qxF 'MimeType=x-scheme-handler/ableton;' "$path" \
                 && grep -qxF "Exec=$ABLETON_BIN_HOME/ableton-live %u" "$path" \
                 && grep -qxF 'NoDisplay=true' "$path" ;;
+        "$data_root/applications/$ABLETON_AUZ_DESKTOP_ID"|\
         "$data_root/applications/wine-extension-auz.desktop")
-            grep -qxF 'MimeType=application/x-wine-extension-auz;' "$path" \
+            grep -qxF 'Type=Application' "$path" \
+                && grep -qxF 'MimeType=application/x-wine-extension-auz;' "$path" \
                 && grep -qxF "Exec=$ABLETON_BIN_HOME/ableton-live %f" "$path" \
                 && grep -qxF 'NoDisplay=true' "$path" ;;
         "$data_root/applications/wine-protocol-c74max.desktop")

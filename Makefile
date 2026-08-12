@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup uninstall test vendor-cache verify clean distclean
+.PHONY: all build install setup refresh uninstall test vendor-cache verify clean distclean
 
 all: build
 
@@ -9,7 +9,10 @@ build:                        ## build runtime and Link helper with Podman -> di
 install:                      ## install the built Wine tree + launcher (end user)
 	./scripts/installer.sh install --skip-live-install
 
-setup:                        ## refresh an existing Wine prefix (end user)
+setup:                        ## create the Wine prefix (end user)
+	./scripts/installer.sh prefix create
+
+refresh:                      ## refresh the existing Wine prefix (end user)
 	./scripts/installer.sh prefix update
 
 uninstall:                    ## remove installed Wine tree + launcher
@@ -19,6 +22,7 @@ test:                         ## run installer and launcher lifecycle gates
 	./scripts/test-tsan-policy.sh
 	./scripts/test-release-policy.sh
 	./scripts/test-shortcut-hold.sh
+	./scripts/test-desktop-integration.sh
 	./scripts/test-installer-lifecycle.sh
 	./scripts/test-pipeasio-installer.sh
 
