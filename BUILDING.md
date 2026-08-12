@@ -147,6 +147,9 @@ settings for one launch.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_D3D_FORCE_GPU_RENDERING=1` reports a device ID Live accepts for one
+  launch, offering the GPU renderer on Intel models Live refuses; the device
+  name Live shows discloses the substitution.
 - `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` controls smooth
   scrolling for one launch. `precise` is the default. `notched` keeps
   whole wheel steps. `disabled` leaves normal mouse-wheel input available.

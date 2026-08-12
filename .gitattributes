@@ -7,4 +7,4 @@ patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch whitespace=-
 patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0095-winex11-separate-pointer-coast-sources.patch whitespace=-blank-at-eof,-blank-at-eol
-patches/0096-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch whitespace=-blank-at-eof,-blank-at-eol
+patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch whitespace=-blank-at-eof,-blank-at-eol

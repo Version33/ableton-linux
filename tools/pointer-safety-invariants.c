@@ -1842,7 +1842,7 @@ int main(int argc, char **argv)
         "patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch",
         "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch",
         "patches/0095-winex11-separate-pointer-coast-sources.patch",
-        "patches/0096-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch"
+        "patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch"
     };
     struct text stack_source = {0}, safety_source = {0}, warp_source = {0};
     struct text lifecycle_source = {0}, final_source = {0};

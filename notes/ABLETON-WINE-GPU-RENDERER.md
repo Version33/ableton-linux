@@ -302,9 +302,54 @@ entry takes precedence over 0061, and the "(MTL)" suffix in 0057's
 entry is what passes Live's check. A traced launch from that machine
 confirming the exact rejected name is still open.
 
+The two paragraphs above explain the refusal by the reported name.
+That explanation is wrong, and the subsection below replaces it.
+
 To check a machine: open Preferences > Display & Input. "Enable GPU
 Renderer" must be a switch, not greyed out with the HD 4000 reason
 text.
+
+### Live matches ID numbers, not names (2026-08-02, patch 0066)
+
+Every graphics chip reports a vendor number and a device number. Live
+reads only those numbers: it refuses a device number found on an
+internal list of 101 Intel parts sold between roughly 2004 and 2014,
+and the name appears only in the refusal message. Established by
+reading `Ableton Live 12 Suite.exe`. A suffix cannot matter to a check
+that never reads names, which rules out the "(MTL)" account above.
+
+When Wine cannot identify a card it reports Intel device `0x0162`,
+which is on Live's list, so every unidentified Intel card arrives
+wearing a refused identity. Patches 0066 through 0068 close the gaps:
+0066 adds the missing 2015 to 2019 table entries, 0067 keeps an
+unlisted card's real identity when the driver reports no video memory,
+and 0068 adds the opt-in `WINE_D3D_FORCE_GPU_RENDERING=1` substitution
+for the parts Live genuinely lists, disclosed in the device name. Each
+patch header carries its mechanism and evidence.
+
+#### Reading a machine's log
+
+```bash
+grep -a "TD3dSurface: Adapter\|GPU Renderer:\|Can't use GPU" \
+  ~/.wine-ableton/drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences/Log.txt | tail
+```
+
+An `Adapter:` line carries the pair Live received: `(8086:0162)` is the
+invented identity, `(8086:3e92)` a real one. The line appears only
+while Live draws through Direct3D, so it is absent with
+`-_ForceGdiBackend` set and after Live has refused the renderer. A
+`Can't use GPU renderer:` line records a refusal, but Live writes it
+only when the preference is already on, so its absence proves nothing
+at the default of off.
+
+The fastest datum from a reporter is a screenshot of Settings > Display
+& Input. "Unexplained slow UI at zoom-level 100% and/or crashes" means
+the ID pair was refused. "Gpu rendering is incompatible with
+_ForceGdiBackend" means the legacy flag is still set. "Cannot fetch
+IDXGIAdapter1" means Live found no adapter.
+
+Use `find ~/.wine-ableton -name Options.txt` to check for that flag
+file; in fish a glob that matches nothing aborts the whole command.
 
 ## Related
 
@@ -313,6 +358,7 @@ text.
 - [Patch 0053](../patches/0053-winex11-export-the-app-minimum-tracking-size-as-PMin.patch)
 - [Patch 0055](../patches/0055-dxgi-prefer-GL-present-for-top-level-swapchain-devic.patch)
 - [Patch 0057](../patches/0057-wined3d-add-Intel-graphics-devices-from-Ice-Lake-to-.patch)
+- [Patch 0066](../patches/0066-wined3d-add-the-missing-Intel-devices-from-Skylake-t.patch)
 - [Patch 0071](../patches/0071-wined3d-count-and-report-sustained-present-size-fall.patch)
 - Resize trace from the diagnosis session:
   `~/Projects/Code/ableton/live-resize-trace-gpu-20260727.log`
