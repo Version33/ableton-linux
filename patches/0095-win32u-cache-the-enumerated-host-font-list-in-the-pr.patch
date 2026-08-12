@@ -1,64 +1,65 @@
-From 818e39a4665ffb3d8e1bb0bb62fae42c40a0c26c Mon Sep 17 00:00:00 2001
+From 251e7f036b7709063953beb98f5f4c5e948c7d90 Mon Sep 17 00:00:00 2001
 From: Shibco <cade@parare.al>
 Date: Tue, 4 Aug 2026 23:25:29 +0200
 Subject: [PATCH] win32u: cache the enumerated host font list in the prefix
 
 Enumerating the host fonts (a fontconfig walk plus one freetype parse per
-face) repeats in every font-using process. The session font cache does not
-prevent this: font_init() runs the enumeration before it consults the
-cache key, and the key is created with REG_OPTION_VOLATILE, so Wine
+face) repeats in every font-using process. The session font cache does
+not prevent this: font_init() runs the enumeration before it consults
+the cache key, and it creates the key with REG_OPTION_VOLATILE, so Wine
 deletes it with the wineserver session. On a host with 3482 font files
-the enumeration costs about 300 ms in the first process of every session.
-The Ableton launcher starts a fresh session for every Live launch, so
-Live repeats it on every start.
+the enumeration costs about 300 ms in the first process of every
+session. The Ableton launcher starts a fresh session for every Live
+launch, so Live repeats it on every start.
 
-Record the raw face submissions of one enumeration, before any collision
-with an already loaded face is resolved, and write them to
-c:\windows\wine-host-font.cache. On later starts font_init() replays the
+Record the raw face submissions of one enumeration, before
+add_gdi_face() resolves any collision with an already loaded face, and
+write them to c:\windows\wine-host-font.cache. Later starts replay the
 records through add_gdi_face(), so a collision with a prefix font
 resolves against the prefix state of the loading process, not the state
-of the process that wrote the file. The file is keyed by a stamp over
-every enumeration input: the host font directory trees (entry names,
-sizes and nanosecond mtimes, dot-prefixed names included), the
-fontconfig configuration files and library version, the locale that
-picks the face names, and the default antialiasing flags. A walk that
-overruns the depth or entry limit fails the stamp and the cache stays
-off. font_init() validates the complete file, including a checksum,
-before it adds a single face; any defect discards the whole file, and
-the full enumeration runs and rewrites it through a temporary file plus
-rename, so a torn write can never be read back. Reads and writes hold
-the existing font mutex. The prefix-local directories (c:\windows\Fonts,
-the Wine data dir) always rescan, so fonts installed into the prefix
-appear without invalidating the cache. WINE_DISABLE_HOST_FONT_CACHE=1
-turns the cache off.
+of the process that wrote the file. A stamp over every enumeration
+input keys the file: the host font directory trees (entry names, sizes
+and nanosecond mtimes, dot-prefixed names included), the fontconfig
+configuration files and library version, the locale that picks the face
+names, and the default antialiasing flags. When a walk passes the depth
+or entry limit, the stamp fails and the cache stays off. font_init()
+validates the complete file, including a checksum, before it adds a
+single face; on any defect it discards the whole file, runs the full
+enumeration, and rewrites it. Wine writes the file under a temporary
+name and renames it over the old one, so a reader never sees a
+half-written file. Reads and writes hold the existing font mutex. The
+prefix-local directories (c:\windows\Fonts, the Wine data dir) always
+rescan, so fonts installed into the prefix appear without invalidating
+the cache. WINE_DISABLE_HOST_FONT_CACHE=1 turns the cache off.
 
-Verified on a 64-bit scratch build against a fresh prefix, 9721 host
-font directory entries: the font tree after a replay is line-identical
-to the tree after a live enumeration; a flipped byte and a truncation
-are each rejected whole and the file is rewritten; a new font, a
+Checks on a 64-bit scratch build against a fresh prefix, 9721 host font
+directory entries: the font tree after a replay is identical to the
+tree after a live enumeration; a flipped byte and a truncation each
+made font_init() discard the file whole and rewrite it; a new font, a
 removed font, a nanosecond-only mtime change, a locale change and a
-fontconfig configuration change each miss the stamp and rerun the
-enumeration. Measured saving with the first cache version on the real
-stack: about 1.9 s per Live launch. The mechanism that produces the
-saving, skipping the enumeration while the stamp matches, is unchanged.
+fontconfig configuration change each changed the stamp, and Wine reran
+the enumeration. The first cache version measured about 1.9 s saved per
+Live launch on the real stack; the mechanism that produces the saving,
+skipping the enumeration while the stamp matches, is unchanged.
 
 See notes/FINDINGS-M4L-LAUNCH-2026-08-04.md, P-M1.
 ---
- dlls/win32u/font.c          | 454 +++++++++++++++++++++++++++++++++++-
+ dlls/win32u/font.c          | 457 +++++++++++++++++++++++++++++++++++-
  dlls/win32u/freetype.c      | 180 +++++++++++++-
  dlls/win32u/ntgdi_private.h |   2 +
- 3 files changed, 633 insertions(+), 3 deletions(-)
+ 3 files changed, 636 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/win32u/font.c b/dlls/win32u/font.c
-index e8fe1b2..73d736a 100644
+index e8fe1b2..ffb3ee5 100644
 --- a/dlls/win32u/font.c
 +++ b/dlls/win32u/font.c
-@@ -1211,6 +1211,15 @@ static struct gdi_font_face *create_face( struct gdi_font_family *family, const
+@@ -1211,6 +1211,16 @@ static struct gdi_font_face *create_face( struct gdi_font_family *family, const
      return NULL;
  }
  
 +/* The persistent host font cache (below) records every host face
-+ * submission of the enumeration before collisions are resolved. */
++ * submission of the enumeration before add_gdi_face resolves any
++ * collision. */
 +static BOOL host_font_capture_active;
 +static void host_font_cache_capture( const WCHAR *family_name, const WCHAR *second_name,
 +                                     const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
@@ -69,7 +70,7 @@ index e8fe1b2..73d736a 100644
  int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
                    const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
                    void *data_ptr, SIZE_T data_size, UINT index, FONTSIGNATURE fs,
-@@ -1221,6 +1230,11 @@ int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
+@@ -1221,6 +1231,11 @@ int add_gdi_face( const WCHAR *family_name, const WCHAR *second_name,
      struct gdi_font_family *family;
      int ret = 0;
  
@@ -81,7 +82,7 @@ index e8fe1b2..73d736a 100644
      if ((family = find_family_from_name( family_name ))) family->refcount++;
      else if (!(family = create_family( family_name, second_name ))) return ret;
  
-@@ -6782,6 +6796,421 @@ static void load_registry_fonts(void)
+@@ -6782,6 +6797,423 @@ static void load_registry_fonts(void)
      NtClose( hkey );
  }
  
@@ -91,17 +92,18 @@ index e8fe1b2..73d736a 100644
 + * The host font enumeration (fontconfig walk plus one freetype parse per
 + * face) repeats in every font-using process and dominates the first
 + * process's font_init time. This cache records the raw face submissions of
-+ * one enumeration, before any collision with an already loaded face is
-+ * resolved, and replays them through add_gdi_face on later starts, so
-+ * collisions with prefix fonts resolve against the prefix state of the
-+ * loading process rather than the one that wrote the file. The file is
-+ * keyed by a stamp over every enumeration input (the host font directory
-+ * trees, the fontconfig configuration, the locale, the antialiasing
-+ * defaults), carries a checksum, and is replaced through a temporary file
-+ * plus rename, so a torn write can never be read back. The complete file
-+ * is validated before the first face is added; a file that fails any
-+ * check is ignored as a whole, and the full enumeration runs and rewrites
-+ * it. WINE_DISABLE_HOST_FONT_CACHE=1 disables both reading and writing.
++ * one enumeration, before add_gdi_face resolves any collision with an
++ * already loaded face, and replays them through add_gdi_face on later
++ * starts, so collisions with prefix fonts resolve against the prefix
++ * state of the loading process rather than the one that wrote the file.
++ * A stamp over every enumeration input (the host font directory trees,
++ * the fontconfig configuration, the locale, the antialiasing defaults)
++ * keys the file, a checksum protects it, and writes go to a temporary
++ * file plus rename, so a reader never sees a half-written file.
++ * load_host_font_cache validates the complete file before it adds the
++ * first face, ignores a file that fails any check as a whole, and leaves
++ * the full enumeration to run and rewrite it.
++ * WINE_DISABLE_HOST_FONT_CACHE=1 disables both reading and writing.
 + */
 +
 +static const WCHAR host_font_cache_pathW[] =
@@ -113,8 +115,8 @@ index e8fe1b2..73d736a 100644
 +
 +#define HOST_FONT_CACHE_MAGIC   0x31434657 /* "WFC1" */
 +#define HOST_FONT_CACHE_VERSION 2
-+/* String caps bound what a record may carry, not what GDI keeps: raw
-+ * submissions go in untruncated (split families run past LF_FACESIZE),
++/* String caps bound what a record may store, not what GDI keeps: raw
++ * submissions go in untruncated (split families exceed LF_FACESIZE),
 + * and add_gdi_face applies its own limits on replay exactly as it does
 + * during a live enumeration. */
 +#define HOST_FONT_CACHE_MAX_NAME 256      /* WCHARs, family/style cap per face */
@@ -149,8 +151,8 @@ index e8fe1b2..73d736a 100644
 +
 +/* One raw face submission of the running enumeration, serialized as the
 + * on-disk record. Replaying the records through add_gdi_face is equivalent
-+ * to rerunning the enumeration, whatever the prefix fonts look like when
-+ * the file is read. */
++ * to rerunning the enumeration, whatever the prefix fonts are when a
++ * process reads the file. */
 +struct host_font_capture
 +{
 +    struct list                entry;
@@ -190,8 +192,9 @@ index e8fe1b2..73d736a 100644
 +    return env && !strcmp( env, "1" );
 +}
 +
-+/* Writes go to the temporary name and reach the final name only through
-+ * the rename below, so readers never see a partially written file. */
++/* Writes go to the temporary name, and only the rename below puts the
++ * result at the final name, so readers never see a partially written
++ * file. */
 +static HANDLE open_host_font_cache( BOOL write )
 +{
 +    OBJECT_ATTRIBUTES attr;
@@ -264,9 +267,9 @@ index e8fe1b2..73d736a 100644
 +    return TRUE;
 +}
 +
-+/* Validate the complete file before anything touches the font tree: header
++/* Validate the complete file before anything changes the font tree: header
 + * fields, checksum, and the structure of every record. A defect anywhere
-+ * rejects the whole file, so no face from a bad file is ever added. */
++ * rejects the whole file, so a bad file contributes no faces at all. */
 +static BOOL validate_host_font_cache( const char *data, SIZE_T size, UINT64 stamp )
 +{
 +    struct host_font_cache_header header;
@@ -334,7 +337,7 @@ index e8fe1b2..73d736a 100644
 +
 +    if (!validate_host_font_cache( data, size, stamp )) goto failed;
 +
-+    /* every record is proven well formed: replay them */
++    /* validation proved every record well formed: replay them */
 +    memcpy( &header, data, sizeof(header) );
 +    ptr = data + sizeof(header);
 +    for (i = 0; i < header.count; i++)
@@ -376,8 +379,8 @@ index e8fe1b2..73d736a 100644
 +}
 +
 +/* Record one raw host face submission, called from add_gdi_face before the
-+ * face meets the font tree. A submission the format cannot represent
-+ * poisons the whole capture: writing the other faces would replay a
++ * face enters the font tree. A submission the format cannot represent
++ * cancels the whole capture: writing the other faces would replay a
 + * different enumeration than the one that ran. */
 +static void host_font_cache_capture( const WCHAR *family_name, const WCHAR *second_name,
 +                                     const WCHAR *style, const WCHAR *fullname, const WCHAR *file,
@@ -503,7 +506,7 @@ index e8fe1b2..73d736a 100644
  static HKEY open_hkcu(void)
  {
      char buffer[256];
-@@ -6814,6 +7243,7 @@ UINT font_init(void)
+@@ -6814,6 +7246,7 @@ UINT font_init(void)
      HANDLE mutex;
      DWORD disposition;
      UINT dpi = 0;
@@ -511,7 +514,7 @@ index e8fe1b2..73d736a 100644
  
      static WCHAR wine_font_mutexW[] =
          {'\\','B','a','s','e','N','a','m','e','d','O','b','j','e','c','t','s',
-@@ -6833,16 +7263,36 @@ UINT font_init(void)
+@@ -6833,16 +7266,36 @@ UINT font_init(void)
  
      load_system_bitmap_fonts();
      load_file_system_fonts();
@@ -551,7 +554,7 @@ index e8fe1b2..73d736a 100644
                                             REG_OPTION_VOLATILE, &disposition );
  
 diff --git a/dlls/win32u/freetype.c b/dlls/win32u/freetype.c
-index 832043a..8175562 100644
+index 832043a..2557662 100644
 --- a/dlls/win32u/freetype.c
 +++ b/dlls/win32u/freetype.c
 @@ -139,6 +139,8 @@ MAKE_FUNCPTR(FcPatternGetBool);
@@ -634,7 +637,7 @@ index 832043a..8175562 100644
 + * between filesystems, so entries combine with xor rather than sequentially.
 + * Dot-prefixed names count like any other: fontconfig reads them too. A
 + * tree that overruns the depth or entry limit marks the stamp failed, and
-+ * the cache stays off rather than being keyed on a partial view. */
++ * the cache stays off instead of using a key over a partial view. */
 +static UINT64 host_fonts_stamp_dir( const char *path, unsigned int depth, struct host_fonts_stamp *stamp )
 +{
 +    UINT64 hash = 0, entry;

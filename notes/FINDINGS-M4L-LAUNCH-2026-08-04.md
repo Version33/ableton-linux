@@ -222,19 +222,18 @@ moonshot branch) and the MaxPlug phase log.
 ### P-M1. Cache the host font list across processes and sessions (patch 0095, implemented)
 
 Implemented 2026-08-04 as patch 0070 on the performance-moonshot branch.
-This branch carries it as
+On this branch it is
 `patches/0095-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`,
-hardened and renumbered; the addendum at the end of this section has the
+repaired and renumbered; the addendum at the end of this section has the
 details.
 
-The problem, plainly: every time any program starts under this project's
-Wine, Wine reads every font installed on the computer, one file at a
-time, to build its font list. This computer has 3,482 font files. The
+Every time any program starts under this project's Wine, Wine reads
+every font installed on the computer, one file at a time, to build its
+font list. This computer has 3,482 font files. The
 reading repeats for every program: Live itself, and each helper program
 Live starts. Nothing remembered the result between starts.
 
-What the patch does, plainly: Wine now saves the finished font list to
-one file, `c:\windows\wine-host-font.cache` (seen from Linux:
+The patch makes Wine save the finished font list to one file, `c:\windows\wine-host-font.cache` (seen from Linux:
 `~/.wine-ableton/drive_c/windows/wine-host-font.cache`). At every program
 start Wine first checks whether the computer's fonts have changed, using
 a stamp: a short summary value computed from the font folders' names,
@@ -251,8 +250,8 @@ Wine's own font folder) never come from the saved list; Wine always reads
 those directly, so fonts added by the installer or the launcher always
 appear.
 
-For the reader following the code: the save is `save_host_font_cache()`,
-the load is `load_host_font_cache()`, the stamp is
+In the code, the save is `save_host_font_cache()`, the load is
+`load_host_font_cache()`, the stamp is
 `fontconfig_host_fonts_stamp()`, and `font_init()` in
 `dlls/win32u/font.c` calls all three. Reading and writing happen under
 Wine's existing font lock, so only one program writes at a time. One
@@ -309,51 +308,45 @@ reserved patch numbers 0066 to 0069, release, and a few days of normal
 use on this machine first. The entry for users is in TROUBLESHOOTING.md
 ("A newly installed font does not show up inside Live").
 
-Addendum, 2026-08-12: hardened and renumbered for the main branch.
+Addendum, 2026-08-12: repaired and renumbered for the main branch.
 
-Review of PR 139 found five correctness gaps in the first version. Each
-could leave the saved list different from what a fresh read would
-produce, with nothing noticing. The version on this branch repairs all
-five. The speed mechanism is unchanged.
+Review of PR 139 found five gaps in the first version. Each could leave
+the saved list different from what a fresh read would produce, and
+nothing would notice. This branch repairs all five; the speed mechanism
+is unchanged.
 
-- The stamp only watched the font folders. The face list also depends on
-  the fontconfig configuration, on the locale (it picks the face names),
-  and on the default antialiasing flags. All of these now feed the
-  stamp, so changing any of them rebuilds the list.
-- The file stored the finished font list, written after clashes between
-  a host font and a font inside the Live installation were resolved.
-  That resolution depends on the installation's fonts at write time,
-  which the stamp does not cover, so a clash outcome could outlive the
-  font that caused it. The file now stores the raw submissions of one
-  read, and every later start replays them through the normal add path.
-  Clashes resolve against the fonts present at read time.
-- A damaged record used to be noticed only after earlier records had
-  already entered the font list. Wine now checks the whole file,
-  checksum included, before it adds anything. A bad file is discarded
-  whole and the full read runs.
-- The file was overwritten in place and carried no checksum, so a crash
-  mid-write could leave a torn file that read back as valid. Writes now
-  go to a temporary file that is renamed over the old one, and a
-  checksum covers the content.
-- The stamp used second-resolution file dates, skipped every
-  dot-prefixed name, and kept hashing past its own traversal cap. It now
-  uses nanosecond dates, skips only "." and "..", and turns the cache
-  off when a walk overruns the cap, instead of stamping a partial view.
+- The stamp covered only the font folders. The list also depends on the
+  font system's configuration, on the language setting (it picks the
+  names), and on the smoothing defaults. The stamp now includes all of
+  these.
+- The file stored the finished list, written after Wine settled clashes
+  between a computer font and a Live font, so a clash outcome could
+  outlive the font that caused it. The file now stores the raw read,
+  and each start settles the clashes again.
+- Wine noticed a damaged entry only after it had already used the
+  earlier ones. It now checks the whole file before it uses any of it,
+  and throws a bad file away whole.
+- Wine overwrote the file in place, and nothing proved the content
+  intact, so Wine could load a half-written file as if it were
+  complete. It now writes a temporary file, replaces the old one in a
+  single step, and stores a check value over the content.
+- The stamp used one-second file dates, ignored names starting with a
+  dot, and did not stop at its own size cap. It now uses exact dates,
+  counts every name, and turns the cache off when a walk reaches the
+  cap.
 
-Patch number: 0070 was taken on main while PR 139 was open (the Alt+F10
-menu patch), and numbers 0090 to 0094 are reserved for the issue 169
-pointer gesture series. The font patch is 0095 on this branch.
+The patch is 0095 on this branch: the Alt+F10 menu patch took 0070 on
+main while PR 139 was open, and numbers 0090 to 0094 stay reserved for
+the issue 169 pointer gesture work.
 
-Checks on the rebuilt patch, scratch build, fresh prefix, 9,721 host
-font folder entries: the font list after a replay is line-identical to
-the list after a full read; a flipped byte and a cut-short file were
-each rejected whole and the file rewritten; adding a font, removing a
-font, a nanosecond-only date change, a locale change and a fontconfig
-configuration change each rebuilt the list. The 1.9 s per-launch saving
-in the table above was measured with the first version. The mechanism
-that produces it, skipping the read while the stamp matches, is the
-same, so the saving carries over; the Live-level timing on the merged
-stack has not been rerun yet.
+Rechecks on the rebuilt patch, against a scratch build and a fresh
+prefix: the list after a replay is identical to the list after a full
+read; Wine threw damaged and cut-short files away whole and rewrote
+them; adding a font, removing a font, a date-only change, a language
+change and a configuration change each rebuilt the list. The table
+above shows the first version's measurement, and the mechanism is
+unchanged, so the 1.9 s saving stands. The Live-level timing on the
+merged stack still needs a rerun.
 
 ### P-M2. Reuse the wine session across launches (launcher change, no wine patch)
 

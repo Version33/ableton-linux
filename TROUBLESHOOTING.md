@@ -193,13 +193,13 @@ Close Live, then start it with the saved font list turned off:
 env WINE_DISABLE_HOST_FONT_CACHE=1 ableton-live
 ```
 
-Live keeps a saved list of the fonts on your computer, which makes Live
-start faster. The list refreshes itself when your fonts change, so a new
-font normally appears at the next launch with no action from you. The
-launch above reads your fonts directly and skips the saved list.
+Live keeps a saved list of your computer's fonts so it can start faster.
+The list refreshes itself when your fonts change, so a new font normally
+appears at the next launch on its own. The launch above skips the list
+and reads your fonts directly.
 
 If the missing font appears now, delete the saved list and start Live
-normally. Live rebuilds the list with your new font in it:
+normally. Live rebuilds the list with your new font:
 
 ```bash
 rm ~/.wine-ableton/drive_c/windows/wine-host-font.cache
