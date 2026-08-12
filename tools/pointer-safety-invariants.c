@@ -4,8 +4,9 @@
  * Deterministic source and maths checks for pointer-output safety.
  *
  * Wine is carried here as a patch stack rather than directly linkable source.
- * Read context and added hunk lines from the original patches, then treat 0092
- * as the final override. Removed lines and commit prose cannot satisfy a check.
+ * Read context and added hunk lines from the original patches. Treat 0092 as
+ * the final gesture override and inspect the later 0094 warp layer separately.
+ * Removed lines and commit prose cannot satisfy a check.
  */
 
 #include <ctype.h>
@@ -182,6 +183,16 @@ static int forbid_text_between(const char *test, const char *text, const char *b
     return 0;
 }
 
+static int require_order(const char *test, const char *text, const char *first,
+                         const char *second)
+{
+    const char *a = strstr(text, first), *b;
+
+    if (a && (b = strstr(a, second)) && b > a) return 1;
+    fail(test, !a ? first : second);
+    return 0;
+}
+
 static void check_pointer_setting_fallback(const char *stack, const char *override)
 {
     int ok = 1;
@@ -197,9 +208,9 @@ static void check_pointer_setting_fallback(const char *stack, const char *overri
              "expected one loop for named settings and one for InertiaRate");
         ok = 0;
     }
-    if (count_occurrences(stack, "pointer_option_enum(defkey,appkey,") < 5)
+    if (count_occurrences(stack, "pointer_option_enum(defkey,appkey,") < 6)
     {
-        fail("all named pointer settings use fallback", "one or more named settings bypass fallback");
+        fail("all six named pointer settings use fallback", "one or more named settings bypass fallback");
         ok = 0;
     }
     ok &= require_text("invalid named settings fall through", override,
@@ -214,6 +225,130 @@ static void check_pointer_setting_fallback(const char *stack, const char *overri
     ok &= require_text("disabled remains a valid inertia setting", stack,
                        "staticconstchar*constinertia_names[]={\"disabled\",\"auto\",\"enabled\"};");
     if (ok) pass("invalid settings cannot hide a lower-priority safety setting");
+}
+
+static void check_warp_emulation(const char *stack, const char *warp)
+{
+    int ok = 1;
+
+    ok &= require_text("warp state is process-wide and locked", warp,
+                       "staticpthread_mutex_twarp_emulation_mutex=PTHREAD_MUTEX_INITIALIZER;");
+    ok &= forbid_text("warp state does not return to the X11 thread struct", warp,
+                      "warp_have_last");
+    ok &= forbid_text("warp state has no event-count timeout", warp, "warp_idle");
+    ok &= forbid_text("warp state has no polling-rate-dependent backstop", warp, ">512");
+
+    ok &= require_text("warp emulation remains opt-in until the hardware matrix is complete", stack,
+                       ".warp_emulation=POINTER_WARP_DISABLED");
+    ok &= require_text("warp emulation has a registry setting and environment escape hatch", stack,
+                       "pointer_option_enum(defkey,appkey,\"WarpEmulation\","
+                       "\"WINE_X11_WARP_EMULATION\"");
+    ok &= require_text("warp setting exposes disabled auto and forced modes", stack,
+                       "staticconstchar*constwarp_names[]={\"disabled\",\"auto\",\"enabled\"};");
+    ok &= require_text("automatic warp handling is limited to XWayland", warp,
+                       "XQueryExtension(display,\"XWAYLAND\"");
+
+    ok &= require_order("the pre-warp server point is sampled before XWarpPointer", warp,
+                        "XQueryPointer(data->display,root_window", "XWarpPointer(data->display");
+    ok &= require_text("extended held buttons survive the core-mask reconciliation", warp,
+                       "buttons|=warp_emulation.buttons&~7u;");
+    ok &= require_text("only one ordinary held button can arm a warp", warp,
+                       "if(!(buttons&7u)||(buttons&(buttons-1)))");
+    ok &= require_text_between("every new button press resets warp evidence", warp,
+                               "staticvoidwarp_emulation_button_press(",
+                               "staticvoidwarp_emulation_button_release(",
+                               "warp_emulation.failed_votes=0;");
+    ok &= require_text_between("every button release resets warp evidence", warp,
+                               "staticvoidwarp_emulation_button_release(",
+                               "staticBOOLwarp_emulation_available(",
+                               "warp_emulation.failed_votes=0;");
+    ok &= require_text_between("wheel presses cancel probes without becoming held buttons", warp,
+                               "staticvoidwarp_emulation_button_press(",
+                               "staticvoidwarp_emulation_button_release(",
+                               "if(button_up_flags[index]){bit=1u<<index;"
+                               "warp_emulation.buttons|=bit;}");
+    ok &= require_text_between("wheel releases cannot disturb held-button ownership", warp,
+                               "staticvoidwarp_emulation_button_release(",
+                               "staticBOOLwarp_emulation_available(",
+                               "if(button_up_flags[index]){bit=1u<<index;"
+                               "warp_emulation.buttons&=~bit;}");
+    ok &= require_text("every warp keeps a fixed pre-warp baseline", warp,
+                       "warp_emulation.prewarp=prewarp;");
+    ok &= require_text("raw correlation uses accelerated XI2 values", warp,
+                       "warp_emulation_raw_motion(event->display,event->sourceid,event->time,"
+                       "x_value*x_scale,y_value*y_scale);");
+    ok &= require_text("failed-warp expectation includes the raw delta", warp,
+                       "failed.x=warp_emulation.prewarp.x+round(warp_emulation.raw_dx);");
+    ok &= require_text("server-applied expectation includes the same raw delta", warp,
+                       "applied.x=warp_emulation.target.x+round(warp_emulation.raw_dx);");
+    ok &= require_text("raw evidence is tied to one warp generation", warp,
+                       "warp_emulation.raw_generation!=warp_emulation.generation");
+    ok &= require_text("raw evidence is tied to the cooked event connection", warp,
+                       "warp_emulation.raw_display!=display||warp_emulation.raw_time!=time");
+    ok &= require_text("conflicting raw sources keep automatic mode native", warp,
+                       "elsewarp_emulation.raw_conflict=TRUE;");
+    ok &= require_text("automatic mode needs two failed correlations", warp,
+                       "#defineWARP_EMULATION_FAILURE_VOTES2");
+    ok &= require_text("successful or ambiguous evidence returns to native mapping", warp,
+                       "warp_emulation.failed_votes=0;warp_emulation.reporting=FALSE;");
+    ok &= require_text("mapped motion uses the fixed pre-warp point without losing a delta", warp,
+                       "warp_emulation.reported.x=warp_emulation.target.x+pos.x-"
+                       "warp_emulation.prewarp.x;");
+
+    ok &= require_order("synthetic warp motion is rejected before it can vote", warp,
+                        "if(is_old_motion_event(event->serial))", "warp_emulation_reconcile_motion");
+    ok &= require_order("cross-thread synthetic warp motion is rejected before reconciliation", warp,
+                        "if(warp_emulation_ignore_synthetic(pt))returnFALSE;",
+                        "warp_emulation_reconcile_motion(event->state);");
+    ok &= require_text("every cross-thread synthetic target copy is rejected", warp,
+                       "warp_emulation.synthetic_pending&&pos.x==warp_emulation.target.x&&"
+                       "pos.y==warp_emulation.target.y)ignore=TRUE;");
+    ok &= require_text("the first non-target cooked motion ends synthetic filtering", warp,
+                       "elseif(warp_emulation.synthetic_pending)"
+                       "warp_emulation.synthetic_pending=FALSE;");
+    ok &= require_order("middle navigation consumes native coordinates before warp mapping", warp,
+                        "if(middle_drag_motion(event,pt,time))returnTRUE;",
+                        "pt=map_emulated_warp_coords(event->display,pt,event->time,TRUE);");
+    ok &= require_order("release coordinates are mapped before warp state is cleared", warp,
+                        "pt=map_emulated_warp_coords(event->display,pt,event->time,FALSE);",
+                        "warp_emulation_button_release(event->button);");
+    ok &= require_order("middle release cannot leave warp emulation armed", warp,
+                        "warp_emulation_button_release(event->button);",
+                        "if(middle_drag_end(event,pt,time))");
+    ok &= require_text("extended press buttons are checked before warp bookkeeping", warp,
+                       "if(button>=NB_BUTTONS)warp_emulation_cancel();"
+                       "elsewarp_emulation_button_press(event->button);");
+    ok &= require_text("release mapping is limited to real held buttons", warp,
+                       "if(button>=NB_BUTTONS)warp_emulation_cancel();else{"
+                       "if(button_up_flags[button])"
+                       "pt=map_emulated_warp_coords(event->display,pt,event->time,FALSE);"
+                       "warp_emulation_button_release(event->button);}");
+    ok &= require_order("extended release buttons are checked before array lookup", warp,
+                        "if(button>=NB_BUTTONS)warp_emulation_cancel();else{",
+                        "if(button_up_flags[button])");
+    ok &= require_text("a keyboard-grab refusal disarms an older transform", warp,
+                       "if(keyboard_grabbed){warp_emulation_disarm();"
+                       "WARN(\"refusingtowarpto%u,%u\\n\",pos.x,pos.y);returnFALSE;}");
+    ok &= require_text("a pointer-grab refusal disarms an older transform", warp,
+                       "!=GrabSuccess){warp_emulation_disarm();"
+                       "WARN(\"refusingtowarppointerto%u,%uwithoutexclusivegrab\\n\","
+                       "pos.x,pos.y);returnFALSE;}");
+
+    ok &= require_text("clip release cancels warp state before an early return", warp,
+                       "warp_emulation_cancel();if(!clip_window)return;");
+    ok &= require_text("capture transitions cancel before the flags early return", warp,
+                       "warp_emulation_cancel();"
+                       "if(!(flags&(GUI_INMOVESIZE|GUI_INMENUMODE)))return;");
+    ok &= require_text("FocusOut cancellation runs before focus guards", warp,
+                       "if(event->detail!=NotifyPointer)warp_emulation_cancel();"
+                       "if(event->detail==NotifyPointer)");
+    ok &= require_text("device replacement cancels warp state", warp,
+                       "if(event->deviceid!=data->xinput2_pointer)returnFALSE;"
+                       "warp_emulation_cancel();update_relative_valuators");
+    ok &= require_text("thread detach cancels process warp state", warp,
+                       "if(data){warp_emulation_cancel();");
+
+    if (ok) pass("XWayland warp emulation activates only from correlated failed warps");
 }
 
 static void check_held_and_direct_input(const char *stack, const char *override)
@@ -554,6 +689,108 @@ struct safe_axis
     unsigned int travel;
 };
 
+enum reference_warp_probe
+{
+    REFERENCE_WARP_AMBIGUOUS,
+    REFERENCE_WARP_FAILED,
+    REFERENCE_WARP_APPLIED,
+};
+
+static double reference_warp_distance(double ax, double ay, double bx, double by)
+{
+    return fmax(fabs(ax - bx), fabs(ay - by));
+}
+
+static enum reference_warp_probe reference_warp_probe(
+    double pre_x, double pre_y, double target_x, double target_y,
+    double raw_x, double raw_y, double cooked_x, double cooked_y,
+    int raw_seen, unsigned int raw_time, unsigned int cooked_time)
+{
+    double span = reference_warp_distance(pre_x, pre_y, target_x, target_y);
+    double failed_x, failed_y, applied_x, applied_y;
+    double failed_error, applied_error, tolerance;
+
+    if (span < 8.0 || !raw_seen || raw_time != cooked_time) return REFERENCE_WARP_AMBIGUOUS;
+    failed_x = pre_x + round(raw_x);
+    failed_y = pre_y + round(raw_y);
+    applied_x = target_x + round(raw_x);
+    applied_y = target_y + round(raw_y);
+    failed_error = reference_warp_distance(cooked_x, cooked_y, failed_x, failed_y);
+    applied_error = reference_warp_distance(cooked_x, cooked_y, applied_x, applied_y);
+    tolerance = fmin(8.0, fmax(2.0, span / 8.0));
+    if (failed_error <= tolerance && applied_error >= failed_error + span / 2.0)
+        return REFERENCE_WARP_FAILED;
+    if (applied_error <= tolerance && failed_error >= applied_error + span / 2.0)
+        return REFERENCE_WARP_APPLIED;
+    return REFERENCE_WARP_AMBIGUOUS;
+}
+
+static int reference_ignore_synthetic(
+    double target_x, double target_y, double cooked_x, double cooked_y,
+    int *pending)
+{
+    if (!*pending) return 0;
+    if (cooked_x == target_x && cooked_y == target_y) return 1;
+    *pending = 0;
+    return 0;
+}
+
+static void check_warp_probe_math(void)
+{
+    unsigned int votes = 0;
+    enum reference_warp_probe probe;
+    int synthetic_pending = 1;
+    double mapped;
+
+    probe = reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 1, 10, 10);
+    mapped = 50 + 105 - 100;
+    if (probe != REFERENCE_WARP_FAILED || mapped != 55)
+        fail("a failed warp preserves its first physical delta",
+             "the first cooked motion was lost or classified incorrectly");
+    else
+        pass("a failed warp preserves its first physical delta");
+
+    /* At steady velocity a server-applied cooked point can equal the old
+     * pre-warp point. Coordinate proximity alone misclassifies this case;
+     * the shared raw delta identifies target + delta correctly. */
+    probe = reference_warp_probe(60, 20, 50, 20, 10, 0, 60, 20, 1, 11, 11);
+    if (probe != REFERENCE_WARP_APPLIED)
+        fail("server-handled steady motion is not double-emulated",
+             "raw/cooked correlation did not identify target plus delta");
+    else
+        pass("server-handled steady motion is not double-emulated");
+
+    if (!reference_ignore_synthetic(50, 20, 50, 20, &synthetic_pending) ||
+        !reference_ignore_synthetic(50, 20, 50, 20, &synthetic_pending) ||
+        reference_ignore_synthetic(50, 20, 51, 20, &synthetic_pending) || synthetic_pending ||
+        reference_ignore_synthetic(50, 20, 50, 20, &synthetic_pending))
+        fail("cross-thread synthetic warps are isolated", "copies survived or filtering stayed armed");
+    else
+        pass("cross-thread synthetic warps are isolated");
+
+    if (reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 0, 12, 12) !=
+            REFERENCE_WARP_AMBIGUOUS ||
+        reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 1, 12, 13) !=
+            REFERENCE_WARP_AMBIGUOUS ||
+        reference_warp_probe(55, 20, 50, 20, 5, 0, 60, 20, 1, 14, 14) !=
+            REFERENCE_WARP_AMBIGUOUS)
+        fail("incomplete warp evidence stays native", "an unavailable correlation activated emulation");
+    else
+        pass("incomplete warp evidence stays native");
+
+    probe = reference_warp_probe(100, 20, 50, 20, 5, 0, 105, 20, 1, 15, 15);
+    if (probe == REFERENCE_WARP_FAILED) votes++;
+    if (votes >= 2)
+        fail("one failed correlation cannot activate automatic emulation", "hysteresis was bypassed");
+    else
+        pass("one failed correlation cannot activate automatic emulation");
+    if (probe == REFERENCE_WARP_FAILED) votes++;
+    if (votes != 2)
+        fail("two failed correlations activate automatic emulation", "failure votes did not converge");
+    else
+        pass("two failed correlations activate automatic emulation");
+}
+
 /* Reference the safety envelope, not the production curve implementation. */
 static int safe_axis_tick(struct safe_axis *axis, unsigned int elapsed_ms, double rate)
 {
@@ -665,36 +902,43 @@ int main(int argc, char **argv)
         "patches/0091-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch",
         "patches/0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch",
         "patches/0072-winex11-registry-pointer-settings-and-middle-button-dra.patch",
-        "patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch"
+        "patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch",
+        "patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch",
+        "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch"
     };
-    struct text stack_source = {0}, override_source = {0};
-    const char *paths[5];
-    char *stack, *override;
+    struct text stack_source = {0}, override_source = {0}, warp_source = {0};
+    const char *paths[7];
+    char *stack, *override, *warp;
     int i;
 
-    if (argc != 1 && argc != 6)
+    if (argc != 1 && argc != 8)
     {
-        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092]\n", argv[0]);
+        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094]\n", argv[0]);
         return 2;
     }
-    for (i = 0; i < 5; i++) paths[i] = argc == 6 ? argv[i + 1] : defaults[i];
-    for (i = 0; i < 5; i++)
+    for (i = 0; i < 7; i++) paths[i] = argc == 8 ? argv[i + 1] : defaults[i];
+    for (i = 0; i < 7; i++)
         if (!read_patch_new_side(paths[i], &stack_source)) return 2;
     if (!read_patch_new_side(paths[4], &override_source)) return 2;
+    if (!read_patch_new_side(paths[6], &warp_source)) return 2;
 
     stack = compact(stack_source.data ? stack_source.data : "");
     override = compact(override_source.data ? override_source.data : "");
-    if (!stack || !override)
+    warp = compact(warp_source.data ? warp_source.data : "");
+    if (!stack || !override || !warp)
     {
         fprintf(stderr, "FAIL: out of memory while compacting patch sources\n");
         free(stack_source.data);
         free(override_source.data);
+        free(warp_source.data);
         free(stack);
         free(override);
+        free(warp);
         return 2;
     }
 
     check_pointer_setting_fallback(stack, override);
+    check_warp_emulation(stack, warp);
     check_held_and_direct_input(stack, override);
     check_direct_packet_bounds(stack, override);
     check_delivered_samples_and_stops(stack, override);
@@ -702,12 +946,15 @@ int main(int argc, char **argv)
     check_inertia_limits(stack, override);
     check_inertia_generation(stack, override);
     check_button_serial_and_middle_mode(override);
+    check_warp_probe_math();
     check_math_envelope();
 
     free(stack_source.data);
     free(override_source.data);
+    free(warp_source.data);
     free(stack);
     free(override);
+    free(warp);
     if (failures)
     {
         fprintf(stderr, "pointer safety checks: %u failure%s\n",

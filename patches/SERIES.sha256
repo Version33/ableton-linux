@@ -85,5 +85,7 @@ efec6729f1663efe78c7efa941b826b2a28d219bf6faa974294a3bfa854b84f5  0088-win32u-al
 5800617c7384c4a882b444efd7043ce6fa4cd18d61a870dfe34e3e64b1ecfbc0  0090-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch
 addb86dc1bfc81fe5c57a8326cc869900bb209f9c614b8603210fe9d0318c5bf  0091-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch
 f0d2d0f95df6c1af3996699bb69e3a307c4052df7448798619e3a06a48a15fb9  0092-winex11-bound-and-isolate-pointer-gesture-output.patch
+0d638ee1457a946f0c9d0b1d076238e509daa3199a277db5a22a1abc29f62187  0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch
+4f698c4a927901873b2f374cd5373bad6b51dfcfe2777a81cb360e1b13cbee15  0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch
 b2d30d77078263b8141199195ea16b0e6df7eac04b939b9e56cd53552cfb9175  pipeasio/0001-asio-keep-graph-sample-rate-instead-of-ASE_NoClock.patch
 f25d5b4c3ee71b7e9491f91c462e2b7ddaca377b8b94c7bd95df7734f0a4b563  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch

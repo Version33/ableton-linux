@@ -11,10 +11,10 @@ narrative — 5 merge conflicts, three build breaks the clean rebase didn't
 catch, a build.sh/pipefail tooling gotcha — is in
 `notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
 
-The current Wine series contains 87 files, numbered 0001 through 0092.
-Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
-are reserved by open pull requests and will enter this branch as those
-merge.
+The current Wine series contains 89 files, numbered 0001 through 0094.
+Patches 0027, 0044, and 0066 through 0068 are intentionally absent. The
+ClickSentinel work originally carried as 0066 and 0067 is semantically ported
+after the gesture stack as 0093 and 0094.
 
 ## Applying the series
 
@@ -403,4 +403,21 @@ Apply them in sequence with the rest of the series.
   Limit continued movement to 16 attempted messages across both axes, 15 units
   per message, 120 units per axis, and 1,200 units per second. Reset ending
   speed at device jumps and newer process input. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0093`: release stale local clipping state when an embedded Max/JUCE host
+  loses X focus to another client, including FocusOut paths normally ignored
+  during reparenting. This prevents the host from converting global XI2 raw
+  deltas into fabricated cursor positions in Live's shared input stream
+  (issue 122). Ported from ClickSentinel commit `ddea297054`; see
+  `notes/ABLETON-WINE-M4L-INPUT-INJECTION.md`.
+- `0094`: repair Live's relative fader and knob re-anchoring when a visible-
+  cursor XWayland warp is not reflected in the compositor pointer. The
+  built-in mode stays disabled pending hardware validation. Opt-in automatic
+  mode correlates accelerated XI2 raw deltas with cooked motion, requires two
+  observed failed warps, and remains native when XWayland handled the warp or
+  the evidence is ambiguous. State is process-wide; raw evidence is keyed to
+  one connection, source, generation, and timestamp; cross-thread synthetic
+  warp events are rejected; and focus, capture, clipping, device, thread,
+  refused warp, and button boundaries cancel it. Reworked from ClickSentinel
+  commit `d2996582b5`; see
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.

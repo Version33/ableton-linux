@@ -185,6 +185,52 @@ bash /tmp/ableton-kit/scripts/setup-prefix.sh --post-first-run
 The repair moves Max 8's incompatible preferences to a timestamped backup.
 Max creates a clean preferences file when it next starts.
 
+## A fader jumps after loading a Max for Live device
+
+Start a fresh Live session with event diagnostics, load the affected M4L
+device, and drag a track fader without focusing the device panel:
+
+```bash
+WINEDEBUG=-all,+event ableton-live
+```
+
+The fader should follow the pointer. Check `~/.log/ableton-wine/live.log` for
+this line:
+
+```text
+lost X focus to another client while clipping
+```
+
+That line confirms that Wine released stale clipping state from the embedded
+device process. Include the complete line, desktop, distribution, and Live
+version in a report. The mechanism and full test are in the
+[M4L input-injection note](notes/ABLETON-WINE-M4L-INPUT-INJECTION.md).
+
+## An XWayland fader or knob moves farther than the pointer
+
+Warp emulation defaults to `disabled` until the XWayland test matrix is
+complete. The opt-in `auto` mode repairs a relative drag only after two
+matching raw and ordinary motion reports show that XWayland did not apply
+Live's pointer warp. Compare these one-launch settings:
+
+```bash
+env WINE_X11_WARP_EMULATION=disabled ableton-live
+env WINE_X11_WARP_EMULATION=auto ableton-live
+env WINE_X11_WARP_EMULATION=enabled ableton-live
+```
+
+If `enabled` repairs the drag and `auto` does not, the desktop did not provide
+enough correlated events for automatic activation. If `disabled` repairs a
+drag that is wrong in `auto`, report that result because automatic mode should
+keep native behaviour whenever XWayland handled the warp. Include the cursor
+visibility, pointing device, desktop, Xorg or XWayland session, and Live
+version.
+
+This setting applies to Wine's X11 driver. It does not change Wine's native
+Wayland driver. See the
+[pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md) for the
+implementation rules and manual test matrix.
+
 ## Live 11: media files can crash Live
 
 Do not preview or import WMA or video files in Live 11. Wine's current

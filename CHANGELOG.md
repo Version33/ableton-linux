@@ -21,12 +21,28 @@
 - Delayed pointer messages retain their Wine window and screen point without
   moving the cursor. They do not follow later capture, create raw input, or
   merge. Wine drops them after any unexpected button transition.
-- Pointer defaults remain unchanged. `SmoothScrolling`, `PinchZoom`,
+- Added cleanup for stale cursor-clipping state in an embedded M4L process
+  (issue 122). Losing X focus to another client now releases the local grab
+  before reparenting and window-state guards can ignore the event, so the host
+  cannot turn global raw deltas into fabricated Live cursor positions. Runtime
+  confirmation on an affected machine remains open.
+- Added guarded XWayland warp emulation for Live's relative fader and knob
+  drags. Automatic mode correlates raw and ordinary motion, requires two
+  observed failed warps, and stays native when XWayland handled the warp or
+  the evidence is ambiguous. Raw samples are keyed to one connection, device,
+  generation, and timestamp; cross-thread synthetic warp events are rejected.
+  Focus, capture, clipping, device, thread, refused warp, and button changes
+  cancel the process-wide state.
+- Gesture defaults remain unchanged. `SmoothScrolling`, `PinchZoom`,
   `MiddleDrag`, `TouchpadInertia`, `InertiaCurve`, and `InertiaRate` provide
-  per-launch and registry controls. XInput2 cannot distinguish a touchpad from
-  a high-resolution or free-spinning wheel.
+  per-launch and registry controls. `WarpEmulation` defaults to `disabled`
+  pending the desktop test matrix, with opt-in `auto` and diagnostic `enabled`
+  modes. XInput2 cannot distinguish a touchpad from a high-resolution or
+  free-spinning wheel.
 - Added `make check` for deterministic source and maths checks. It does not run
-  Wine or Live. Manual acceptance tests remain in
+  Wine or Live. The checks cover warp raw/cooked classification, first-delta
+  preservation, cross-thread synthetic rejection, and double-emulation
+  prevention. Manual acceptance tests remain in
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 
 - Link setup records its version marker only when the service step

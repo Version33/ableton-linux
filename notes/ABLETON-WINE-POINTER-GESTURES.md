@@ -2,8 +2,10 @@
 
 This document describes the pointer behaviour produced by the complete Wine
 patch series. It is for reviewers and testers. Patch 0092 contains the final
-safety rules, so review the applied Wine source rather than treating the older
-pointer patches as separate implementations.
+gesture safety rules, patch 0093 repairs stale cross-process clipping state,
+and patch 0094 adds guarded XWayland warp handling. Review the applied Wine
+source rather than treating the older pointer patches as separate
+implementations.
 
 A Windows wheel notch is 120 wheel units. Fine scrolling and continued
 movement may send part of a notch. XInput2 is the X11 interface that provides
@@ -14,17 +16,25 @@ high-resolution pointer and touchpad reports.
 - fine vertical and horizontal scrolling from XInput2 scroll reports;
 - touchpad pinch reported as Ctrl+wheel;
 - middle-button drag navigation;
-- bounded movement after a fast scroll or middle-button release; and
-- screen coordinates for both vertical and horizontal wheel messages.
+- bounded movement after a fast scroll or middle-button release;
+- screen coordinates for both vertical and horizontal wheel messages;
+- cleanup of stale clipping state after an embedded M4L process loses focus;
+  and
+- guarded relative fader and knob dragging when XWayland does not apply a
+  visible-cursor pointer warp.
 
-The built-in defaults are unchanged. Fine scrolling, pinch, middle drag, and
-continued movement remain enabled.
+The gesture defaults are unchanged. Fine scrolling, pinch, middle drag, and
+continued movement remain enabled. XWayland warp handling is opt-in and
+defaults to `disabled` until the desktop and cursor-visibility matrix below is
+complete.
 
 ## Code map
 
 | File | What to review |
 | --- | --- |
-| `dlls/winex11.drv/mouse.c` | Scroll decoding, middle drag, pinch, cancellation, and continued movement. |
+| `dlls/winex11.drv/mouse.c` | Scroll decoding, middle drag, pinch, warp observation, cancellation, and continued movement. |
+| `dlls/winex11.drv/event.c` | Focus-bound clipping cleanup and gesture or warp cancellation. |
+| `dlls/winex11.drv/window.c` | Capture-bound warp cancellation. |
 | `dlls/winex11.drv/x11drv_main.c` | Pointer settings, defaults, and setting priority. |
 | `dlls/winex11.drv/x11drv.h` | Per-device and per-thread pointer state. |
 | `server/queue.c` | Stored wheel positions, held-button checks, queue limits, and final target selection. |
@@ -32,6 +42,35 @@ continued movement remain enabled.
 | `dlls/win32u/message.c` | Rechecks delayed wheel messages before the application can receive them. |
 
 Patch provenance is in [`patches/BASE.txt`](../patches/BASE.txt).
+
+## Ordinary fader and knob dragging
+
+Patch 0093 and patch 0094 repair two separate faults below the gesture layer.
+
+Patch 0093 handles embedded M4L processes. A Max/JUCE host can acquire Live's
+cursor-clipping state during embedding, lose focus without receiving the
+normal release, and then inject fabricated positions from global raw-motion
+deltas. Wine now clears local clipping state when another X client holds the
+focus. The complete diagnosis and affected-machine test are in the
+[M4L input-injection note](ABLETON-WINE-M4L-INPUT-INJECTION.md).
+
+Patch 0094 handles Live's relative XWayland drags. Live repeatedly calls
+`SetCursorPos` to re-anchor a fader or knob. XWayland can accept the X request
+without moving the compositor pointer. The next motion then continues from
+the old point and Live measures too much movement.
+
+Automatic mode compares the accelerated XInput2 raw delta with the next
+ordinary X motion report. A report based on the pre-warp point is evidence
+that the warp failed. A report based on the requested target is evidence that
+XWayland handled it. Wine requires two clear failed correlations before it
+maps motion from the requested target. Missing, out-of-order, small, or
+ambiguous evidence keeps native XWayland behaviour. This avoids applying the
+repair on top of XWayland's own hidden-cursor warp emulation.
+
+The warp state is shared by the Wine process. Button release, focus change,
+capture change, clipping release, input-device replacement, and X11 thread
+detach cancel it. Middle-drag navigation receives the original coordinates
+and clears the warp state before its release handler returns.
 
 ## The safety rule
 
@@ -134,6 +173,7 @@ submitted is still subject to the stored-position and button checks above.
 | `MiddleDrag` | `navigate` | `disabled`, `navigate`, `navigate-notched` |
 | `InertiaCurve` | `exponential` | `exponential`, `linear` |
 | `InertiaRate` | `4.0` | decimal value from 0.5 to 16.0 |
+| `WarpEmulation` | `disabled` | `disabled`, `auto`, `enabled` |
 
 `SmoothScrolling=disabled` turns off only the XInput2 fine-scroll path.
 Ordinary wheel input remains available. `TouchpadInertia` controls continued
@@ -158,10 +198,18 @@ disable.
 | `MiddleDrag` | `WINE_X11_MIDDLE_DRAG` |
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` |
 | `InertiaRate` | `WINE_X11_INERTIA_RATE` |
+| `WarpEmulation` | `WINE_X11_WARP_EMULATION` |
 
 The launcher sets none of these variables. `TouchpadInertia=auto` is disabled
 on XInput2 because that interface does not identify whether a scroll report
 came from a touchpad, a high-resolution wheel, or a free-spinning wheel.
+
+`WarpEmulation=disabled` leaves every warp native. The opt-in `auto` mode
+observes only XWayland and activates after two correlated failed warps during
+a one-button drag. `enabled` forces target-relative mapping during an eligible
+XWayland drag and is intended for diagnosis when automatic correlation is
+unavailable. The first automatic activation writes `XWayland warp emulation
+activated after observed failed warps` to a `+winediag` log.
 
 ## Automated checks
 
@@ -185,8 +233,25 @@ Mute or disconnect monitoring before touching a control that can change
 volume. Start with Live's Master fader low. Restore normal monitoring only
 after the tests pass.
 
+Complete the relative-drag coverage below with the default
+`WarpEmulation=disabled`, then compare `auto` and `enabled` in every XWayland
+cell.
+
+| Display path | Cursor visible | Cursor hidden by Live |
+| --- | --- | --- |
+| KDE/XWayland | Required | Required |
+| GNOME/XWayland | Required | Required |
+| Xorg | Required; native behaviour must remain unchanged | Required; native behaviour must remain unchanged |
+
 - Drag a fader or knob normally. Its value must follow the pointer without a
   jump.
+- On each XWayland desktop, repeat the fader and knob drag with a visible
+  cursor and with every Live control mode that hides it. Compare `auto`,
+  `disabled`, and `enabled`. A server-handled hidden-cursor warp must not move
+  twice, and an emulated visible-cursor warp must not lose its first delta.
+- Load an affected M4L device without focusing its panel, then drag a Live
+  fader. The value must follow the pointer. Record whether the log contains
+  `lost X focus to another client while clipping`.
 - Hold a clickpad press on a fader and move another finger. Pointer movement
   may continue, but the control must receive no scroll change during the drag
   or after release.
@@ -217,6 +282,16 @@ and pass or failure for each case.
 - XInput2 cannot distinguish touchpads from high-resolution or free-spinning
   wheels. With `TouchpadInertia=enabled`, all three can continue after a fast
   end signal.
+- KDE/XWayland may omit the repeated cumulative scroll value that marks the
+  end of a smooth scroll. Direct fine scrolling still works, but continued
+  movement does not start. The clipping and warp repairs do not change this
+  condition.
+- Automatic warp handling requires a raw and cooked XInput2 frame from the
+  same Wine X connection, device source, warp generation, and timestamp.
+  Conflicting, delayed, small, or otherwise ambiguous evidence keeps native
+  coordinates. Use `WarpEmulation=enabled` only as a one-launch diagnostic.
+- These changes apply to Wine's X11 driver. Wine's native Wayland driver does
+  not use this code.
 - Raw movement smaller than one screen pixel can round to zero before Wine
   sees cursor motion. Such movement may not cancel an active continuation.
   Button transitions still invalidate delayed wheel messages.

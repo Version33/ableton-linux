@@ -169,6 +169,11 @@ compatibility defaults.
 - `WINE_X11_INERTIA_CURVE=exponential|linear` and
   `WINE_X11_INERTIA_RATE=<0.5..16.0>` override the inertia decay for one
   launch (registry values `InertiaCurve` and `InertiaRate`).
+- `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls relative fader and
+  knob re-anchoring under XWayland (registry value `WarpEmulation`). It
+  defaults to `disabled` pending the desktop test matrix. Opt-in `auto`
+  activates only after two raw/cooked event correlations show that XWayland
+  did not apply the warp; `enabled` is a diagnostic override.
 
 The registry names, defaults, safety limits, and manual acceptance tests are in
 [the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).

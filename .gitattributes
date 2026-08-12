@@ -4,3 +4,5 @@ patches/0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch whi
 patches/0090-winex11-preserve-precision-scrolling-from-XInput2-scroll-.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0091-winex11-coast-scrolling-and-thrown-middle-drags-after-rel.patch whitespace=-blank-at-eof,-blank-at-eol
 patches/0092-winex11-bound-and-isolate-pointer-gesture-output.patch whitespace=-blank-at-eof,-blank-at-eol
+patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch whitespace=-blank-at-eof,-blank-at-eol
+patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch whitespace=-blank-at-eof,-blank-at-eol
