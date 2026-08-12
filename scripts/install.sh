@@ -1,441 +1,532 @@
 #!/usr/bin/env bash
-# End-user step 1: install the Wine runtime, launcher, and desktop entries (reverse with uninstall.sh).
-# Does not touch the Wine prefix: that is setup-prefix.sh.
+# Install independently selectable runtime, desktop-integration, and Link-asset
+# components.  Prefix creation is deliberately separate (setup-prefix.sh).
 set -euo pipefail
-# readelf and sha256sum output is parsed below; localised output breaks the
-# checks (issue #36). C.UTF-8, never plain C: wine cannot create non-ASCII
-# filenames under a non-UTF-8 locale (issues #51, #55).
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+. "$here/lib/config.sh"
+. "$here/lib/lifecycle.sh"
+. "$here/lib/manifest.sh"
 
-OPT="$HOME/.local/opt"
-BIN="$HOME/.local/bin"
-APPS="$HOME/.local/share/applications"
-NAME="wine-d2d1-nspa-11.13"
+want_runtime=0
+want_integration=0
+want_link=0
+validate_only=0
+dry_run=0
+assume_yes=0
+transaction_arg=""
+operation=install
+
+if [ $# -eq 0 ]; then
+    want_runtime=1; want_integration=1; want_link=1
+fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --all) want_runtime=1; want_integration=1; want_link=1 ;;
+        --runtime-only|--runtime) want_runtime=1 ;;
+        --integration-only|--integration) want_integration=1 ;;
+        --link-assets-only|--link-assets) want_link=1 ;;
+        --validate) validate_only=1 ;;
+        --dry-run) dry_run=1 ;;
+        --yes) assume_yes=1 ;;
+        --transaction-dir)
+            [ $# -ge 2 ] || { echo "!! --transaction-dir needs a directory" >&2; exit 2; }
+            transaction_arg="$2"; shift ;;
+        --rollback)
+            [ $# -ge 2 ] || { echo "!! --rollback needs a transaction directory" >&2; exit 2; }
+            operation=rollback; transaction_arg="$2"; shift ;;
+        --commit)
+            [ $# -ge 2 ] || { echo "!! --commit needs a transaction directory" >&2; exit 2; }
+            operation=commit; transaction_arg="$2"; shift ;;
+        *) echo "!! unknown install.sh option: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+ableton_config_init
+export WINEPREFIX="$ABLETON_WINEPREFIX"
+data="$ABLETON_DATA_HOME"
+bin="$ABLETON_BIN_HOME"
+apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+mime_root="${XDG_DATA_HOME:-$HOME/.local/share}/mime"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-stage=""
-backup=""
-launcher_backup=""
-promoted=0
 
-cleanup()
+rollback_runtime()
 {
-    rc=$?
-    trap - EXIT
-    if [ "$rc" -ne 0 ]; then
-        failed="$OPT/${NAME}.failed-$stamp"
-        if [ "$promoted" -eq 1 ] && [ -e "$OPT/$NAME" ]; then
-            mv "$OPT/$NAME" "$failed" || true
+    local txn="$1" target backup safe
+    [ -r "$txn/runtime.tsv" ] || return 0
+    IFS=$'\t' read -r target backup < "$txn/runtime.tsv"
+    [ -n "$target" ] || return 0
+    safe="$(ableton_path_is_safe_delete_target "$target")" || {
+        echo "!! refusing unsafe runtime rollback target: $target" >&2; return 1; }
+    if [ -e "$safe" ]; then
+        [ ! -L "$safe" ] || { echo "!! refusing symlink runtime rollback target: $safe" >&2; return 1; }
+        if [ ! -f "$safe/.ableton-linux-runtime" ]; then
+            echo "!! refusing to remove unmarked runtime during rollback: $safe" >&2
+            return 1
         fi
-        if [ -n "$backup" ] && [ -e "$backup" ] && [ ! -e "$OPT/$NAME" ]; then
-            mv "$backup" "$OPT/$NAME" || true
-        elif [ -n "$backup" ] && [ -e "$backup" ]; then
-            echo "!! $OPT/$NAME still present; backup left at $backup" >&2
-        fi
-        if [ -n "$launcher_backup" ] && [ -e "$launcher_backup" ]; then
-            cp -a "$launcher_backup" "$BIN/ableton-live" || true
-        fi
-        if [ "$promoted" -eq 1 ] || [ -n "$backup" ] || [ -n "$launcher_backup" ]; then
-            echo "!! install failed; previous runtime restored" >&2
-        else
-            echo "!! install aborted; nothing was changed" >&2
+        rm -rf -- "$safe"
+    fi
+    if [ "$backup" != absent ] && [ -e "$backup" ]; then
+        mv -- "$backup" "$safe"
+    fi
+    rm -f -- "$txn/runtime.tsv"
+}
+
+rollback_transaction()
+{
+    local txn="$1"
+    rollback_runtime "$txn"
+    ableton_txn_rollback_files "$txn"
+    update-mime-database "$mime_root" >/dev/null 2>&1 || true
+    update-desktop-database "$apps" >/dev/null 2>&1 || true
+    gtk-update-icon-cache -q "$icons" >/dev/null 2>&1 || true
+    rm -f -- "$txn/active"
+}
+
+commit_transaction()
+{
+    local txn="$1" target backup rollback
+    if [ -r "$txn/runtime.tsv" ]; then
+        IFS=$'\t' read -r target backup < "$txn/runtime.tsv"
+        if [ "$backup" != absent ] && [ -e "$backup" ]; then
+            rollback="$target-rollback-$stamp"
+            [ ! -e "$rollback" ] || rollback="$rollback-$$"
+            mv -- "$backup" "$rollback"
+            printf '%s\n' "$rollback" > "$txn/runtime-rollback-path"
         fi
     fi
-    [ -z "$stage" ] || rm -rf "$stage"
+    rm -f -- "$txn/active"
+}
+
+case "$operation" in
+    rollback) rollback_transaction "$transaction_arg"; exit ;;
+    commit) commit_transaction "$transaction_arg"; exit ;;
+esac
+
+[ "$want_runtime$want_integration$want_link" != 000 ] || {
+    echo "!! select at least one component" >&2; exit 2; }
+
+own_transaction=0
+if [ -n "$transaction_arg" ]; then
+    ABLETON_TRANSACTION_DIR="$transaction_arg"
+elif [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
+    ABLETON_TRANSACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ableton-install-plan.XXXXXX")"
+    own_transaction=1
+else
+    ableton_mark_state_home
+    mkdir -p -- "$ABLETON_STATE_HOME/transactions"
+    ABLETON_TRANSACTION_DIR="$(mktemp -d "$ABLETON_STATE_HOME/transactions/install.XXXXXX")"
+    own_transaction=1
+fi
+export ABLETON_TRANSACTION_DIR
+ableton_txn_init
+stage=""
+cleanup()
+{
+    local rc=$?
+    trap - EXIT
+    [ -z "$stage" ] || rm -rf -- "$stage"
+    if [ "$rc" -ne 0 ] && [ -e "$ABLETON_TRANSACTION_DIR/active" ]; then
+        echo "!! component installation failed; rolling its recorded mutations back" >&2
+        rollback_transaction "$ABLETON_TRANSACTION_DIR" || true
+        if [ "$own_transaction" -eq 1 ]; then
+            printf 'component=install.sh\nexit=%s\n' "$rc" > "$ABLETON_TRANSACTION_DIR/FAILURE"
+            echo "!! rollback complete; failure record: $ABLETON_TRANSACTION_DIR/FAILURE" >&2
+        fi
+    fi
+    if [ "$own_transaction" -eq 1 ] && [ "$rc" -eq 0 ]; then
+        commit_transaction "$ABLETON_TRANSACTION_DIR"
+        rm -rf -- "$ABLETON_TRANSACTION_DIR"
+    fi
     exit "$rc"
 }
 trap cleanup EXIT
-# Without these, a signal reaches the EXIT trap with $? still 0 and the
-# rollback above is skipped: an interrupt between the two promotion mv's
-# would leave no runtime installed and say nothing. The confirmation
-# prompt is a 60 second window inviting exactly that Ctrl-C.
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# tarball: prefer dist/ (freshly built), else a release tarball dropped in root
-tarball="$(ls "$root"/dist/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
-[ -z "$tarball" ] && tarball="$(ls "$root"/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
-[ -n "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst found: run ./build.sh first, or drop a release tarball in $root/dist/"; exit 1; }
+tarball=""
+candidate=""
+linkd_source=""
+unit_source=""
 
-echo "== verify checksum =="
-if [ -f "$tarball.sha256" ]; then
-    ( cd "$(dirname "$tarball")" && sha256sum -c "$(basename "$tarball").sha256" )
-else
-    echo "   (no .sha256 next to tarball: skipping)"
+validate_runtime_payload()
+{
+    # Developer -debug trees lack wineboot/winepath/wine.inf and must never win
+    # the newest-version selection over a release tree.
+    tarball="$(find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
+        ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -n 1 || true)"
+    [ -n "$tarball" ] || { echo "!! no $ABLETON_RUNTIME_NAME-*.tar.zst payload found" >&2; return 1; }
+    echo "== validate runtime payload: $(basename "$tarball") =="
+    if [ -f "$tarball.sha256" ]; then
+        ( cd "$(dirname "$tarball")" && sha256sum -c "$(basename "$tarball").sha256" )
+    fi
+    local parent
+    parent="$(dirname "$ABLETON_WINE_ROOT")"
+    if [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
+        stage="$(mktemp -d "${TMPDIR:-/tmp}/ableton-runtime-validate.XXXXXX")"
+    else
+        mkdir -p -- "$parent"
+        stage="$(mktemp -d "$parent/.ableton-runtime-stage.XXXXXX")"
+    fi
+    local extract_timeout
+    extract_timeout="$(ableton_timeout_value "${ABLETON_RUNTIME_EXTRACT_TIMEOUT:-1800}" ABLETON_RUNTIME_EXTRACT_TIMEOUT 60 7200)"
+    echo "   extracting and checking the staged runtime (bounded to ${extract_timeout}s)"
+    if tar --help 2>&1 | grep -q -- '--checkpoint'; then
+        ableton_run_bounded "$extract_timeout" tar --checkpoint=500 --checkpoint-action=dot \
+            -C "$stage" -I zstd -xf "$tarball"
+        printf '\n' >&2
+    else
+        ableton_run_bounded "$extract_timeout" tar -C "$stage" -I zstd -xf "$tarball"
+    fi
+    candidate="$stage/$ABLETON_RUNTIME_NAME"
+    # setup-prefix.sh and ableton-live call wineboot, winepath, and wine.inf
+    # by absolute path.  A tree without them passes installation and then
+    # cannot boot a prefix.  wineboot and winepath are symlinks to wine,
+    # which -s follows.
+    local required
+    for required in \
+        bin/wine bin/wineserver bin/wineboot bin/winepath \
+        share/wine/wine.inf \
+        lib/wine/x86_64-windows/libusb-1.0.dll \
+        lib/wine/x86_64-unix/libusb-1.0.so \
+        lib/wine/x86_64-unix/comdlg32.so \
+        lib/wine/x86_64-unix/winealsa.so \
+        lib/wine/x86_64-unix/winegstreamer.so \
+        lib/wine/x86_64-windows/pipeasio64.dll \
+        lib/wine/x86_64-windows/pipeasio.dll \
+        lib/wine/x86_64-unix/pipeasio64.dll.so \
+        lib/wine/x86_64-unix/pipeasio.dll.so; do
+        [ -s "$candidate/$required" ] || { echo "!! runtime payload is missing $required" >&2; return 1; }
+    done
+    [ ! -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || {
+        echo "!! runtime unexpectedly contains a 32-bit Push bridge" >&2; return 1; }
+    if command -v readelf >/dev/null 2>&1 && command -v strings >/dev/null 2>&1; then
+        readelf -d "$candidate/lib/wine/x86_64-unix/libusb-1.0.so" | grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null
+        strings "$candidate/lib/wine/x86_64-unix/comdlg32.so" | grep -F 'org.freedesktop.portal.FileChooser' >/dev/null
+        readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
+        readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
+    fi
+    ableton_run_bounded 30 "$candidate/bin/wine" --version
+}
+
+validate_integration_sources()
+{
+    local required
+    for required in ableton-live max9 detect-scale.sh detect-theme.sh shortcut-hold.sh; do
+        [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
+    done
+    for required in config.sh lifecycle.sh manifest.sh; do
+        [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
+    done
+    [ -f "$root/desktop/ableton-live.desktop.in" ] || { echo "!! installer kit is missing desktop integration" >&2; return 1; }
+}
+
+validate_link_sources()
+{
+    local file needed
+    for file in "$here/../bin/ableton-linkd" "$root/dist/ableton-linkd"; do
+        [ -f "$file" ] && { linkd_source="$file"; break; }
+    done
+    [ -n "$linkd_source" ] || { echo "!! installer kit is missing bin/ableton-linkd" >&2; return 1; }
+    unit_source="$here/ableton-linkd.service"
+    [ -f "$unit_source" ] || unit_source="$root/scripts/ableton-linkd.service"
+    [ -f "$unit_source" ] || { echo "!! installer kit is missing ableton-linkd.service" >&2; return 1; }
+    [ -f "$here/ableton-linkctl" ] || { echo "!! installer kit is missing ableton-linkctl" >&2; return 1; }
+    if command -v readelf >/dev/null 2>&1; then
+        needed="$(readelf -d "$linkd_source" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
+        for file in $needed; do
+            case "$file" in linux-vdso.so*|libm.so*|libc.so*|libpthread.so*|libatomic.so*|ld-linux*.so*) ;;
+                *) echo "!! ableton-linkd links unexpected library $file" >&2; return 1 ;;
+            esac
+        done
+    fi
+    ableton_run_bounded 10 "$linkd_source" --help >/dev/null
+}
+
+[ "$want_runtime" -eq 0 ] || validate_runtime_payload
+[ "$want_integration" -eq 0 ] || validate_integration_sources
+[ "$want_link" -eq 0 ] || validate_link_sources
+
+if [ "$validate_only" -eq 1 ]; then
+    echo "OK: selected component payloads are valid"
+    rm -f -- "$ABLETON_TRANSACTION_DIR/active"
+    exit 0
 fi
 
-# Anything still running from the installed runtime holds the old files
-# open. Stop it all instead of refusing: ask the prefix's wineserver to
-# take the whole session down (Live and its helpers are its clients), and
-# signal the processes directly only when that is unavailable or leaves
-# something behind. ableton-linkd is not part of the runtime and is
-# handled at its own install step below.
-
-# Every process running from the installed runtime. Wine's in-prefix
-# helpers show a Windows path in argv (C:\windows\system32\...), so no
-# command-line pattern reaches them, and a pattern also catches unrelated
-# processes that merely mention the path. /proc/PID/exe is the binary
-# itself: bin/wineserver, or the wine-preloader every in-prefix process
-# runs from.
-runtime_pids()
-{
-    local d
-    for d in /proc/[0-9]*; do
-        case "$(readlink "$d/exe" 2>/dev/null)" in
-            "$OPT/$NAME"/*) printf '%s\n' "${d#/proc/}" ;;
-        esac
-    done
-}
-# Live's exe resolves to the same wine-preloader, so runtime_pids covers
-# it; the name match stays as a second opinion, since detection failing
-# open here means installing over a running runtime.
-ableton_up()
-{
-    [ -n "$(runtime_pids)" ] || \
-        pgrep -f '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' >/dev/null 2>&1
-}
-# Live itself, as opposed to the support processes: the prompt below is
-# about unsaved work and only Live has any. Scoped to this runtime, so a
-# Live under an unrelated Wine install is neither prompted for nor killed.
-live_up=0
-for p in $(runtime_pids); do
-    case "$(tr -s '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)" in
-        *"Ableton Live"*.exe*) live_up=1; break ;;
-    esac
-done
-if ableton_up; then
-    echo "== stop processes using the installed runtime =="
-    echo "   $(runtime_pids | wc -l) found"
-    # Closing Live discards unsaved work, so require an explicit yes.
-    # -r and -w cannot ask that: they stat a 0666 device node and pass
-    # even with no controlling terminal, and the printf would then fail
-    # ENXIO and abort the install under set -e. Opening it is the only
-    # honest test. Anything but y - a timeout, an EOF, a bare Enter, a
-    # missing terminal - means nobody consented, so refuse. Leftover
-    # wineserver and winedevice.exe without Live have nothing to save and
-    # never reach this.
-    if [ "$live_up" -eq 1 ]; then
-        if { : >/dev/tty; } 2>/dev/null; then
-            echo "!! Live is running. Updating will force-close it. Save your work before continuing." >&2
-            printf "Force-close Live? [y/N] " > /dev/tty
-            ans=""
-            read -r -t 60 ans < /dev/tty || printf '\n' > /dev/tty 2>/dev/null || true
-            case "$ans" in
-                y|Y|yes|Yes|YES) ;;
-                *) exit 1 ;;
-            esac
-        else
-            echo "!! Live is running; no terminal to confirm on. Close Live, or rerun from a terminal." >&2
-            exit 1
+if [ "$dry_run" -eq 1 ]; then
+    echo "PLAN: resolved configuration"
+    [ "$want_runtime" -eq 0 ] || {
+        printf '  replace runtime tree atomically: %s\n' "$ABLETON_WINE_ROOT"
+        printf '  write runtime ownership marker: %s/.ableton-linux-runtime\n' "$ABLETON_WINE_ROOT"
+    }
+    if [ "$want_integration" -eq 1 ]; then
+        printf '  write launcher: %s/ableton-live\n' "$bin"
+        printf '  write launcher support: %s/{lib/config.sh,lib/lifecycle.sh,lib/manifest.sh,detect-scale.sh,detect-theme.sh,shortcut-hold.sh}\n' "$data"
+        printf '  write helper assets when packaged: %s/{setsyscolors.exe,learnheal.exe}\n' "$data"
+        printf '  write desktop entries: %s/{ableton-live,wine-protocol-ableton,wine-extension-auz}.desktop\n' "$apps"
+        printf '  write staged protocol entries: %s/{wine-protocol-ableton,wine-extension-auz}.desktop\n' "$data"
+        printf '  write icon files below: %s/{scalable,symbolic}\n' "$icons"
+        printf '  write MIME packages below: %s/packages\n' "$mime_root"
+        printf '  record/modify MIME defaults: %s/mime-prestate.tsv and %s\n' \
+            "$ABLETON_STATE_HOME" "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+        if [ -f "$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe" ]; then
+            printf '  write Max launcher and desktop/protocol entries: %s/max9, %s/{max9,wine-protocol-c74max}.desktop\n' "$bin" "$apps"
         fi
     fi
-    if [ -x "$OPT/$NAME/bin/wineserver" ]; then
-        WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}" \
-            "$OPT/$NAME/bin/wineserver" -k 2>/dev/null || true
-        for _ in $(seq 1 20); do
-            ableton_up || break
-            sleep 0.5
-        done
+    if [ "$want_link" -eq 1 ]; then
+        printf '  write Link binary: %s\n' "$ABLETON_LINKD"
+        printf '  write Link controller/setup/unit assets: %s/{ableton-linkctl,setup-link.sh,ableton-linkd.service}\n' "$data"
+        printf '  write Link support libraries: %s/lib/{config.sh,lifecycle.sh}\n' "$data"
     fi
-    if ableton_up; then
-        runtime_pids | xargs -r kill 2>/dev/null || true
-        pkill -f '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' 2>/dev/null || true
-        for _ in $(seq 1 10); do
-            ableton_up || break
-            sleep 0.5
-        done
-        runtime_pids | xargs -r kill -9 2>/dev/null || true
-        pkill -9 -f '[A]bleton Live.*\.exe|[P]ush2DisplayProcess.exe' 2>/dev/null || true
+    if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
+        printf '  write component version: %s/VERSION\n' "$data"
+        printf '  update ownership manifest: %s/install-manifest.tsv\n' "$ABLETON_STATE_HOME"
     fi
+    rm -f -- "$ABLETON_TRANSACTION_DIR/active"
+    exit 0
 fi
 
-echo "== stage and validate patched Wine =="
-mkdir -p "$OPT"
-stage="$(mktemp -d "$OPT/.${NAME}.install.XXXXXX")"
-tar -C "$stage" -I zstd -xf "$tarball"
-candidate="$stage/$NAME"
-for required in \
-    bin/wine bin/wineserver \
-    lib/wine/x86_64-windows/libusb-1.0.dll \
-    lib/wine/x86_64-unix/libusb-1.0.so \
-    lib/wine/x86_64-unix/comdlg32.so \
-    lib/wine/x86_64-unix/winealsa.so \
-    lib/wine/x86_64-unix/winegstreamer.so \
-    lib/wine/x86_64-windows/pipeasio64.dll \
-    lib/wine/x86_64-windows/pipeasio.dll \
-    lib/wine/x86_64-unix/pipeasio64.dll.so \
-    lib/wine/x86_64-unix/pipeasio.dll.so; do
-    [ -s "$candidate/$required" ] || { echo "!! package is missing $required" >&2; exit 1; }
-done
-# ableton-linkd (persistent native Ableton Link peer) is not part of the runtime
-# tree. The kit carries it in bin/, and a repository checkout reads it from
-# dist/. Its user unit ships next to the install scripts.
-linkd=""
-for f in "$here/../bin/ableton-linkd" "$root/dist/ableton-linkd"; do
-    if [ -f "$f" ]; then linkd="$f"; break; fi
-done
-[ -n "$linkd" ] || { echo "!! package is missing bin/ableton-linkd" >&2; exit 1; }
-linkd_unit=""
-for f in "$here/ableton-linkd.service" "$root/scripts/ableton-linkd.service"; do
-    if [ -f "$f" ]; then linkd_unit="$f"; break; fi
-done
-[ -n "$linkd_unit" ] || { echo "!! package is missing scripts/ableton-linkd.service" >&2; exit 1; }
-if [ -e "$candidate/lib/wine/i386-windows/libusb-1.0.dll" ] || \
-   [ -e "$candidate/lib/wine/i386-unix/libusb-1.0.so" ]; then
-    echo "!! package unexpectedly contains a 32-bit Push 2 bridge" >&2
-    exit 1
-fi
-if command -v readelf >/dev/null && command -v strings >/dev/null; then
-    readelf -d "$candidate/lib/wine/x86_64-unix/libusb-1.0.so" | \
-        grep -F 'Shared library: [libusb-1.0.so.0]' >/dev/null || {
-            echo "!! Push 2 bridge is not linked to host libusb-1.0.so.0" >&2
-            exit 1
-        }
-    strings "$candidate/lib/wine/x86_64-unix/comdlg32.so" | \
-        grep -F 'org.freedesktop.portal.FileChooser' >/dev/null || {
-            echo "!! package comdlg32 lacks the XDG portal backend" >&2
-            exit 1
-        }
-    readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | \
-        grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null || {
-            echo "!! PipeASIO is not linked to host libpipewire-0.3.so.0" >&2
-            exit 1
-        }
-    readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | \
-        grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null || {
-            echo "!! winegstreamer is not linked to host libgstreamer-1.0.so.0" >&2
-            exit 1
-        }
-    # ableton-linkd must resolve against host C-runtime sonames only.
-    # -static-libstdc++ and -static-libgcc keep libstdc++ and libgcc_s out of
-    # DT_NEEDED. Any other dependency means the required static-link flags
-    # were omitted.
-    linkd_needed="$(readelf -d "$linkd" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')"
-    for so in $linkd_needed; do
-        case "$so" in
-            linux-vdso.so*|libm.so*|libc.so*|libpthread.so*|libatomic.so*|ld-linux*.so*) ;;
-            *) echo "!! ableton-linkd links an unexpected library: $so" >&2
-               exit 1 ;;
-        esac
+runtime_pids_all()
+{
+    local proc pid
+    for proc in /proc/[0-9]*; do
+        pid="${proc#/proc/}"
+        ableton_pid_uses_runtime "$pid" && printf '%s\n' "$pid"
     done
-    if printf '%s\n' "$linkd_needed" | grep -q libstdc++; then
-        echo "!! ableton-linkd links a shared libstdc++ (needs -static-libstdc++)" >&2
-        exit 1
+    return 0
+}
+
+stop_runtime_clients()
+{
+    local all scoped foreign pid answer=""
+    all="$(runtime_pids_all)"
+    [ -n "$all" ] || return 0
+    scoped="$(ableton_prefix_pids)"
+    foreign=""
+    for pid in $all; do
+        case " $scoped " in *" $pid "*) ;; *) foreign="$foreign $pid" ;; esac
+    done
+    if [ -n "$foreign" ]; then
+        echo "!! runtime is used by another Wine prefix (PIDs:$foreign); close it before updating" >&2
+        return 1
     fi
-else
-    # binutils absent (e.g. stock SteamOS); the checksum above already covers content integrity.
-    echo "   (binutils not found: skipping deep binary checks)"
-fi
-
-echo "== promote runtime with dated rollback =="
-if [ -e "$OPT/$NAME" ]; then
-    backup="$OPT/${NAME}-rollback-$stamp"
-    [ ! -e "$backup" ] || { echo "!! rollback path already exists: $backup" >&2; exit 1; }
-    mv "$OPT/$NAME" "$backup"
-fi
-mv "$candidate" "$OPT/$NAME"
-promoted=1
-"$OPT/$NAME/bin/wine" --version
-
-echo "== install launcher -> $BIN/ableton-live =="
-mkdir -p "$BIN"
-if [ -e "$BIN/ableton-live" ]; then
-    launcher_backup="$BIN/ableton-live.rollback-$stamp"
-    cp -a "$BIN/ableton-live" "$launcher_backup"
-fi
-install -m755 "$here/ableton-live" "$BIN/ableton-live"
-
-echo "== install detection libs -> ~/.local/share/ableton-wine =="
-# The launcher sources these on every start (DPI auto-calibration, light/dark
-# theme sync, and crash-safe GNOME shortcut holding).
-mkdir -p "$HOME/.local/share/ableton-wine"
-install -m644 "$here/detect-scale.sh" "$HOME/.local/share/ableton-wine/detect-scale.sh"
-install -m644 "$here/detect-theme.sh" "$HOME/.local/share/ableton-wine/detect-theme.sh"
-install -m644 "$here/shortcut-hold.sh" "$HOME/.local/share/ableton-wine/shortcut-hold.sh"
-# setsyscolors.exe repaints the top bar mid-session when the Live theme changes;
-# without it the colors still apply on the next launch. Kit stages it next to
-# these scripts; a repo checkout carries it in tools/.
-for f in "$here/setsyscolors.exe" "$root/tools/setsyscolors.exe"; do
-    if [ -f "$f" ]; then
-        install -m644 "$f" "$HOME/.local/share/ableton-wine/setsyscolors.exe"
-        break
+    echo "!! the selected prefix has running Wine clients: $(tr ' ' '\n' <<< "$scoped" | sed '/^$/d' | paste -sd, -)" >&2
+    if [ "$assume_yes" -ne 1 ]; then
+        if [ -t 0 ]; then
+            printf 'Stop every client in this prefix (including Live or Max)? [y/N] ' >&2
+            read -r -t 60 answer || answer=""
+            case "$answer" in y|Y|yes|YES|Yes) ;; *) return 1 ;; esac
+        else
+            echo "!! refusing without --yes in a noninteractive session" >&2
+            return 1
+        fi
     fi
-done
-# learnheal.exe auto-heals the Learn View / doc sidebar fossil-on-open
-# (notes/ABLETON-WINE-LEARNVIEW-FLICKER.md); without it the pane needs a
-# manual splitter nudge once per session.
-for f in "$here/learnheal.exe" "$root/tools/learnheal.exe"; do
-    if [ -f "$f" ]; then
-        install -m644 "$f" "$HOME/.local/share/ableton-wine/learnheal.exe"
-        break
+    ableton_stop_prefix || { echo "!! could not stop all scoped Wine clients" >&2; return 1; }
+}
+
+promote_runtime()
+{
+    local target="$ABLETON_WINE_ROOT" parent backup safe
+    stop_runtime_clients
+    parent="$(dirname "$target")"
+    mkdir -p -- "$parent"
+    safe="$(ableton_path_is_safe_delete_target "$target")" || { echo "!! unsafe runtime target: $target" >&2; return 1; }
+    backup=absent
+    if [ -e "$safe" ]; then
+        [ ! -L "$safe" ] || { echo "!! refusing to replace symlink runtime $safe" >&2; return 1; }
+        if [ ! -f "$safe/.ableton-linux-runtime" ] \
+           && [ "$safe" != "$(ableton_realpath_m "$HOME/.local/opt/$ABLETON_RUNTIME_NAME")" ]; then
+            echo "!! refusing to replace an unrecognised runtime directory: $safe" >&2
+            return 1
+        fi
+        backup="$safe.transaction-${ABLETON_TRANSACTION_DIR##*/}"
+        [ ! -e "$backup" ] || { echo "!! transaction backup already exists: $backup" >&2; return 1; }
+        mv -- "$safe" "$backup"
     fi
-done
-# ableton-linkd anchors the Ableton Link session natively so tempo and
-# timeline survive a Live restart (notes/ABLETON-WINE-LINK-FIRSTCLASS.md).
-# The launcher auto-starts it. The .run wrapper calls setup-link.sh once after
-# this install; repository installs may call the staged script directly.
-# Stop a running daemon before replacing the binary, else the old process
-# keeps running from the deleted inode and the update takes effect only
-# after a reboot. SIGTERM is a clean exit for it, so Restart=on-failure
-# does not undo the stop.
-linkd_active=0
-if systemctl --user is-active --quiet ableton-linkd.service 2>/dev/null; then
-    linkd_active=1
-    systemctl --user stop ableton-linkd.service 2>/dev/null || true
-fi
-pkill -x ableton-linkd 2>/dev/null || true   # launcher-started instance, no unit
-install -m755 "$linkd" "$HOME/.local/share/ableton-wine/ableton-linkd"
-install -m644 "$linkd_unit" "$HOME/.local/share/ableton-wine/ableton-linkd.service"
-if [ "$linkd_active" -eq 1 ]; then
-    systemctl --user start ableton-linkd.service 2>/dev/null || true
-fi
-# Keep the setup command installed for retries after a firewall or
-# hook-removal failure.
-install -m755 "$here/setup-link.sh" "$HOME/.local/share/ableton-wine/setup-link.sh"
+    printf '%s\t%s\n' "$safe" "$backup" > "$ABLETON_TRANSACTION_DIR/runtime.tsv"
+    mv -- "$candidate" "$safe"
+    printf 'format=1\nname=%s\n' "$ABLETON_RUNTIME_NAME" > "$safe/.ableton-linux-runtime"
+    ABLETON_RUNTIME_INSTALLED=1
+    export ABLETON_RUNTIME_INSTALLED
+    "$safe/bin/wine" --version
+}
 
-# Record the kit version so a later installer can tell what it is updating
-# (the kit and the repo both carry VERSION at the root).
-printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" \
-    > "$HOME/.local/share/ableton-wine/VERSION"
+sed_escape()
+{
+    printf '%s' "$1" | sed 's/[\\&#]/\\&/g'
+}
 
-echo "== install desktop entries -> $APPS =="
-mkdir -p "$APPS"
-# Detect the installed Live edition for the menu entry (issue #39): the
-# newest Program exe under the prefix wins, matching the launcher's
-# discovery. Without an install yet, generic values apply; the launcher
-# completes the entry on the first start after Live is installed.
-live_name="Ableton Live"
-live_icon="live-suite"
-live_wmclass=""
-live_prefix="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
-newest=""
-for exe in "$live_prefix"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
-    [ -e "$exe" ] || continue
-    if [ -z "$newest" ] || [ "$exe" -nt "$newest" ]; then newest="$exe"; fi
-done
-if [ -n "$newest" ]; then
-    live_name="$(basename "$newest" .exe)"
-    live_wmclass="$(basename "$newest" | tr '[:upper:]' '[:lower:]')"
-    edition="$(printf '%s' "$live_name" | awk '{print tolower($NF)}')"
-    if [ -f "$root/desktop/icons/scalable/apps/live-$edition.svg" ]; then
-        live_icon="live-$edition"
-    fi
-fi
-# The visible launcher entry: an entry whose Exec does not route through the
-# launcher is treated as hand-made and preserved; ours is refreshed so the
-# name, icon and WM class track the installed edition.
-if [ -e "$APPS/ableton-live.desktop" ] && ! grep -qF "$BIN/ableton-live" "$APPS/ableton-live.desktop"; then
-    echo "   preserving existing $APPS/ableton-live.desktop (it does not route through the launcher)"
-else
-    sed -e "s#@HOME@#$HOME#g" -e "s#@NAME@#$live_name#g" \
-        -e "s#@ICON@#$live_icon#g" -e "s#@WMCLASS@#$live_wmclass#g" \
-        "$root/desktop/ableton-live.desktop.in" > "$APPS/ableton-live.desktop"
-    # A guessed window class would not match the installed edition's window.
-    [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$APPS/ableton-live.desktop"
-    echo "   installed $APPS/ableton-live.desktop ($live_name)"
-fi
-# The authorisation handlers (ableton: URLs, .auz response files). They take
-# winemenubuilder's canonical names on purpose: a prefix where winemenubuilder
-# still runs (a Live beta in a scratch prefix, say) exports its own handler
-# over ours, pointing at stock wine and the wrong prefix. An entry that does
-# not route through the launcher is replaced, not preserved, and canonical
-# copies are staged for the launcher's start-time repair.
-# See notes/ABLETON-WINE-ONLINE-AUTH.md.
-for d in wine-protocol-ableton wine-extension-auz; do
-    sed "s#@HOME@#$HOME#g" "$root/desktop/$d.desktop.in" > "$HOME/.local/share/ableton-wine/$d.desktop"
-    if [ -e "$APPS/$d.desktop" ] && grep -qF "$BIN/ableton-live" "$APPS/$d.desktop"; then
-        echo "   preserving existing $APPS/$d.desktop"
-    else
-        [ ! -e "$APPS/$d.desktop" ] || echo "   replacing $APPS/$d.desktop (it does not route through the launcher)"
-        cp "$HOME/.local/share/ableton-wine/$d.desktop" "$APPS/$d.desktop"
-    fi
-done
-update-desktop-database "$APPS" 2>/dev/null || true
+record_mime_prestate()
+{
+    local state="$ABLETON_STATE_HOME/mime-prestate.tsv" type old
+    [ -e "$state" ] && return 0
+    ableton_txn_snapshot "$state"
+    ableton_mark_state_home
+    : > "$state"
+    command -v xdg-mime >/dev/null 2>&1 || return 0
+    for type in x-scheme-handler/ableton application/x-wine-extension-auz \
+                application/x-ableton-live-set application/x-ableton-live-clip \
+                application/x-ableton-live-pack application/x-ableton-live-max-device \
+                x-scheme-handler/c74max; do
+        old="$(xdg-mime query default "$type" 2>/dev/null || true)"
+        printf '%s\t%s\n' "$type" "$old" >> "$state"
+    done
+}
 
-echo "== install icons =="
-# App and MIME icons (issue #39, PR #25). User-local hicolor is the fallback
-# theme on every desktop; scalable SVGs need no cache.
-ICONS="$HOME/.local/share/icons/hicolor"
-install -d "$ICONS/scalable/apps" "$ICONS/scalable/mimetypes" "$ICONS/symbolic/apps"
-install -m644 "$root"/desktop/icons/scalable/apps/*.svg "$ICONS/scalable/apps/"
-install -m644 "$root"/desktop/icons/scalable/mimetypes/*.svg "$ICONS/scalable/mimetypes/"
-install -m644 "$root"/desktop/icons/symbolic/apps/*.svg "$ICONS/symbolic/apps/"
-gtk-update-icon-cache -q "$ICONS" 2>/dev/null || true
-
-echo "== register the authorisation MIME types =="
-# .auz is the response file ableton.com serves for offline authorisation. The
-# prefix side is registered by Live's installer; the host side is ours, since
-# winemenubuilder (which would export it) is disabled by setup-prefix.sh.
-mkdir -p "$HOME/.local/share/mime/packages"
-install -m644 "$root/desktop/x-wine-extension-auz.xml" "$HOME/.local/share/mime/packages/x-wine-extension-auz.xml"
-# Live document types: sets, clips, packs and the rest (issue #40, PR #25).
-install -m644 "$root/desktop/icons/application-ableton-live.xml" "$HOME/.local/share/mime/packages/application-ableton-live.xml"
-update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
-# Pin the defaults: with a second claimant present, cache order decides, and
-# Chromium consults only the mimeapps.list default.
-if command -v xdg-mime >/dev/null 2>&1; then
-    xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton 2>/dev/null || true
-    xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz 2>/dev/null || true
-    xdg-mime default ableton-live.desktop application/x-ableton-live-set \
-        application/x-ableton-live-clip application/x-ableton-live-pack 2>/dev/null || true
-fi
-
-# Standalone Max 9 in the same prefix, only when present; rerun the
-# installer after adding Max. Removes the winemenubuilder exports a
-# stray default-prefix run leaves behind: they run stock wine against
-# the patched-runtime prefix and their MIME claims shadow ours.
-max_unix="$live_prefix/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
-if [ -f "$max_unix" ]; then
-    echo "== install the Max 9 launcher =="
-    install -m755 "$here/max9" "$BIN/max9"
-    if [ -e "$APPS/max9.desktop" ] && ! grep -qF "$BIN/max9" "$APPS/max9.desktop"; then
-        echo "   preserving existing $APPS/max9.desktop (it does not route through the launcher)"
-    else
-        sed "s#@HOME@#$HOME#g" "$root/desktop/max9.desktop.in" > "$APPS/max9.desktop"
-    fi
-    sed "s#@HOME@#$HOME#g" "$root/desktop/wine-protocol-c74max.desktop.in" > "$APPS/wine-protocol-c74max.desktop"
-    # Stable icon name from the winemenubuilder-extracted set, when present
-    # (the hex prefix varies per install).
-    for d in 16x16 24x24 32x32 48x48 128x128 256x256; do
-        for f in "$ICONS/$d/apps/"*_Max.0.png; do
-            [ -e "$f" ] || continue
-            cp -f "$f" "$ICONS/$d/apps/max9.png"
+install_integration()
+{
+    local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d
+    echo "== install launchers and host integration =="
+    for tool in config.sh lifecycle.sh manifest.sh; do
+        ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
+    done
+    ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live"
+    for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
+        ableton_install_file 644 "$here/$tool" "$data/$tool"
+    done
+    for tool in setsyscolors.exe learnheal.exe; do
+        for source in "$here/$tool" "$root/tools/$tool"; do
+            [ -f "$source" ] || continue
+            ableton_install_file 644 "$source" "$data/$tool"
             break
         done
     done
-    rm -f "$APPS/wine/Programs/Cycling '74/Max 9/Max 9.desktop"
-    rmdir -p "$APPS/wine/Programs/Cycling '74/Max 9" 2>/dev/null || true
-    for e in maxpat maxproj maxhelp maxzip amxd mxf; do
-        f="$APPS/wine-extension-$e.desktop"
-        if [ -e "$f" ] && ! grep -qF "$BIN/" "$f"; then rm -f "$f"; fi
-        rm -f "$HOME/.local/share/mime/packages/x-wine-extension-$e.xml"
+
+    for exe in "$ABLETON_WINEPREFIX"/drive_c/ProgramData/Ableton/Live*/Program/Ableton\ Live*.exe; do
+        [ -e "$exe" ] || continue
+        [ -z "$newest" ] || [ "$exe" -nt "$newest" ] || continue
+        newest="$exe"
     done
-    update-mime-database "$HOME/.local/share/mime" >/dev/null 2>&1 || true
-    update-desktop-database "$APPS" 2>/dev/null || true
-    if command -v xdg-mime >/dev/null 2>&1; then
-        xdg-mime default max9.desktop application/x-ableton-live-max-device 2>/dev/null || true
-        xdg-mime default wine-protocol-c74max.desktop x-scheme-handler/c74max 2>/dev/null || true
+    if [ -n "$newest" ]; then
+        live_name="$(basename "$newest" .exe)"
+        live_wmclass="$(basename "$newest" | tr '[:upper:]' '[:lower:]')"
+        edition="$(printf '%s' "$live_name" | awk '{print tolower($NF)}')"
+        [ ! -f "$root/desktop/icons/scalable/apps/live-$edition.svg" ] || live_icon="live-$edition"
     fi
-    echo "   installed max9 launcher and desktop entry"
+    tmp="$(mktemp)"
+    sed -e "s#@HOME@#$(sed_escape "$HOME")#g" \
+        -e "s#@BIN@#$(sed_escape "$bin")#g" \
+        -e "s#@PREFIX@#$(sed_escape "$ABLETON_WINEPREFIX")#g" \
+        -e "s#@NAME@#$(sed_escape "$live_name")#g" \
+        -e "s#@ICON@#$(sed_escape "$live_icon")#g" \
+        -e "s#@WMCLASS@#$(sed_escape "$live_wmclass")#g" \
+        "$root/desktop/ableton-live.desktop.in" > "$tmp"
+    [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$tmp"
+    if [ -e "$apps/ableton-live.desktop" ] && ! grep -qF "$bin/ableton-live" "$apps/ableton-live.desktop"; then
+        echo "   preserving foreign $apps/ableton-live.desktop"
+    else
+        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop"
+    fi
+    rm -f -- "$tmp"
+
+    for d in wine-protocol-ableton wine-extension-auz; do
+        tmp="$(mktemp)"
+        sed -e "s#@HOME@#$(sed_escape "$HOME")#g" -e "s#@BIN@#$(sed_escape "$bin")#g" \
+            "$root/desktop/$d.desktop.in" > "$tmp"
+        ableton_install_file 644 "$tmp" "$data/$d.desktop"
+        if [ ! -e "$apps/$d.desktop" ] || grep -qF "$bin/ableton-live" "$apps/$d.desktop"; then
+            ableton_install_file 644 "$tmp" "$apps/$d.desktop"
+        else
+            echo "   preserving foreign $apps/$d.desktop"
+        fi
+        rm -f -- "$tmp"
+    done
+
+    for source in "$root"/desktop/icons/scalable/apps/*.svg; do
+        ableton_install_file 644 "$source" "$icons/scalable/apps/$(basename "$source")"
+    done
+    for source in "$root"/desktop/icons/scalable/mimetypes/*.svg; do
+        ableton_install_file 644 "$source" "$icons/scalable/mimetypes/$(basename "$source")"
+    done
+    for source in "$root"/desktop/icons/symbolic/apps/*.svg; do
+        ableton_install_file 644 "$source" "$icons/symbolic/apps/$(basename "$source")"
+    done
+    ableton_install_file 644 "$root/desktop/x-wine-extension-auz.xml" "$mime_root/packages/x-wine-extension-auz.xml"
+    ableton_install_file 644 "$root/desktop/icons/application-ableton-live.xml" "$mime_root/packages/application-ableton-live.xml"
+
+    record_mime_prestate
+    ableton_txn_snapshot "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default wine-protocol-ableton.desktop x-scheme-handler/ableton
+        xdg-mime default wine-extension-auz.desktop application/x-wine-extension-auz
+        xdg-mime default ableton-live.desktop application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack
+    fi
+
+    local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
+    if [ -f "$max_unix" ]; then
+        ableton_install_file 755 "$here/max9" "$bin/max9"
+        for d in max9 wine-protocol-c74max; do
+            tmp="$(mktemp)"
+            sed -e "s#@HOME@#$(sed_escape "$HOME")#g" -e "s#@BIN@#$(sed_escape "$bin")#g" \
+                -e "s#@PREFIX@#$(sed_escape "$ABLETON_WINEPREFIX")#g" \
+                "$root/desktop/$d.desktop.in" > "$tmp"
+            target="$apps/$d.desktop"
+            if [ "$d" != max9 ] || [ ! -e "$target" ] || grep -qF "$bin/max9" "$target"; then
+                ableton_install_file 644 "$tmp" "$target"
+            fi
+            rm -f -- "$tmp"
+        done
+        if command -v xdg-mime >/dev/null 2>&1; then
+            xdg-mime default max9.desktop application/x-ableton-live-max-device
+            xdg-mime default wine-protocol-c74max.desktop x-scheme-handler/c74max
+        fi
+    fi
+    update-mime-database "$mime_root" >/dev/null 2>&1 || true
+    update-desktop-database "$apps" >/dev/null 2>&1 || true
+    gtk-update-icon-cache -q "$icons" >/dev/null 2>&1 || true
+}
+
+install_link_assets()
+{
+    echo "== install Link assets (not enabled or started) =="
+    local tool restart_always=0 fragment="" expected_unit
+    if [ -x "$ABLETON_LINKD" ]; then
+        [ "$ABLETON_LINK_MODE" != always ] || restart_always=1
+        if command -v systemctl >/dev/null 2>&1; then
+            fragment="$(ableton_run_bounded 20 systemctl --user show -p FragmentPath --value ableton-linkd.service 2>/dev/null || true)"
+            expected_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ableton-linkd.service"
+            if [ -n "$fragment" ] \
+               && [ "$(ableton_realpath_m "$fragment")" = "$(ableton_realpath_m "$expected_unit")" ] \
+               && grep -qxF 'X-AbletonLinuxOwned=true' "$expected_unit" 2>/dev/null; then
+                ableton_run_bounded 20 systemctl --user stop ableton-linkd.service >/dev/null 2>&1 || return 1
+            fi
+        fi
+        "$here/ableton-linkctl" stop || return 1
+    fi
+    for tool in config.sh lifecycle.sh; do
+        ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
+    done
+    ableton_install_file 755 "$linkd_source" "$ABLETON_LINKD"
+    ableton_install_file 755 "$here/ableton-linkctl" "$data/ableton-linkctl"
+    ableton_install_file 755 "$here/setup-link.sh" "$data/setup-link.sh"
+    ableton_install_file 644 "$unit_source" "$data/ableton-linkd.service"
+    if [ "$restart_always" -eq 1 ]; then
+        ableton_run_bounded 20 systemctl --user start ableton-linkd.service
+    fi
+}
+
+[ "$want_runtime" -eq 0 ] || promote_runtime
+[ "$want_integration" -eq 0 ] || install_integration
+[ "$want_link" -eq 0 ] || install_link_assets
+
+if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
+    mkdir -p -- "$data"
+    printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" > "$data/VERSION.tmp"
+    ableton_install_file 644 "$data/VERSION.tmp" "$data/VERSION"
+    rm -f -- "$data/VERSION.tmp"
+fi
+if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
+    ableton_write_ownership_manifest
 fi
 
-case ":$PATH:" in
-    *":$BIN:"*) ;;
-    *) echo "!! note: $BIN is not on your PATH: add it or call ~/.local/bin/ableton-live directly" ;;
-esac
-
-# winegstreamer resolves against the host GStreamer at runtime (issue #44).
-# Live runs without it (wav/aiff), so this is a note, not a failure.
-# no grep -q: under pipefail it SIGPIPEs ldconfig and falsely fires this note
-if ! ldconfig -p 2>/dev/null | grep 'libgstreamer-1\.0\.so\.0' >/dev/null; then
-    echo "!! note: no host libgstreamer-1.0.so.0 found: mp3 and video import will not work until GStreamer (with its base and good plugin sets) is installed"
+if [ "$own_transaction" -eq 1 ]; then
+    commit_transaction "$ABLETON_TRANSACTION_DIR"
 fi
-
-promoted=0
+rm -f -- "$ABLETON_TRANSACTION_DIR/active"
 trap - EXIT
-rm -rf "$stage"
-
-echo
-echo "OK. Runtime rollback: ${backup:-none (fresh install)}"
-echo "Next: ./scripts/setup-prefix.sh"
+[ -z "$stage" ] || rm -rf -- "$stage"
+[ "$own_transaction" -eq 0 ] || rm -rf -- "$ABLETON_TRANSACTION_DIR"
+echo "OK: selected components installed transactionally"

@@ -1,63 +1,97 @@
 #!/usr/bin/env bash
-# Max 9 launcher for the patched Wine stack: same runtime and prefix as
-# ableton-live, so standalone Max, Max for Live editing and PipeASIO all
-# share one wineserver. Args: Max documents as unix paths, or c74max: URLs.
-# Overrides: ABLETON_WINE_ROOT, ABLETON_WINEPREFIX, ABLETON_RT=off,
-#            ABLETON_POWER=off (skip the session performance power-profile hold),
-#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor).
+# Max 9 launcher using the same immutable configuration and prefix coordinator
+# as ableton-live.
 set -u
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for lib in "$here/lib/config.sh" "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
+declare -F ableton_config_init >/dev/null 2>&1 || { echo "max9: configuration helper is missing" >&2; exit 1; }
+ableton_config_init
+for lib in "$here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
+    if [ -r "$lib" ]; then . "$lib"; break; fi
+done
+declare -F ableton_max_pids >/dev/null 2>&1 || { echo "max9: lifecycle helper is missing" >&2; exit 1; }
+
+WINE_ROOT="$ABLETON_WINE_ROOT"
+export WINEPREFIX="$ABLETON_WINEPREFIX"
+MAX_EXE="C:\\Program Files\\Cycling '74\\Max 9\\Max.exe"
+MAX_UNIX="$WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
+[ -x "$WINE_ROOT/bin/wine" ] || { echo "max9: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
+[ -f "$WINEPREFIX/system.reg" ] || { echo "max9: Wine prefix is missing at $WINEPREFIX" >&2; exit 1; }
+[ -f "$MAX_UNIX" ] || { echo "max9: no Max 9 installation in $WINEPREFIX" >&2; exit 1; }
+
+caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
-WINE_ROOT="${ABLETON_WINE_ROOT:-$HOME/.local/opt/wine-d2d1-nspa-11.13}"
-export WINEPREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
 export PATH="$WINE_ROOT/bin:$PATH"
-# Disable Wine debug logging; fixme spam from the D3D poll loop stalls Live's UI thread.
-# Keep the winediag channel on: it carries only rare one-line notices that a
-# person should read, such as the present-fallback warning from patch 0071.
 export WINEDEBUG="${WINEDEBUG:--all,+winediag}"
 export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:-csmt=0x1}"
 export WINE_DISABLE_UNIX_MOUNT_REPARSE="${WINE_DISABLE_UNIX_MOUNT_REPARSE:-1}"
 export WINESERVER="$WINE_ROOT/bin/wineserver"
-export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}mscoree,mshtml="
+export WINEDLLOVERRIDES="${caller_winedlloverrides:+$caller_winedlloverrides;}mscoree,mshtml="
 
-MAX_EXE="C:\\Program Files\\Cycling '74\\Max 9\\Max.exe"
-MAX_UNIX="$WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
-if [ ! -f "$MAX_UNIX" ]; then
-    echo "max9: no Max 9 installation in $WINEPREFIX" >&2
+coordinator_dir="$(ableton_lifecycle_runtime_dir)"
+mkdir -p -- "$coordinator_dir"
+exec 9>"$coordinator_dir/bring-up.lock"
+if ! flock -n 9; then
+    echo "max9: another Live/Max launcher is bringing this prefix up" >&2
     exit 1
 fi
+printf 'max %s\n' "$$" >&9
 
-run=(wine)
-# Same realtime probe as the ableton-live launcher.
+run=("$WINE_ROOT/bin/wine")
 if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \
     && chrt -r 10 true >/dev/null 2>&1; then
-    run=(chrt -r 10 wine)
+    run=(chrt -r 10 "$WINE_ROOT/bin/wine")
 fi
-
-# Same session-scoped performance power-profile hold as the ableton-live
-# launcher; released when Max exits. The timeout bounds a wedged daemon:
-# powerprofilesctl waits on GLib's 25 s D-Bus default per call, and the hold
-# call would wait a second time.
 if [ "${ABLETON_POWER:-on}" != off ] && command -v powerprofilesctl >/dev/null 2>&1 \
-    && timeout 10 powerprofilesctl launch -p performance -r "Max session" -i max9 -- true >/dev/null 2>&1; then
+    && ableton_run_bounded 10 powerprofilesctl launch -p performance -r "Max session" -i max9 -- true >/dev/null 2>&1; then
     run=(powerprofilesctl launch -p performance -r "Max session" -i max9 -- "${run[@]}")
 fi
 
-# Unix file paths become Windows paths; URLs and anything else pass through.
 args=()
-for a in "$@"; do
-    if [ -f "$a" ]; then
-        w="$(winepath -w "$a" 2>/dev/null || true)"
-        [ -n "$w" ] && a="$w"
+for arg in "$@"; do
+    if [ -f "$arg" ]; then
+        converted="$(ableton_run_bounded 30 "$WINE_ROOT/bin/winepath" -w "$arg" 9>&- 2>/dev/null || true)"
+        [ -z "$converted" ] || arg="$converted"
     fi
-    args+=("$a")
+    args+=("$arg")
 done
 
-# Ableton Link session anchor (optional): same auto-start as the ableton-live
-# launcher. Start ableton-linkd if installed but not running, so the Link
-# session is anchored before Max launches. ABLETON_LINKD overrides the path.
-LINKD="${ABLETON_LINKD:-$HOME/.local/share/ableton-wine/ableton-linkd}"
-if [ -x "$LINKD" ] && ! pgrep -x ableton-linkd >/dev/null 2>&1; then
-    "$LINKD" --daemon || echo "max9: ableton-linkd failed to start" >&2
+linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
+if [ "$ABLETON_LINK_MODE" != off ] && [ -x "$linkctl" ]; then
+    "$linkctl" start || echo "max9: configured Link anchor failed to start" >&2
 fi
 
-exec "${run[@]}" "$MAX_EXE" ${args[@]+"${args[@]}"}
+process_group=0
+if command -v setsid >/dev/null 2>&1; then
+    setsid -- "${run[@]}" "$MAX_EXE" "${args[@]}" 9>&- &
+    process_group=1
+else
+    "${run[@]}" "$MAX_EXE" "${args[@]}" 9>&- &
+fi
+child=$!
+ready=0
+launch_timeout="$(ableton_timeout_value "${ABLETON_LAUNCH_TIMEOUT:-90}" ABLETON_LAUNCH_TIMEOUT 5 600)" || exit 2
+for ((i=0; i<launch_timeout*10; i++)); do
+    if [ -n "$(ableton_max_pids | head -n 1)" ]; then ready=1; break; fi
+    kill -0 "$child" 2>/dev/null || break
+    sleep 0.1
+done
+flock -u 9 2>/dev/null || true
+exec 9>&-
+if [ "$ready" -ne 1 ]; then
+    if [ "$process_group" -eq 1 ] && kill -0 -- "-$child" 2>/dev/null; then
+        kill -TERM -- "-$child" 2>/dev/null || true
+        for _ in {1..50}; do kill -0 -- "-$child" 2>/dev/null || break; sleep 0.1; done
+        kill -0 -- "-$child" 2>/dev/null && kill -KILL -- "-$child" 2>/dev/null || true
+    elif kill -0 "$child" 2>/dev/null; then
+        kill -TERM "$child" 2>/dev/null || true
+        for _ in {1..50}; do kill -0 "$child" 2>/dev/null || break; sleep 0.1; done
+        kill -0 "$child" 2>/dev/null && kill -KILL "$child" 2>/dev/null || true
+    fi
+    wait "$child" 2>/dev/null || true
+    echo "max9: Max did not become observable within ${launch_timeout}s" >&2
+    exit 1
+fi
+wait "$child"

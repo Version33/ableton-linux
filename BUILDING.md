@@ -19,24 +19,55 @@ Run:
 
 ```bash
 ./build.sh
-./scripts/install.sh
-./scripts/setup-prefix.sh
-WINEPREFIX="$HOME/.wine-ableton" \
-  "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine" \
-  "/path/to/Ableton Live 12 Suite Installer.exe"
+./scripts/installer.sh install \
+  --live-installer "/path/to/Ableton Live 12 Suite Installer.exe" \
+  --live-major 12 --link=session
 ableton-live
 ```
 
 `build.sh` creates the patched Wine runtime and `dist/ableton-linkd`.
-`install.sh` installs both under your home directory.
+`installer.sh` validates and stages the selected components. If a step fails,
+it restores the state from before the command.
+The lower-level `install.sh`, `setup-prefix.sh`, and `setup-link.sh` scripts are
+component implementations rather than the public command interface.
 
-## Shortcut test tools
+## Manage individual components
 
-The repository includes the tools used to test shortcut support. Run the GNOME
-shortcut test with:
+Use the component commands when you do not want a complete installation:
+
+```bash
+# Copy only the Wine runtime.
+./scripts/installer.sh runtime install
+
+# Create or update only the selected Wine prefix.
+./scripts/installer.sh prefix create --live-major 12
+./scripts/installer.sh prefix update --live-major 12
+
+# Change only Link and the Link state owned by this project.
+./scripts/installer.sh link enable --mode=session
+./scripts/installer.sh link disable
+./scripts/installer.sh link status
+```
+
+Select other locations with `--prefix PATH` and `--runtime-root PATH`. Preview
+all planned file, service, and firewall changes without applying them:
+
+```bash
+./scripts/installer.sh plan update
+./scripts/installer.sh plan uninstall --delete-prefix
+```
+
+The installer does not change system scheduling policy. Run
+`./scripts/setup-realtime.sh` separately if you want to change the host audio
+settings.
+
+## Run the checks
+
+Run the shortcut and installer lifecycle checks:
 
 ```bash
 scripts/test-shortcut-hold.sh
+scripts/test-installer-lifecycle.sh
 ```
 
 Build the Wine menu test with all compiler warnings enabled. Then run its two
@@ -52,10 +83,12 @@ The GNOME test uses temporary data and does not change the desktop settings.
 The Wine test sends keys to its own window. It needs a working Wine display.
 Each mode returns a non-zero status when a required result fails.
 
-Configure Ableton Link networking with:
+## Configure Ableton Link
+
+Configure Ableton Link networking and choose when it runs:
 
 ```bash
-./scripts/setup-link.sh
+./scripts/installer.sh link enable --mode=session
 ```
 
 This requests `sudo` only when an active firewall needs the UDP 20808
@@ -81,12 +114,20 @@ make verify
 
 ## Environment variables
 
+Command-line options override these variables. Exported variables override the
+persistent XDG configuration, and the persistent configuration overrides the
+compatibility defaults.
+
 - `ABLETON_WINE_ROOT` selects the Wine runtime. The default is
   `~/.local/opt/wine-d2d1-nspa-11.13`.
 - `ABLETON_WINEPREFIX` selects the Wine prefix. The default is
   `~/.wine-ableton`.
 - `ABLETON_LIVE_VERSION=11|12` selects a Live major version.
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
+- `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
+  installer, Live launcher, Max launcher, service, and uninstaller.
+- `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
+  this exact resolved path.
 - `ABLETON_SHORTCUTS=take` temporarily turns off exact Ctrl+Alt+Up and
   Ctrl+Alt+Down entries in the related GNOME settings. Live 11 also turns off
   the exact Ctrl+Alt+Delete entry. The default value, `preserve`, does not
@@ -113,6 +154,13 @@ make verify
 - `PIPEASIO_*` variables override PipeASIO settings for one launch.
 - `ENGINE` selects the container engine used by build scripts. The default is
   `podman`.
+
+Adjust installer time limits with `ABLETON_WINE_COMMAND_TIMEOUT`,
+`ABLETON_WINETRICKS_TIMEOUT`, `ABLETON_LIVE_INSTALL_TIMEOUT`,
+`ABLETON_PAYLOAD_EXTRACT_TIMEOUT`, `ABLETON_RUNTIME_EXTRACT_TIMEOUT`,
+`ABLETON_PAYLOAD_IO_TIMEOUT`, and `ABLETON_LAUNCH_TIMEOUT`. The installer checks
+each value before use. When a process reaches its limit, the installer sends
+`TERM`, waits five seconds, then sends `KILL` if the process is still running.
 
 ## Repository layout
 

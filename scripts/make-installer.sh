@@ -15,9 +15,11 @@ ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 NAME="wine-d2d1-nspa-11.13"
 VERSION="$(cat VERSION)"
-# exact-version runtime if present, else the newest built one
+# exact-version runtime if present, else the newest built one, never an
+# incomplete developer -debug tree
 tarball="dist/${NAME}-${VERSION}.tar.zst"
-[ -f "$tarball" ] || tarball="$(ls dist/${NAME}-*.tar.zst 2>/dev/null | sort -V | tail -1 || true)"
+[ -f "$tarball" ] || tarball="$(find dist -maxdepth 1 -type f -name "${NAME}-*.tar.zst" \
+    ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -1 || true)"
 
 [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst in dist/: run ./build.sh first" >&2; exit 1; }
 [ -f "$tarball.sha256" ] || { echo "!! $tarball.sha256 missing" >&2; exit 1; }
@@ -62,15 +64,17 @@ echo "== [3/5] stage the kit =="
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 kit="$stage/kit"
-mkdir -p "$kit/bin" "$kit/dist" "$kit/vendor"
+mkdir -p "$kit/bin" "$kit/dist" "$kit/vendor" "$kit/scripts/lib"
 cp -a "$tarball" "$tarball.sha256" "$kit/dist/"
 cp -a "dist/BUILD-INFO-${VERSION}.txt" "$kit/" 2>/dev/null || true
 mkdir -p "$kit/scripts"
-cp -a scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
+cp -a scripts/installer.sh scripts/install.sh scripts/setup-prefix.sh scripts/uninstall.sh \
       scripts/ableton-live scripts/max9 scripts/detect-scale.sh \
       scripts/detect-theme.sh scripts/shortcut-hold.sh \
-      scripts/check-live-audio.sh scripts/setup-link.sh \
+      scripts/check-live-audio.sh scripts/setup-link.sh scripts/ableton-linkctl \
       "$kit/scripts/"
+cp -a scripts/lib/config.sh scripts/lib/lifecycle.sh scripts/lib/manifest.sh \
+      "$kit/scripts/lib/"
 install -m644 scripts/ableton-linkd.service "$kit/scripts/ableton-linkd.service"
 install -m644 tools/setsyscolors.exe "$kit/scripts/setsyscolors.exe"
 install -m644 tools/learnheal.exe "$kit/scripts/learnheal.exe"

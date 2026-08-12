@@ -40,7 +40,7 @@ Additionally, you need:
 - glibc 2.35 or newer
 - PipeWire 0.3.56 or newer (we recommend 1.6 or newer for audio performance)
 - GStreamer with its base and good plugin sets
-- `tar` and `zstd`
+- GNU coreutils, `tar`, `zstd`, and `flock`
 - your installation files and activation details from Ableton
 
 For most people, a modern and up-to-date Linux distribution, such as SteamOS,
@@ -51,18 +51,24 @@ requirements.
 
 1. Download the Ableton Live installation ZIP from Ableton.com.
 2. Download [the latest version of our installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run).
-3. Put both files in the same directory (such as `~/Downloads`).
-4. From a terminal, run the installer:
+3. From a terminal, pass the Ableton download to the installer explicitly:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run
+   sh ~/Downloads/install-ableton-latest.run install \
+     --live-installer "$HOME/Downloads/Ableton Live 12 Installer.zip" \
+     --link=session
    ```
 
-That's it!
+Replace the example ZIP name with the file you downloaded. When you run the
+installer interactively, it can still find one Ableton installer beside the
+`.run` file. Scripts must name the installer file.
 
-The installer also sets up Ableton Link and may ask for `sudo` to enable
-local-network discovery. Pass `--no-link` if you do not use Link; the
-installer remembers this choice, and `--link` turns Link setup back on.
+`--link=session` enables Link while Live or Max is in use. The installer may
+ask for `sudo` to allow Link through an active firewall. Use `--link=off` if
+you do not use Link. This installs or starts nothing for Link. During an
+update, it removes only Link files and settings that this project added. The
+installer remembers your choice. `--link=always` keeps Link running after
+login.
 
 ### Running Live
 
@@ -98,15 +104,15 @@ To update this project's Wine runtime, launchers, and compatibility fixes,
 download the latest release and run:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 This will bring the new fixes and features listed in the release notes to your
 Live Linux environment. Your Live installation, authorization, and projects are
 preserved. Compatibility-related Wine and Live settings may be updated.
 
-Running the installer without `--update` offers the same compatibility update
-when it finds an existing installation.
+An update preserves the current Link policy unless you explicitly pass
+`--link=off`, `--link=session`, or `--link=always`.
 
 ### Uninstalling
 
@@ -114,13 +120,13 @@ To remove this project's runtime and desktop integration while keeping Live and
 its authorization:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --uninstall
+sh ~/Downloads/install-ableton-latest.run uninstall --keep-prefix
 ```
 
 To remove Live and its authorization too:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --uninstall --prefix
+sh ~/Downloads/install-ableton-latest.run uninstall --delete-prefix
 ```
 
 The second command asks for confirmation. Neither command touches your Live
@@ -134,8 +140,8 @@ edition together.
 
 ### Live 12
 
-When you run the installer normally, we assume you are installing Live 12. The
-directions above will complete that installation for you.
+The installer detects Live 12 from the named Ableton installer file. If it
+cannot identify a renamed file, pass `--live-major 12` explicitly.
 
 ### Live 11
 
@@ -148,7 +154,9 @@ To install Live 11:
 1. In your terminal window, tell the installer you want to install Live 11:
 
    ```bash
-   ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
+   sh ~/Downloads/install-ableton-latest.run install \
+     --live-installer "$HOME/Downloads/Ableton Live 11 Installer.zip" \
+     --live-major 11 --link=session
    ```
 
    The first setup downloads extra Live 11 support files, so it needs internet
@@ -164,7 +172,7 @@ When you run Live from the command line, the launcher will automatically detect
 Live 11 if it is the only version installed. If Live 11 and Live 12 are both
 installed, the launcher defaults to the newest major version.
 
-Use `ABLETON_LIVE_VERSION=11 ableton-live` to select Live 11. If you install
+Use `env ABLETON_LIVE_VERSION=11 ableton-live` to select Live 11. If you install
 multiple editions of the same major version, follow the
 [launcher troubleshooting](TROUBLESHOOTING.md#the-launcher-finds-more-than-one-live-installation).
 
@@ -180,7 +188,7 @@ There are two common ways to install Windows plugins:
 2. Open a terminal window and run:
 
    ```bash
-   WINEPREFIX="$HOME/.wine-ableton" \
+   env WINEPREFIX="$HOME/.wine-ableton" \
      "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine" \
      "/path/to/PluginInstaller.exe"
    ```
