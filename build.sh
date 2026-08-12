@@ -12,7 +12,9 @@ cd "$here"
 ENGINE="${ENGINE:-podman}"
 IMAGE="${IMAGE:-ableton-wine-build:22.04}"
 JOBS="${JOBS:-$(nproc)}"
-PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-require}"
+# Default auto; see scripts/container-build.sh for why releases stay fail-closed
+# without it. CI sets require explicitly.
+PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
 # shellcheck source=scripts/lib/tsan.sh
 source "$here/scripts/lib/tsan.sh"
 pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {

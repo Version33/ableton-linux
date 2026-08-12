@@ -70,6 +70,9 @@ jobs:
         id: runtime_version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
+      - name: Check pointer safety invariants
+        run: make check
+
       - name: Restore ccache (compiled-object cache, keyed loosely on purpose)
         uses: actions/cache@v6
         with:

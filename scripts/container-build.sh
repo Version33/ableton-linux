@@ -36,9 +36,15 @@ npatch="$(ls "$SRC"/patches/00*.patch | wc -l)"
 # TSan reserves a fixed shadow address range. High-entropy ASLR can collide
 # with that range, and newer runtimes may be unable to request process-local
 # ADDR_NO_RANDOMIZE under a container's default seccomp policy. Probe this
-# before the expensive Wine build. Official builds remain fail-closed; auto
-# and skip are explicit local, non-release modes.
-PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-require}"
+# before the expensive Wine build.
+#
+# The default is auto: where the container cannot start TSan at all, require
+# fails the whole build rather than just the sanitizer stage. Releases stay
+# fail-closed without depending on this default -- auto records a non-release
+# attestation, and check-release-build-info.sh refuses to pack, tag or publish
+# a BUILD-INFO without the exact "TSan unit passed" record. CI sets require
+# explicitly. skip is an explicit local, non-release mode.
+PIPEASIO_TSAN_MODE="${PIPEASIO_TSAN_MODE:-auto}"
 # shellcheck source=scripts/lib/tsan.sh
 source "$SRC/scripts/lib/tsan.sh"
 pipeasio_tsan_mode_valid "$PIPEASIO_TSAN_MODE" || {

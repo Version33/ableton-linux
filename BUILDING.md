@@ -4,7 +4,7 @@ This page covers the current source build, tests, packaging, and maintainer opti
 
 ## Build
 
-Install Podman, Git, Bash, Python 3, GNU Coreutils, GNU Findutils, GNU grep, GNU tar, binutils, and `zstd`. Allow about 10 GB of free disk space.
+Install Podman, Git, Bash, Python 3, GNU Coreutils, GNU Findutils, GNU grep, GNU tar, binutils, `zstd`, and `cabextract`. `make check` also needs a host C compiler and maths library. Allow about 10 GB of free disk space.
 Then run:
 
 ```bash
@@ -19,13 +19,13 @@ env JOBS=8 ./build.sh
 
 The build verifies the vendored Wine, PipeASIO, PipeWire SDK, ntsync, and Ableton Link inputs. It then creates the container image, builds Wine and PipeASIO, runs the compiled test suites and patch audit, and writes the runtime and build records to `dist/`.
 
-ThreadSanitizer must complete successfully in the default build. If ThreadSanitizer cannot start on a local host, this command permits only a recognised startup limitation and records a non-release build:
+ThreadSanitizer runs by default. Where it cannot start at all, the default permits only a recognised startup limitation and records a non-release build; races, test failures and unrecognised errors still fail the build. To require a successful ThreadSanitizer result instead, so that a startup limitation is an error:
 
 ```bash
-env PIPEASIO_TSAN_MODE=auto ./build.sh
+env PIPEASIO_TSAN_MODE=require ./build.sh
 ```
 
-Official packages require the default ThreadSanitizer result.
+Continuous integration sets `require`. Official packages need the successful result either way: packing, tagging and publishing all refuse a build record that does not carry it.
 
 ## Install a source build
 
@@ -66,8 +66,11 @@ Run `./scripts/installer.sh --help` for the complete current command list.
 Run the repository policy, launcher, installer, and PipeASIO checks:
 
 ```bash
+make check
 make test
 ```
+
+`make check` inspects the pointer changes and tests their limits with difficult input. Neither it nor `make verify` starts Wine or Live.
 
 Verify all pinned build and packaging inputs:
 
@@ -76,6 +79,16 @@ make verify
 ```
 
 The container build also runs PipeASIO's non-integration CTest suite, a no-Qt build, ASan and UBSan tests, ThreadSanitizer unit tests, relocation and registration checks, and the final runtime audit. These checks do not replace a run with Live and real audio hardware.
+
+## Configure Ableton Link
+
+Configure Ableton Link networking and choose when it runs:
+
+```bash
+./scripts/installer.sh link enable --mode=session
+```
+
+This requests `sudo` only when an active firewall needs the UDP 20808 allowance, or when a hook from an earlier setup version needs removing.
 
 ## Package
 
@@ -99,12 +112,70 @@ The installer saves the runtime root, Wine prefix, selected Live major version, 
 These environment variables change one launch without changing the saved installer configuration:
 
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
-- `ABLETON_SHORTCUTS=take` lets Live use the GNOME shortcuts documented in [Troubleshooting](TROUBLESHOOTING.md#gnome-handles-a-live-shortcut-instead-of-live).
-- `ABLETON_DPI_MODE=auto|preserve|100|fractional|dpi<N>|fractional<N>` overrides display-scale detection.
-- `ABLETON_THEME_MODE=auto|dark|light|preserve` controls desktop theme matching.
-- `ABLETON_RT=off` disables Wine real-time scheduling for one launch.
-- `ABLETON_POWER=off` leaves the computer's power mode unchanged for one launch.
-- `PIPEASIO_*` values override PipeASIO's saved settings for one launch.
+- `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
+  installer, Live launcher, Max launcher, service, and uninstaller.
+- `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
+  this exact resolved path.
+- `ABLETON_SHORTCUTS=take` temporarily turns off exact Ctrl+Alt+Up and
+  Ctrl+Alt+Down entries in the related GNOME settings. Live 11 also turns off
+  the exact Ctrl+Alt+Delete entry. The default value, `preserve`, does not
+  change desktop shortcuts.
+- `ABLETON_DPI_MODE=auto|preserve|100|fractional|dpi<N>|fractional<N>`
+  overrides display-scale detection.
+- `ABLETON_THEME_MODE=auto|dark|light|preserve` controls desktop theme sync.
+- `ABLETON_TOPBAR_MODE=live|system|preserve|'#RRGGBB #RRGGBB'` controls menu
+  colors.
+- `ABLETON_UI_FONT=auto|preserve|off|<family>` controls the Wine UI font.
+- `ABLETON_DCOMP=off` disables DirectComposition for one launch.
+- `WINE_X11_FORCE_OFFSCREEN_CLASS=off` disables the default Max for Live
+  selection-flicker fix for one launch.
+- `WINE_WIN32_FULLSCREEN_CLASS=off` disables the default Live fullscreen
+  layout and exit-state fix for one launch.
+- `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
+  resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` controls smooth
+  scrolling for one launch. `precise` is the default. `notched` keeps
+  whole wheel steps. `disabled` leaves normal mouse-wheel input available.
+- `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` controls touchpad pinch zoom for
+  one launch. Pinch zoom is on by default.
+- `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` controls
+  middle-button drag navigation for one launch. Navigation is on by default.
+- `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` controls continued movement
+  after a quick smooth scroll. It defaults to `enabled`. `auto` currently
+  behaves like `disabled` on X11. Turning inertia off leaves direct scrolling
+  unchanged.
+- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls whether movement
+  continues after the user releases a middle-button drag. It defaults to
+  `enabled`. `disabled` leaves direct middle-button navigation unchanged.
+- `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
+  mouse-wheel clicks while another button is held. It defaults to `enabled`.
+  The wheel stays blocked during middle-button navigation. Touchpad scrolling,
+  pinch and continued movement stay blocked during a drag.
+- `WINE_X11_INERTIA_CURVE=exponential|linear` selects how continued movement
+  slows. `WINE_X11_INERTIA_RATE=<0.5..16.0>` selects how soon it stops. The
+  default rate is `3.0`. Lower values keep movement going for longer. Higher
+  values stop it sooner.
+- `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
+  for faders and knobs that move farther than the pointer. It defaults to
+  `disabled`. `auto` waits until it sees the fault twice. `enabled` forces the
+  repair for one launch.
+
+Named pointer values ignore letter case. `off` and `0` mean `disabled` where
+supported. Wine reports an invalid value in the normal launch log, then uses
+the next saved choice or default.
+
+The settings, defaults, limits, and hands-on checks are in
+[the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
+
+- `ABLETON_RT=off` disables realtime scheduling for one launch.
+- `ABLETON_POWER=off` keeps the computer's power mode unchanged for one
+  launch.
+- `ABLETON_LINKD_LINGER` sets how many seconds `ableton-linkd` waits with no
+  Link peers before it exits. Whole seconds only. The default is 900; 0
+  keeps it running.
+- `PIPEASIO_*` variables override PipeASIO settings for one launch.
+- `ENGINE` selects the container engine used by build scripts. The default is
+  `podman`.
 
 The build-only `ENGINE` variable selects the container command. Its default is `podman`.
 

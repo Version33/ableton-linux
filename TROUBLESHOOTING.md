@@ -124,6 +124,56 @@ bash /tmp/ableton-kit/scripts/installer.sh prefix repair-live11
 
 The repair moves the incompatible Max preferences to a timestamped backup. Max creates a clean file the next time it starts.
 
+## A newly installed font does not show up inside Live
+
+Close Live, then start it with the saved font list turned off:
+
+```bash
+env WINE_DISABLE_HOST_FONT_CACHE=1 ableton-live
+```
+
+Live keeps a saved list of your computer's fonts so it can start faster.
+The list refreshes itself when your fonts change, so a new font normally
+appears at the next launch on its own. The launch above skips the list
+and reads your fonts directly.
+
+If the missing font appears now, delete the saved list and start Live
+normally. Live rebuilds the list with your new font:
+
+```bash
+rm ~/.wine-ableton/drive_c/windows/wine-host-font.cache
+ableton-live
+```
+
+If the font is still missing with the list turned off, the list is not
+the cause. [Open an issue](https://github.com/shibco/ableton-linux/issues)
+and name the font and where you installed it from.
+
+## A fader jumps after loading a Max for Live device
+
+Install the latest release, then start a fresh Live session. Load the affected
+Max for Live device and drag a track fader without clicking the device first.
+
+The fader should follow the pointer without jumping. If it still jumps, report
+the device, Linux distribution, desktop, and Live version. Say whether clicking
+the device once stops the problem.
+
+## An XWayland fader or knob moves farther than the pointer
+
+Lower the Master fader before comparing these settings.
+
+Compare these three one-launch settings:
+
+```bash
+env WINE_X11_WARP_EMULATION=disabled ableton-live
+env WINE_X11_WARP_EMULATION=auto ableton-live
+env WINE_X11_WARP_EMULATION=enabled ableton-live
+```
+
+Report which setting made the control follow the pointer most closely, whether
+the pointer was visible, your pointing device, Linux distribution, desktop,
+and Live version. Do not save `enabled`; it is only for comparison.
+
 ## Live 11: media files can crash Live
 
 Do not preview or import WMA or video files in Live 11. The current Wine media implementation can crash Live on that path. Live 12 does not use the affected path.
@@ -217,6 +267,51 @@ env ABLETON_SHORTCUTS=take ableton-live
 ```
 
 The launcher temporarily removes only the conflicting GNOME entries and restores them after all Live sessions exit. Those shortcuts remain unavailable to other applications while Live runs.
+
+## Scrolling, middle-button panning, or pinch zoom misbehaves
+
+Mute or disconnect monitoring before reproducing a problem that can change a
+fader. Start with Live's Master fader low and use a limiter.
+
+Try the relevant command for one launch:
+
+```bash
+# Smooth scrolling
+env WINE_X11_SMOOTH_SCROLLING=disabled ableton-live
+
+# Pinch zoom
+env WINE_X11_PINCH_ZOOM=disabled ableton-live
+
+# Middle-button navigation
+env WINE_X11_MIDDLE_DRAG=disabled ableton-live
+
+# Scrolling after release
+env WINE_X11_TOUCHPAD_INERTIA=disabled ableton-live
+
+# Middle-button movement after release
+env WINE_X11_MIDDLE_DRAG_THROW=disabled ableton-live
+
+# Mouse wheel while holding another button
+env WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled ableton-live
+```
+
+Scrolling inertia and middle-drag throw are on by default and work
+independently. If a saved setting switched either one off, restore it for one
+launch:
+
+```bash
+env WINE_X11_TOUCHPAD_INERTIA=enabled ableton-live
+env WINE_X11_MIDDLE_DRAG_THROW=enabled ableton-live
+```
+
+If scrolling feels too sensitive, use whole wheel steps:
+
+```bash
+env WINE_X11_SMOOTH_SCROLLING=notched ableton-live
+```
+
+If turning a feature off changes the result, report the command you used, your
+pointing device, Linux distribution, desktop, and Live version.
 
 ## Report a problem
 

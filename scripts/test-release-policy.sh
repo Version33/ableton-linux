@@ -264,7 +264,7 @@ series="$root/patches/SERIES.sha256"
 bash "$series_checker" --check-series-policy "$series" >/dev/null \
     || fail 'complete patch series failed its terminal-member policy'
 
-grep -v '  0089-d2d1-avoid-unsigned-ClearType-coverage-underflow.patch$' \
+grep -v '  0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch$' \
     "$series" > "$tmp/no-wine-tail"
 if bash "$series_checker" --check-series-policy "$tmp/no-wine-tail" >/dev/null 2>&1; then
     fail 'series policy accepted a missing final Wine patch'
