@@ -41,7 +41,7 @@ then quit Live.
 | Tool | What it does |
 | --- | --- |
 | `liveinject.exe` | Sends keyboard or pointer input to Live. It can also ask Live to close. |
-| `heldwheel.exe` (local build) | Receives physical wheel packets and reports their button mask, target, capture and screen point. |
+| `heldwheel.exe` (local build) | Shows whether wheel movement reaches a window while a mouse button is held. |
 | `showrestore.exe` | Restores a minimised Live window, then asks Live to close. |
 | `wmresize.exe` | Opens a test window and measures whether resizing stops. |
 | `spyhost.exe` and `mousespy.dll` | Install a Wine-wide mouse hook and inspect JUCE plug-in windows. |
@@ -63,10 +63,10 @@ Run these files with the same Wine executable and Wine prefix used by Live.
 | `xdmg` | Records redraw events for one X11 window. |
 | `xgrid` and `xsamp` | Measure pixel changes in Learn View and plug-in windows. |
 
-## Held-button wheel routing
+## Wheel use while holding a button
 
-Use `heldwheel.c` with `uclick` to test the full physical input path instead of
-Wine's `SendInput` path. Build the receiver locally with Wine's compiler:
+Use `heldwheel.c` with `uclick` to check that a mouse wheel still works while a
+button is held. Build the receiver with Wine's compiler:
 
 ```bash
 winegcc -O2 -Wall -Wextra -Werror \
@@ -74,12 +74,12 @@ winegcc -O2 -Wall -Wextra -Werror \
   beta/tester-kit/probes/advanced/src/heldwheel.c
 ```
 
-The command creates `/tmp/heldwheel.exe` and `/tmp/heldwheel.exe.so`; keep the
-pair together. Start the receiver with the Wine loader and prefix under test:
+Keep `/tmp/heldwheel.exe` and `/tmp/heldwheel.exe.so` together. Start the
+receiver with the Wine build and prefix under test:
 
 ```bash
-WINEPREFIX=/path/to/prefix \
-WINELOADER=/path/to/wine/bin/wine \
+env WINEPREFIX=/path/to/prefix \
+  WINELOADER=/path/to/wine/bin/wine \
   /tmp/heldwheel.exe
 ```
 
@@ -99,17 +99,13 @@ btn up right
 quit
 ```
 
-`wheel 1` is one upward notch and should report `delta=120`; `hwheel 1` is one
-rightward notch. The receiver captures its window while a delivered left,
-middle or right button is down. A routed wheel line reports the exact `MK_*`
-button flags plus `target`, `capture`, `point_screen`, and the window under the
-point. For a held-left test, both `L=1` and matching non-null `target` and
-`capture` values show that the ordinary captured Win32 path was preserved. If
-no wheel line appears, the packet was suppressed before the application.
+`wheel 1` is one upward step and should report `delta=120`. `hwheel 1` is one
+step to the right. With the left button held, the result should include `L=1`
+and values for `target` and `capture`. No wheel line means the input was
+blocked before it reached the receiver.
 
-The middle button can be intentionally consumed when middle-drag navigation is
-enabled, so use left or right for the held-button delivery verdict and test
-middle navigation separately.
+Use the left or right button for this check. Middle-button navigation can use
+the middle button itself.
 
 `liveinject.exe`, `showrestore.exe`, `jacklinkd`, `uclick`, `xact`, `xsettle`,
 and `xtool` change Live, audio routing, focus, window geometry, or input.

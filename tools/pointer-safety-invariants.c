@@ -133,6 +133,18 @@ static size_t count_occurrences(const char *text, const char *needle)
     return count;
 }
 
+static size_t count_occurrences_between(const char *text, const char *begin,
+                                        const char *end, const char *needle)
+{
+    const char *first = strstr(text, begin), *last, *match;
+    size_t count = 0, length = strlen(needle);
+
+    if (!first || !(last = strstr(first, end))) return (size_t)-1;
+    for (match = first; (match = strstr(match, needle)) && match < last; match += length)
+        count++;
+    return count;
+}
+
 static int require_text(const char *test, const char *text, const char *needle)
 {
     if (!strstr(text, needle))
@@ -253,10 +265,10 @@ static void check_pointer_setting_fallback(const char *stack, const char *safety
     ok &= require_text("held-button wheel input has an independent setting", final,
                        "pointer_option_enum(defkey,appkey,\"WheelWhileButtonHeld\","
                        "\"WINE_X11_WHEEL_WHILE_BUTTON_HELD\"");
-    ok &= require_text("fine inertia is disabled by default", final,
-                       ".touchpad_inertia=POINTER_INERTIA_DISABLED");
-    ok &= require_text("middle throw is disabled by default", final,
-                       ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_DISABLED");
+    ok &= require_text("fine inertia is enabled by default", final,
+                       ".touchpad_inertia=POINTER_INERTIA_ENABLED");
+    ok &= require_text("middle throw is enabled by default", final,
+                       ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_ENABLED");
     ok &= require_text("physical wheel input while held remains enabled by default", final,
                        ".wheel_while_button_held=POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED");
     if (ok) pass("all eight named settings plus InertiaRate preserve safe source fallback");
@@ -403,7 +415,7 @@ static void check_held_and_direct_input(const char *stack, const char *safety,
                        "quantize=pointer_config.smooth_scrolling==POINTER_SCROLL_NOTCHED;");
     ok &= forbid_text("held movement cannot become notched output", safety,
                       "POINTER_SCROLL_NOTCHED||buttons_down");
-    ok &= require_text("held wheel input requires explicit enablement and exact provenance", final,
+    ok &= require_text("held wheel input requires enabled mode and exact provenance", final,
                        "if(pointer_config.wheel_while_button_held=="
                        "POINTER_WHEEL_WHILE_BUTTON_HELD_ENABLED&&event_button_mask&&"
                        "event_button_mask==held_button_mask&&"
@@ -569,7 +581,7 @@ static void check_continuation_sources(const char *final)
     ok &= require_text("middle continuation has independent enablement", final,
                        "if(kind==POINTER_INERTIA_KIND_MIDDLE_DRAG)returnpointer_config."
                        "middle_drag_throw==POINTER_MIDDLE_DRAG_THROW_ENABLED;");
-    ok &= require_text("fine continuation requires explicit enabled mode", final,
+    ok &= require_text("fine continuation requires enabled mode", final,
                        "returnpointer_config.touchpad_inertia==POINTER_INERTIA_ENABLED;");
     ok &= require_text("middle throw starts with a press-time zero-motion anchor", final,
                        "middle_drag_throw_sample(x11drv_thread_data(),hwnd,pt,0.0,0.0,time);");
@@ -609,7 +621,7 @@ static void check_continuation_sources(const char *final)
                                "staticvoidpointer_inertia_record(",
                                "staticvoidpointer_scroll_inertia_activity(",
                                "if(kind==POINTER_INERTIA_KIND_FINE_SCROLL)"
-                               "inertia_nudge_arm(hwnd,INERTIA_DEADLINE_MS,FALSE);");
+                               "inertia_nudge_arm(hwnd,si->input_serial,INERTIA_DEADLINE_MS);");
     ok &= require_text("stray timer ticks cannot release a middle throw", final,
                        "if(si->kind==POINTER_INERTIA_KIND_MIDDLE_DRAG){"
                        "TRACE(\"middlethrowignoresstraytimertick;awaitingButton2release\\n\");"
@@ -642,7 +654,7 @@ static void check_continuation_sources(const char *final)
                                "if(buttons_down||discontinuity){",
                                "elseif(pointer_config.smooth_scrolling==POINTER_SCROLL_PRECISE)",
                                "if(discontinuity)delta_x=delta_y=0;");
-    ok &= require_text("fine inactivity fallback requires explicit enablement", final,
+    ok &= require_text("fine inactivity fallback requires enabled mode", final,
                        "if(si->kind==POINTER_INERTIA_KIND_FINE_SCROLL&&"
                        "pointer_inertia_enabled(POINTER_INERTIA_KIND_FINE_SCROLL)&&"
                        "now-si->last_time<=2*INERTIA_DEADLINE_MS)");
@@ -659,6 +671,182 @@ static void check_continuation_sources(const char *final)
     ok &= require_text("an emulated XI duplicate preserves an active middle throw", final,
                        "if(!data->middle_drag.active)pointer_inertia_cancel();returnTRUE;");
     if (ok) pass("fine inertia and middle throw have independent, explicit end policies");
+}
+
+static void check_inertia_timer_initialization(const char *final)
+{
+    int ok = 1;
+
+    ok &= require_text("the inertia condition starts as uninitialised storage", final,
+                       "staticpthread_cond_tinertia_nudge_cond;");
+    ok &= forbid_text("the inertia condition is not statically and dynamically initialised", final,
+                      "PTHREAD_COND_INITIALIZER");
+    if (count_occurrences(final, "pthread_cond_init(&inertia_nudge_cond,&attr)") != 1)
+    {
+        fail("the inertia condition is initialised exactly once",
+             "expected one dynamic condition-variable initialisation");
+        ok = 0;
+    }
+
+    ok &= require_order("condition attributes are created before selecting a clock", final,
+                        "pthread_condattr_init(&attr)",
+                        "pthread_condattr_setclock(&attr,CLOCK_MONOTONIC)");
+    ok &= require_order("the monotonic clock is selected before condition initialisation", final,
+                        "pthread_condattr_setclock(&attr,CLOCK_MONOTONIC)",
+                        "pthread_cond_init(&inertia_nudge_cond,&attr)");
+    ok &= require_order("condition attributes are destroyed after condition initialisation", final,
+                        "pthread_cond_init(&inertia_nudge_cond,&attr)",
+                        "pthread_condattr_destroy(&attr)");
+
+    ok &= require_text("attribute initialisation failure disables the timer", final,
+                       "if((ret=pthread_condattr_init(&attr))){"
+                       "WARN(\"failedtoinitialiseinertiaconditionattributes(%d),"
+                       "inertiadisabled\\n\",ret);inertia_nudge.failed=TRUE;}");
+    ok &= require_text("clock or condition initialisation failure disables the timer", final,
+                       "if((ret=pthread_condattr_setclock(&attr,CLOCK_MONOTONIC))||"
+                       "(ret=pthread_cond_init(&inertia_nudge_cond,&attr))){"
+                       "WARN(\"failedtoinitialisemonotonicinertiacondition(%d),"
+                       "inertiadisabled\\n\",ret);inertia_nudge.failed=TRUE;}"
+                       "pthread_condattr_destroy(&attr);");
+    ok &= require_text("timer setup failure prevents worker creation", final,
+                       "if(!inertia_nudge.failed&&NtCreateThreadEx(&thread,THREAD_ALL_ACCESS,NULL,"
+                       "NtCurrentProcess(),inertia_nudge_thread,NULL,0,0,0,0,NULL))");
+    ok &= require_text("a failed setup cannot enter the worker-success branch", final,
+                       "elseif(!inertia_nudge.failed)");
+    ok &= require_order("only the guarded worker-success branch marks the timer running", final,
+                        "elseif(!inertia_nudge.failed)", "inertia_nudge.running=TRUE;");
+    if (ok) pass("the inertia timer condition is initialised once with a monotonic fail-closed setup");
+}
+
+static void check_one_shot_inertia_ticks(const char *final)
+{
+    static const char tick_begin[] =
+        "voidpointer_inertia_tick(LONGinput_serial){"
+        "structx11drv_thread_data*data=x11drv_thread_data();";
+    static const char coast_begin[] = "caseINERTIA_COASTING:break;}";
+    static const char tick_end[] = "UINTtime=EVENT_x11_time_to_win32_time(event->time);";
+    size_t count;
+    int ok = 1;
+
+    ok &= require_text_between("each timer slot carries its tracker generation", final,
+                               "staticpthread_cond_tinertia_nudge_cond;staticstruct{",
+                               "for(i=0;i<INERTIA_NUDGE_SLOTS;i++)", "LONGinput_serial;");
+    ok &= forbid_text_between("timer slots carry no repeating interval", final,
+                              "staticpthread_cond_tinertia_nudge_cond;staticstruct{",
+                              "for(i=0;i<INERTIA_NUDGE_SLOTS;i++)", "UINTinterval;");
+    ok &= forbid_text_between("timer slots carry no repeating mode", final,
+                              "staticpthread_cond_tinertia_nudge_cond;staticstruct{",
+                              "for(i=0;i<INERTIA_NUDGE_SLOTS;i++)", "BOOLrepeating;");
+    ok &= forbid_text("the final timer has no repeating scheduler state", final, "repeating");
+    ok &= require_text("timer arms require an explicit generation", final,
+                       "staticvoidinertia_nudge_arm(HWNDhwnd,LONGinput_serial,UINTinterval)");
+    ok &= forbid_text("the repeating timer signature cannot return", final,
+                      "inertia_nudge_arm(HWNDhwnd,UINTinterval,BOOL");
+    ok &= forbid_text("coast arms cannot request a repeating timer", final,
+                      "INERTIA_TICK_MS,TRUE");
+    ok &= forbid_text("tracking arms cannot use the former Boolean timer mode", final,
+                      "INERTIA_DEADLINE_MS,FALSE");
+
+    ok &= require_text_between("the worker snapshots a due slot generation", final,
+                               "for(i=0;i<INERTIA_NUDGE_SLOTS;i++){"
+                               "HWNDhwnd=inertia_nudge.slots[i].hwnd;LONGinput_serial;BOOLok;",
+                               "staticvoidinertia_nudge_arm(",
+                               "input_serial=inertia_nudge.slots[i].input_serial;");
+    ok &= require_order("the worker snapshots the generation before consuming its slot", final,
+                        "input_serial=inertia_nudge.slots[i].input_serial;",
+                        "inertia_nudge.slots[i].hwnd=0;");
+    ok &= require_order("the worker consumes the slot before posting", final,
+                        "inertia_nudge.slots[i].hwnd=0;",
+                        "NtUserPostMessage(hwnd,WM_X11DRV_POINTER_TICK,"
+                        "(WPARAM)(ULONG)input_serial,0)");
+    ok &= require_text("the posted tick carries the captured generation in WPARAM", final,
+                       "ok=NtUserPostMessage(hwnd,WM_X11DRV_POINTER_TICK,"
+                       "(WPARAM)(ULONG)input_serial,0);");
+    ok &= require_text("a post failure only records the consumed generation", final,
+                       "if(!ok)TRACE(\"failedtopostpointertickforhwnd%pserial%ld\\n\","
+                       "hwnd,(long)input_serial);");
+    ok &= forbid_text_between("a post failure cannot clear a replacement schedule", final,
+                              "if(!ok)TRACE(", "staticvoidinertia_nudge_arm(",
+                              "inertia_nudge.slots[");
+
+    ok &= require_text("the real tick handler accepts a generation", final, tick_begin);
+    ok &= forbid_text("the untagged tick handler signature cannot return", final,
+                      "pointer_inertia_tick(void)");
+    ok &= require_text("the public tick declaration carries the generation", final,
+                       "externvoidpointer_inertia_tick(LONGinput_serial);");
+    ok &= require_text("the window dispatcher forwards the tick generation", final,
+                       "caseWM_X11DRV_POINTER_TICK:pointer_inertia_tick((LONG)wp);return0;");
+    ok &= require_text("idle or locally stale ticks return without touching state", final,
+                       "if(si->state==INERTIA_IDLE||si->input_serial!=input_serial){"
+                       "TRACE(\"stalepointertickserial%ld,current%ldstate%u\\n\","
+                       "(long)input_serial,(long)si->input_serial,si->state);return;}");
+    ok &= require_order("local stale-tick rejection precedes the process generation check", final,
+                        "if(si->state==INERTIA_IDLE||si->input_serial!=input_serial)",
+                        "if(si->input_serial!=InterlockedCompareExchange("
+                        "&pointer_input_serial,0,0))");
+    ok &= forbid_text_between("local stale-tick rejection cannot mutate tracker state", final,
+                              "if(si->state==INERTIA_IDLE||si->input_serial!=input_serial)",
+                              "if(si->input_serial!=InterlockedCompareExchange(",
+                              "si->state=INERTIA_");
+
+    if (count_occurrences(final, "inertia_nudge_arm(") != 6 ||
+        count_occurrences(final, "inertia_nudge_arm(hwnd,si->input_serial,") != 1 ||
+        count_occurrences(final, "inertia_nudge_arm(si->hwnd,si->input_serial,") != 4)
+    {
+        fail("every timer arm carries the current tracker generation",
+             "expected one definition and five generation-tagged arm calls");
+        ok = 0;
+    }
+    ok &= require_text("a new fine-scroll deadline carries its generation", final,
+                       "inertia_nudge_arm(hwnd,si->input_serial,INERTIA_DEADLINE_MS);");
+    ok &= require_text("a newly accepted coast tick carries its generation", final,
+                       "inertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);");
+    ok &= require_text("an early tracking tick rearms its generation only", final,
+                       "inertia_nudge_arm(si->hwnd,si->input_serial,"
+                       "INERTIA_DEADLINE_MS-(now-si->last_time));return;");
+
+    ok &= require_text("an elapsed-zero coast rearms before returning", final,
+                       "if(!(elapsed_ms=now-si->last_tick)){"
+                       "inertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);return;}");
+    ok &= require_text("a continuing coast rearms only at the handler end", final,
+                       "elseinertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);}");
+    count = count_occurrences_between(final, coast_begin, tick_end,
+                                      "inertia_nudge_arm(si->hwnd,si->input_serial,"
+                                      "INERTIA_TICK_MS)");
+    if (count != 2)
+    {
+        fail("coasting rearms only for elapsed-zero and continued output",
+             count == (size_t)-1 ? "coasting handler section was not found" :
+                                   "unexpected coast rearm site count");
+        ok = 0;
+    }
+    count = count_occurrences_between(final, tick_begin, tick_end, "inertia_nudge_arm(");
+    if (count != 3)
+    {
+        fail("the tick handler has only tracking, elapsed-zero, and terminal rearm sites",
+             count == (size_t)-1 ? "tick handler section was not found" :
+                                   "unexpected tick-handler arm site count");
+        ok = 0;
+    }
+    if (ok) pass("generation-tagged one-shot ticks cannot backlog or perturb replacement state");
+}
+
+static void check_inertia_lifecycle_cancellation(const char *final)
+{
+    int ok = 1;
+
+    ok &= require_text("DestroyWindow cancels continuation before an unknown-window return", final,
+                       "structx11drv_thread_data*thread_data=x11drv_thread_data();"
+                       "structx11drv_win_data*data;pointer_inertia_cancel();"
+                       "if(!(data=get_win_data(hwnd)))return;");
+    ok &= require_text("DestroyNotify cancels continuation before an unknown-window return", final,
+                       "structx11drv_win_data*data;BOOLembedded;pointer_inertia_cancel();"
+                       "if(!(data=get_win_data(hwnd)))returnFALSE;");
+    ok &= require_text("every capture transition cancels continuation before early return", final,
+                       "TRACE(\"hwnd%p,flags%#x,previous%p\\n\",hwnd,flags,previous);"
+                       "pointer_inertia_cancel();warp_emulation_cancel();"
+                       "if(!(flags&(GUI_INMOVESIZE|GUI_INMENUMODE)))return;");
+    if (ok) pass("capture and window destruction unconditionally cancel continuation state");
 }
 
 static void check_accumulator_routing(const char *safety)
@@ -696,7 +884,7 @@ static void check_inertia_limits(const char *stack, const char *safety, const ch
     ok &= require_text("the final policy retains the bounded packet helper", final,
                        "staticintpointer_inertia_packet(double*remainder,double*velocity,int*travel)");
     ok &= require_text("the final policy retains the guarded timer tick", final,
-                       "voidpointer_inertia_tick(void)");
+                       "voidpointer_inertia_tick(LONGinput_serial)");
     ok &= require_text("coast starting speed is limited to 1200 units per second", safety,
                        "#defineINERTIA_MAX_SPEED1200.0");
     ok &= require_text("the shared coast message counter is stored", safety,
@@ -715,8 +903,9 @@ static void check_inertia_limits(const char *stack, const char *safety, const ch
     ok &= require_text("measured starting speed is clamped before coasting", stack,
                        "if(speed>INERTIA_MAX_SPEED){vx*=INERTIA_MAX_SPEED/speed;"
                        "vy*=INERTIA_MAX_SPEED/speed;}");
-    ok &= require_text("full elapsed time is retained for decay", stack,
-                       "if(!(elapsed_ms=now-si->last_tick))return;");
+    ok &= require_text("an elapsed-zero tick returns only after rearming", final,
+                       "if(!(elapsed_ms=now-si->last_tick)){"
+                       "inertia_nudge_arm(si->hwnd,si->input_serial,INERTIA_TICK_MS);return;}");
     ok &= require_text("only the newest bounded frame is integrated", stack,
                        "frame_ms=elapsed_ms>INERTIA_MAX_FRAME_MS?INERTIA_MAX_FRAME_MS:elapsed_ms;"
                        "elapsed_dt=elapsed_ms/1000.0;frame_dt=frame_ms/1000.0;");
@@ -764,10 +953,12 @@ static void check_inertia_generation(const char *stack, const char *safety,
                        "current=si->state==INERTIA_TRACKING&&si->kind==kind&&"
                        "si->sourceid==sourceid&&si->hwnd==hwnd&&si->input_serial==input_serial;"
                        "input_serial=InterlockedIncrement(&pointer_input_serial);");
-    ok &= require_text("ticks reject a superseded tracker", stack,
-                       "if(si->state!=INERTIA_IDLE&&si->input_serial!="
-                       "InterlockedCompareExchange(&pointer_input_serial,0,0)){"
-                       "si->state=INERTIA_IDLE;si->count=0;inertia_nudge_stop(si->hwnd);return;}");
+    ok &= require_text("ticks reject a superseded process generation", final,
+                       "if(si->input_serial!=InterlockedCompareExchange(&pointer_input_serial,0,0)){"
+                       "si->state=INERTIA_IDLE;si->count=0;");
+    ok &= require_text("superseded process generations stop their scheduled tracker", stack,
+                       "si->state=INERTIA_IDLE;si->count=0;"
+                       "inertia_nudge_stop(si->hwnd);return;");
     ok &= require_text("guarded submission rejects a stale generation", safety,
                        "if(*expected_serial!=InterlockedCompareExchange(&pointer_input_serial,0,0))"
                        "{pthread_mutex_unlock(&pointer_input_mutex);returnFALSE;}");
@@ -1118,6 +1309,49 @@ static void check_legacy_wheel_copy_model(void)
         pass("legacy wheel-copy model admits only an exact generated event");
 }
 
+enum reference_touchpad_inertia_mode
+{
+    REFERENCE_TOUCHPAD_INERTIA_DISABLED,
+    REFERENCE_TOUCHPAD_INERTIA_AUTO,
+    REFERENCE_TOUCHPAD_INERTIA_ENABLED,
+};
+
+enum reference_middle_throw_mode
+{
+    REFERENCE_MIDDLE_THROW_DISABLED,
+    REFERENCE_MIDDLE_THROW_ENABLED,
+};
+
+static int reference_continuation_enabled(
+    int middle_drag, enum reference_touchpad_inertia_mode touchpad,
+    enum reference_middle_throw_mode middle_throw)
+{
+    if (middle_drag) return middle_throw == REFERENCE_MIDDLE_THROW_ENABLED;
+    return touchpad == REFERENCE_TOUCHPAD_INERTIA_ENABLED;
+}
+
+static void check_default_continuation_matrix(void)
+{
+    const enum reference_touchpad_inertia_mode default_touchpad =
+        REFERENCE_TOUCHPAD_INERTIA_ENABLED;
+    const enum reference_middle_throw_mode default_middle =
+        REFERENCE_MIDDLE_THROW_ENABLED;
+
+    if (!reference_continuation_enabled(0, default_touchpad, default_middle) ||
+        !reference_continuation_enabled(1, default_touchpad, default_middle) ||
+        reference_continuation_enabled(0, REFERENCE_TOUCHPAD_INERTIA_AUTO, default_middle) ||
+        reference_continuation_enabled(0, REFERENCE_TOUCHPAD_INERTIA_DISABLED, default_middle) ||
+        reference_continuation_enabled(1, default_touchpad, REFERENCE_MIDDLE_THROW_DISABLED) ||
+        !reference_continuation_enabled(0, REFERENCE_TOUCHPAD_INERTIA_ENABLED,
+                                        REFERENCE_MIDDLE_THROW_DISABLED) ||
+        !reference_continuation_enabled(1, REFERENCE_TOUCHPAD_INERTIA_DISABLED,
+                                        REFERENCE_MIDDLE_THROW_ENABLED))
+        fail("default continuation matrix enables both independent sources",
+             "a default was disabled, auto became active, or source controls were coupled");
+    else
+        pass("default continuation matrix enables fine inertia and middle throw; auto stays inert");
+}
+
 struct coast_result
 {
     struct safe_axis axes[2];
@@ -1304,12 +1538,16 @@ int main(int argc, char **argv)
     check_legacy_wheel_copy_guard(final);
     check_direct_packet_bounds(stack, safety, final);
     check_continuation_sources(final);
+    check_inertia_timer_initialization(final);
+    check_one_shot_inertia_ticks(final);
+    check_inertia_lifecycle_cancellation(final);
     check_accumulator_routing(safety);
     check_inertia_limits(stack, safety, final);
     check_inertia_generation(stack, safety, final);
     check_button_serial_and_middle_mode(safety);
     check_held_wheel_provenance();
     check_legacy_wheel_copy_model();
+    check_default_continuation_matrix();
     check_warp_probe_math();
     check_math_envelope();
 

@@ -187,31 +187,18 @@ Max creates a clean preferences file when it next starts.
 
 ## A fader jumps after loading a Max for Live device
 
-Start a fresh Live session with event diagnostics, load the affected M4L
-device, and drag a track fader without focusing the device panel:
+Install the latest release, then start a fresh Live session. Load the affected
+Max for Live device and drag a track fader without clicking the device first.
 
-```bash
-WINEDEBUG=-all,+event ableton-live
-```
-
-The fader should follow the pointer. Check `~/.log/ableton-wine/live.log` for
-this line:
-
-```text
-lost X focus to another client while clipping
-```
-
-That line confirms that Wine released stale clipping state from the embedded
-device process. Include the complete line, desktop, distribution, and Live
-version in a report. The mechanism and full test are in the
-[M4L input-injection note](notes/ABLETON-WINE-M4L-INPUT-INJECTION.md).
+The fader should follow the pointer without jumping. If it still jumps, report
+the device, Linux distribution, desktop, and Live version. Say whether clicking
+the device once stops the problem.
 
 ## An XWayland fader or knob moves farther than the pointer
 
-Warp emulation defaults to `disabled` until the XWayland test matrix is
-complete. The opt-in `auto` mode repairs a relative drag only after two
-matching raw and ordinary motion reports show that XWayland did not apply
-Live's pointer warp. Compare these one-launch settings:
+Lower the Master fader before comparing these settings.
+
+Compare these three one-launch settings:
 
 ```bash
 env WINE_X11_WARP_EMULATION=disabled ableton-live
@@ -219,17 +206,9 @@ env WINE_X11_WARP_EMULATION=auto ableton-live
 env WINE_X11_WARP_EMULATION=enabled ableton-live
 ```
 
-If `enabled` repairs the drag and `auto` does not, the desktop did not provide
-enough correlated events for automatic activation. If `disabled` repairs a
-drag that is wrong in `auto`, report that result because automatic mode should
-keep native behaviour whenever XWayland handled the warp. Include the cursor
-visibility, pointing device, desktop, Xorg or XWayland session, and Live
-version.
-
-This setting applies to Wine's X11 driver. It does not change Wine's native
-Wayland driver. See the
-[pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md) for the
-implementation rules and manual test matrix.
+Report which setting made the control follow the pointer most closely, whether
+the pointer was visible, your pointing device, Linux distribution, desktop,
+and Live version. Do not save `enabled`; it is only for comparison.
 
 ## Live 11: media files can crash Live
 
@@ -387,44 +366,45 @@ unchanged. For another desktop, change its shortcut settings when necessary.
 Mute or disconnect monitoring before reproducing a problem that can change a
 fader. Start with Live's Master fader low and use a limiter.
 
-Turn the feature you suspect off for one launch:
+Try the relevant command for one launch:
 
 ```bash
+# Smooth scrolling
 env WINE_X11_SMOOTH_SCROLLING=disabled ableton-live
+
+# Pinch zoom
 env WINE_X11_PINCH_ZOOM=disabled ableton-live
+
+# Middle-button navigation
 env WINE_X11_MIDDLE_DRAG=disabled ableton-live
+
+# Scrolling after release
 env WINE_X11_TOUCHPAD_INERTIA=disabled ableton-live
+
+# Middle-button movement after release
 env WINE_X11_MIDDLE_DRAG_THROW=disabled ableton-live
+
+# Mouse wheel while holding another button
 env WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled ableton-live
 ```
 
-Fine-scroll inertia and middle-drag throw already default to `disabled`. To
-test either experimental continuation explicitly, use:
+Scrolling inertia and middle-drag throw are on by default and work
+independently. If a saved setting switched either one off, restore it for one
+launch:
 
 ```bash
 env WINE_X11_TOUCHPAD_INERTIA=enabled ableton-live
 env WINE_X11_MIDDLE_DRAG_THROW=enabled ableton-live
 ```
 
-The current build forwards pointer movement during a drag, but drops
-fine-scroll valuators, pinch-generated wheel, and delayed wheel output while
-any button is held. Saved fine-scroll positions are still advanced, so ignored
-movement cannot catch up after release. A physical discrete wheel follows
-Wine's ordinary capture and button-state path by default when the device event
-and Wine agree on the held buttons; `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled`
-blocks that compatibility path too. Middle-button drag navigation accepts only
-its one withheld middle press and owns the chord while active.
-
-If scrolling only feels too fine, keep whole steps:
+If scrolling feels too sensitive, use whole wheel steps:
 
 ```bash
 env WINE_X11_SMOOTH_SCROLLING=notched ableton-live
 ```
 
-If turning a feature off changes the result, report the variable you used,
-your pointing device, desktop, Xorg or XWayland session, and Live version.
-The limits and manual acceptance tests are in
-[the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
+If turning a feature off changes the result, report the command you used, your
+pointing device, Linux distribution, desktop, and Live version.
 
 ## Report a problem
 

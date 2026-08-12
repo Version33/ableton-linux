@@ -2,59 +2,21 @@
 
 ## Unreleased
 
-- Added fine vertical and horizontal scrolling from XInput2. Each direct
-  report is limited to one notch per axis. While a button is held, Wine
-  forwards pointer movement but drops fine-scroll valuators, pinch-generated
-  wheel, and delayed wheel output. Saved scroll positions are advanced so
-  ignored movement cannot catch up after release.
-- Restored stock-compatible physical wheel notches during a stable held-button
-  chord. They keep capture and `MK_*` state by default, while the setting
-  `WheelWhileButtonHeld=disabled` restores blanket suppression. Smooth,
-  synthesized, and delayed packets remain blocked during a drag. Correlated
-  legacy core copies of XInput2 smooth reports are suppressed too, and packets
-  queued before a press still fail the process input-serial check.
-- Added touchpad pinch as Ctrl+wheel on XInput2 2.4. Wine creates no Ctrl key
-  input. Each update and cancellation correction is limited to one notch.
-- Added middle-button drag navigation. A plain middle click remains a click.
-  Drag output is limited to one notch per axis and is accepted only while
-  exactly its withheld middle press remains down.
-- Split experimental fine-scroll inertia from middle-drag throw; both now
-  default to `disabled` without changing direct fine scrolling or direct
-  middle navigation. Explicit fine-scroll inertia accepts the usual XI2 end
-  hint or a conservative 100 ms inactivity fallback. Middle throw measures
-  the raw terminal path from the real press to Button2 release, including
-  short compositor-coalesced flicks. Each delayed message is limited to one
-  eighth of a notch, each axis to four notches, one continuation to 192
-  messages and 960 units across both axes, and starting speed to 1,200 units
-  per second. Missed frames are discarded instead of replayed as a burst.
-- Delayed pointer messages retain their Wine window and screen point without
-  moving the cursor. They do not follow later capture, create raw input, or
-  merge. Wine drops them after any unexpected button transition.
-- Added cleanup for stale cursor-clipping state in an embedded M4L process
-  (issue 122). Losing X focus to another client now releases the local grab
-  before reparenting and window-state guards can ignore the event, so the host
-  cannot turn global raw deltas into fabricated Live cursor positions. Runtime
-  confirmation on an affected machine remains open.
-- Added guarded XWayland warp emulation for Live's relative fader and knob
-  drags. Automatic mode correlates raw and ordinary motion, requires two
-  observed failed warps, and stays native when XWayland handled the warp or
-  the evidence is ambiguous. Raw samples are keyed to one connection, device,
-  generation, and timestamp; cross-thread synthetic warp events are rejected.
-  Focus, capture, clipping, device, thread, refused warp, and button changes
-  cancel the process-wide state.
-- Fine scrolling, pinch, direct middle navigation, and held-button physical
-  wheel compatibility are enabled by default. Fine-scroll inertia,
-  middle-drag throw, and XWayland warp emulation default to `disabled`.
-  Named pointer values are case-insensitive; `off` and `0` disable settings
-  that accept `disabled`, and malformed values now appear on the launcher's
-  `winediag` log before Wine falls through to the next configuration source.
-  XInput2 cannot distinguish a touchpad from a high-resolution or
-  free-spinning wheel.
-- Added `make check` for deterministic source and maths checks. It does not run
-  Wine or Live. The checks cover warp raw/cooked classification, first-delta
-  preservation, cross-thread synthetic rejection, and double-emulation
-  prevention. Manual acceptance tests remain in
-  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
+  navigation. A plain middle click remains a click.
+- Touchpad scrolling and pinch zoom cannot move a control while a mouse button
+  is held. A mouse wheel still works except during middle-button navigation,
+  and pressing a button stops earlier continued movement.
+- Added scrolling inertia and middle-drag throw. Both are on by default. Users
+  can switch either one off without changing the other. New input or a window
+  change stops continued movement. Live does not replay missed movement after
+  a pause.
+- Added a repair for fader jumps after loading a Max for Live device. Testing
+  on the affected Fedora computer remains open.
+- Added an off-by-default XWayland repair for faders and knobs that move farther
+  than the pointer. Desktop testing remains open.
+- Named pointer values ignore letter case. `off` and `0` work wherever
+  `disabled` works. Invalid settings appear in the normal launch log.
 
 - Link setup records its version marker only when the service step
   completed, so a host where that step failed retries it on the next

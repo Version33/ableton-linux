@@ -13,8 +13,8 @@ catch, a build.sh/pipefail tooling gotcha — is in
 
 The current Wine series contains 90 files, numbered 0001 through 0095.
 Patches 0027, 0044, and 0066 through 0068 are intentionally absent. The
-ClickSentinel work originally carried as 0066 and 0067 is semantically ported
-after the gesture stack as 0093 and 0094.
+ClickSentinel changes once numbered 0066 and 0067 now appear after the gesture
+patches as 0093 and 0094.
 
 ## Applying the series
 
@@ -269,19 +269,15 @@ Apply them in sequence with the rest of the series.
   an unconditional MESSAGE line, and prints a one-line summary when the
   swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
-- `0072`: read the six pointer settings once when a process starts, with a
-  launch override followed by application, global, and built-in values. Add
-  middle-button drag navigation with Wine's normal drag distance, a one-notch
-  limit per report, normal middle clicks, and cursor correction on release. See
+- `0072`: add six pointer settings and middle-button drag navigation. Keep
+  normal middle clicks and correct the pointer position after a drag. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0073`: keep vertical and horizontal wheel coordinates in screen space and
-  exclude both messages from non-client mouse prediction. See
+- `0073`: report vertical and horizontal wheel movement at the pointer's screen
+  position. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0074`: convert touchpad pinch to Ctrl+wheel without Ctrl key events and
-  limit each pinch message to one notch. Add wheel delivery at a fixed window
-  and screen point. Fixed messages do not move the cursor, follow capture,
-  create raw input, or merge, and are dropped while a mouse button is held.
-  Limit ordinary queued wheel messages to one notch. See
+  keep the zoom at the window and point where it began. Limit each update to
+  one wheel step and stop it while a mouse button is held. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
@@ -385,57 +381,36 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
-- `0090`: convert cumulative XInput2 values into fine-grained scrolling at a
-  fixed report point. Limit each report to one notch, discard device resets,
-  and reset saved values after focus, window, grab, or device changes. While
-  a button is held, forward pointer movement but send no scroll-axis wheel
-  input or delayed remainder. See
+- `0090`: add fine vertical and horizontal scrolling. Keep each update at its
+  starting point, ignore large jumps, and clear saved movement when the focus,
+  window, pointer control, or device changes. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0091`: continue fast scrolling or a middle-button drag only after a
-  matching end signal. Limit output to the latest 16 ms, 30 units per
-  message, and 480 units per axis for the complete movement. Keep delayed
-  messages at their starting point and cancel on new input or context change.
+- `0091`: add bounded continued movement after a fast scroll or middle-button
+  drag. Keep it at its starting point and stop it on new input or a window
+  change.
   See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0092`: consolidate the pointer safety rules in the applied source. Drop
-  ordinary wheel output while any button is held, advance saved scroll values
-  without replay, and permit middle-drag output only with its one withheld
-  middle press. Recheck stored-position wheel messages after button changes.
-  Limit continued movement to 16 attempted messages across both axes, 15 units
-  per message, 120 units per axis, and 1,200 units per second. Reset ending
-  speed at device jumps and newer process input. Add the
-  `update_driver_button` server request, grow `union message_data` from 48 to
-  56 bytes, regenerate the protocol files, and bump
-  `SERVER_PROTOCOL_VERSION` from 957 to 961. Patch 0095 later restores
-  physical discrete wheel input under a stable held-button chord without
-  weakening these stored-message checks. See
+- `0092`: stop old scroll, zoom, or continued movement from reaching a control
+  after a button press. Keep ignored movement from catching up after release
+  and limit middle-button navigation to its own held button. Add the
+  `update_driver_button` request, grow `union message_data` from 48 to 56 bytes,
+  regenerate the protocol files, and raise `SERVER_PROTOCOL_VERSION` from 957
+  to 961. Patch 0095 restores normal wheel use while a button is held without
+  weakening the checks for older movement. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0093`: release stale local clipping state when an embedded Max/JUCE host
-  loses X focus to another client, including FocusOut paths normally ignored
-  during reparenting. This prevents the host from converting global XI2 raw
-  deltas into fabricated cursor positions in Live's shared input stream
+- `0093`: clear old pointer state when a Max for Live window loses focus. This
+  stops the device from sending false pointer positions to Live after loading
   (issue 122). Ported from ClickSentinel commit `ddea297054`; see
   `notes/ABLETON-WINE-M4L-INPUT-INJECTION.md`.
-- `0094`: repair Live's relative fader and knob re-anchoring when a visible-
-  cursor XWayland warp is not reflected in the compositor pointer. The
-  built-in mode stays disabled pending hardware validation. Opt-in automatic
-  mode correlates accelerated XI2 raw deltas with cooked motion, requires two
-  observed failed warps, and remains native when XWayland handled the warp or
-  the evidence is ambiguous. State is process-wide; raw evidence is keyed to
-  one connection, source, generation, and timestamp; cross-thread synthetic
-  warp events are rejected; and focus, capture, clipping, device, thread,
-  refused warp, and button boundaries cancel it. Reworked from ClickSentinel
-  commit `d2996582b5`; see
+- `0094`: add an optional XWayland repair for faders and knobs that move farther
+  than the pointer. It stays off by default and automatic mode waits until it
+  sees the fault twice. Focus, pointer control, device, thread, and button
+  changes stop the repair. Reworked from ClickSentinel commit `d2996582b5`; see
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
-- `0095`: separate experimental fine-scroll inertia from middle-drag throw and
-  default both continuations off without changing direct fine scrolling or
-  direct middle navigation. Add a conservative opt-in XI2 inactivity end,
-  measure middle throw from its raw terminal path and real Button2 release,
-  and widen the bounded continuation envelope to 15 units per packet, 480 per
-  axis, and 192 packets. Restore stock-routed physical wheel notches during a
-  stable held-button chord behind `WheelWhileButtonHeld`, while smooth,
-  pinch-generated, stored, and delayed packets retain the 0092 button and
-  input-serial gates. Correlate and suppress the legacy core Button4-7 copies
-  of XI2 smooth reports before that compatibility path. Named values become
-  case-insensitive, `off` and `0` disable compatible settings, and malformed
-  values use `winediag`. See
+- `0095`: separate fine-scroll inertia from middle-drag throw and enable both
+  by default. Add the 100 ms scroll fallback and start throw only on
+  middle-button release. Keep normal wheel steps during a button hold, except
+  during middle-button navigation, while blocking smooth scrolling, pinch and
+  earlier continued movement. Stop continued movement when its input or target
+  changes, and disable it if timing setup fails. Named values ignore letter
+  case; `off` and `0` mean `disabled` where supported. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.

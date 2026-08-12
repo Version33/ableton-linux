@@ -113,8 +113,8 @@ Run the pointer safety checks with:
 make check
 ```
 
-These source and maths checks inspect the production patch code and exercise
-the pointer limits with hostile inputs. They do not run Wine or Live.
+These checks inspect the pointer changes and test their limits with difficult
+input. They do not start Wine or Live.
 
 Verify the pinned source inputs and run the same pointer checks with:
 
@@ -155,43 +155,37 @@ compatibility defaults.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
-- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` selects the XInput2
-  fine-scroll path for one launch. `disabled` leaves ordinary wheel input
-  available. Precise scrolling is the default.
-- `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` overrides touchpad pinch zoom
-  for one launch (registry value `PinchZoom`).
-- `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` overrides
-  middle-button drag navigation for one launch (registry value `MiddleDrag`).
-  Navigation is on by default.
+- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` controls smooth
+  scrolling for one launch. `precise` is the default. `notched` keeps
+  whole wheel steps. `disabled` leaves normal mouse-wheel input available.
+- `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` controls touchpad pinch zoom for
+  one launch. Pinch zoom is on by default.
+- `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` controls
+  middle-button drag navigation for one launch. Navigation is on by default.
 - `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` controls continued movement
-  after a fast fine scroll. It defaults to `disabled`; `auto` is also disabled
-  on XInput2 because XI2 cannot identify the device class. Explicit `enabled`
-  permits the normal repeated-value end hint and a conservative 100 ms
-  inactivity fallback.
-- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls movement after a fast
-  middle drag and its real Button2 release (registry value
-  `MiddleDragThrow`). It defaults to `disabled` and does not change direct
-  middle-drag navigation.
+  after a quick smooth scroll. It defaults to `enabled`. `auto` currently
+  behaves like `disabled` on X11. Turning inertia off leaves direct scrolling
+  unchanged.
+- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls whether a quick
+  middle-button drag keeps moving after release. It defaults to `enabled`.
+  `disabled` leaves direct middle-button navigation unchanged.
 - `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
-  discrete wheel notches during a stable held-button chord (registry value
-  `WheelWhileButtonHeld`). It defaults to `enabled`, preserving Wine's normal
-  capture and `MK_*` state. It never enables fine-scroll valuators, pinch, or
-  delayed wheel packets during a drag.
+  mouse-wheel clicks while another button is held. It defaults to `enabled`.
+  The wheel stays blocked during middle-button navigation. Touchpad scrolling,
+  pinch and continued movement stay blocked during a drag.
 - `WINE_X11_INERTIA_CURVE=exponential|linear` and
-  `WINE_X11_INERTIA_RATE=<0.5..16.0>` override the inertia decay for one
-  launch (registry values `InertiaCurve` and `InertiaRate`).
-- `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls relative fader and
-  knob re-anchoring under XWayland (registry value `WarpEmulation`). It
-  defaults to `disabled` pending the desktop test matrix. Opt-in `auto`
-  activates only after two raw/cooked event correlations show that XWayland
-  did not apply the warp; `enabled` is a diagnostic override.
+  `WINE_X11_INERTIA_RATE=<0.5..16.0>` change how quickly continued movement
+  slows down.
+- `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
+  for faders and knobs that move farther than the pointer. It defaults to
+  `disabled`. `auto` waits until it sees the fault twice. `enabled` forces the
+  repair for one launch.
 
-Named pointer values are case-insensitive. `off` and `0` are aliases for
-`disabled` wherever `disabled` is an accepted value. Malformed values are
-reported on the `winediag` channel and Wine continues to the next
-configuration source.
+Named pointer values ignore letter case. `off` and `0` mean `disabled` where
+supported. Wine reports an invalid value in the normal launch log, then uses
+the next saved choice or default.
 
-The registry names, defaults, safety limits, and manual acceptance tests are in
+The settings, defaults, limits, and hands-on checks are in
 [the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
 
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
