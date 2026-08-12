@@ -1,5 +1,6 @@
 /dist/*
 !/dist/BUILD-INFO*.txt
+!/dist/wine-d2d1-nspa-11.13-*.tar.zst.sha256
 /.ccache/
 .env
 *.log

@@ -1,0 +1,209 @@
+From e5ef3d4355275b790b94f1f286cfa872ce22e6c0 Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Mon, 10 Aug 2026 18:13:53 +0200
+Subject: [PATCH 3/7] config: accept any buffer size in range, log every
+ adjustment
+
+Live accepts non-power-of-two ASIO buffer sizes (it runs 882 and 960
+against FlexASIO), and all three validation sites silently replaced or
+rejected such values: the INI loader and the environment override fell
+back, and CreateBuffers' host-controlled branch returned -997 (issue #49
+made the silent substitution a 4x-worse quantum mismatch). Validation is
+now range-only [32, 8192] at all three sites; out-of-range values keep
+the previous value with a log line.
+
+GetBufferSize's host-controlled branch advertises granularity 1: per the
+ASIO SDK a positive granularity means arithmetic steps, -1 means
+power-of-two steps, and -1 no longer matches what CreateBuffers accepts.
+
+The port buffers param no longer derives SPA_PARAM_BUFFERS_align from
+the buffer size: PipeWire's allocator does pure bitmask arithmetic on
+align and validates nothing, so a non-power-of-two align (reachable once
+sizes are range-only) silently corrupts the buffer layout. align is a
+fixed 16, the context's SIMD minimum; stock clients omit it entirely.
+
+test_config's validation group moves to the new contract (1000/883/960
+valid, out-of-range still falls back to the default) and gains INI
+round-trip cases for 883, 960 and 1000.
+---
+ src/asio.c               | 34 ++++++++++++++++++++++++++--------
+ src/audio.c              | 10 +++++++++-
+ src/config.c             | 15 +++++++++++++--
+ tests/unit/test_config.c | 33 ++++++++++++++++++++++++++++++---
+ 4 files changed, 78 insertions(+), 14 deletions(-)
+
+diff --git a/src/asio.c b/src/asio.c
+index ba791e7..9ec8df0 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -1775,7 +1775,11 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
+         *minSize       = PIPEASIO_MIN_BUFFER_SIZE;
+         *maxSize       = PIPEASIO_MAX_BUFFER_SIZE;
+         *preferredSize = pref;
+-        *granularity   = -1;
++        /* Positive granularity means arithmetic steps of that many frames
++         * (ASIO SDK); -1 would promise power-of-two steps, which no longer
++         * matches CreateBuffers' range-only contract.  Any frame count in
++         * [minSize, maxSize] is accepted. */
++        *granularity   = 1;
+     }
+     method_end(&token);
+     return 0;
+@@ -2032,7 +2036,7 @@ apply_pending_config(IPipeASIOImpl *This)
+         This->pipeasio_fixed_buffersize     = cfg.fixed_buffer_size ? TRUE : FALSE;
+         This->pipeasio_follow_device_clock  = cfg.follow_device_clock ? TRUE : FALSE;
+         This->pipeasio_realtime             = cfg.realtime ? TRUE : FALSE;
+-        This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader pow2-validated */
++        This->pipeasio_preferred_buffersize = cfg.buffer_size; /* loader range-validated */
+         This->pipeasio_sample_rate          = cfg.sample_rate;
+         lstrcpynA(This->pipeasio_output_device, cfg.output_device,
+                   sizeof This->pipeasio_output_device);
+@@ -2171,7 +2175,11 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+     }
+     else
+     {
+-        if (!pipeasio_buffer_size_supported(bufferSize) || (bufferSize & (bufferSize - 1)) != 0)
++        /* Any size inside the range is accepted, power of two or not: Live
++         * requests 882- and 960-sample buffers in host-controlled mode
++         * (issue #49), and GetBufferSize advertises granularity 1 for
++         * exactly that contract (pipeasio-any-buffer-size). */
++        if (!pipeasio_buffer_size_supported(bufferSize))
+         {
+             set_last_error(This, "unsupported buffer size %ld", (long)bufferSize);
+             goto fail;
+@@ -2768,11 +2776,21 @@ configure_driver(IPipeASIOImpl *This)
+         && pipeasio_parse_bool(environment_variable, &flag))
+         This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
+     if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
+-                         sizeof(environment_variable))
+-        && pipeasio_parse_int(environment_variable, PIPEASIO_MIN_BUFFER_SIZE,
+-                              PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+-        && !(parsed & (parsed - 1)))
+-        This->pipeasio_preferred_buffersize = parsed;
++                         sizeof(environment_variable)))
++    {
++        /* Any size inside the range passes through as-is, power of two or
++         * not: Live accepts such sizes, and substituting the config value
++         * here replaced the user's request in silence (issue #49).  Every
++         * adjustment is logged (pipeasio-any-buffer-size). */
++        if (pipeasio_parse_int(environment_variable, PIPEASIO_MIN_BUFFER_SIZE,
++                               PIPEASIO_MAX_BUFFER_SIZE, &parsed))
++            This->pipeasio_preferred_buffersize = parsed;
++        else
++            WARN("PIPEASIO_PREFERRED_BUFFERSIZE \"%s\" is outside [%d, %d] or unreadable; "
++                 "keeping %d (pipeasio-any-buffer-size)\n",
++                 environment_variable, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE,
++                 (int)This->pipeasio_preferred_buffersize);
++    }
+     if (read_environment("PIPEASIO_SAMPLE_RATE", environment_variable, sizeof(environment_variable))
+         && pipeasio_parse_int(environment_variable, 0, INT_MAX, &parsed))
+         This->pipeasio_sample_rate = parsed;
+diff --git a/src/audio.c b/src/audio.c
+index 291631f..06d82c2 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -782,12 +782,20 @@ audio_activate(audio_client_t *c)
+ 
+         uint8_t                param_buf[1024];
+         struct spa_pod_builder b        = SPA_POD_BUILDER_INIT(param_buf, sizeof param_buf);
++        /* align is a small fixed power of two, never the buffer size:
++         * PipeWire's allocator does pure bitmask arithmetic on align and
++         * validates nothing, so a non-power-of-two align (reachable now that
++         * buffer sizes are range-validated only) silently corrupts the
++         * buffer layout, and even power-of-two sizes would request up to a
++         * 32 KiB alignment for no benefit.  Stock clients omit align
++         * entirely; 16 matches the context's SIMD minimum
++         * (pipeasio-any-buffer-size). */
+         const struct spa_pod  *params[] = {
+             spa_pod_builder_add_object(
+                     &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers, SPA_PARAM_BUFFERS_buffers,
+                     SPA_POD_Int(2), SPA_PARAM_BUFFERS_size, SPA_POD_Int((int)bsize_bytes),
+                     SPA_PARAM_BUFFERS_stride, SPA_POD_Int(sizeof(audio_sample_t)),
+-                    SPA_PARAM_BUFFERS_align, SPA_POD_Int((int)bsize_bytes),
++                    SPA_PARAM_BUFFERS_align, SPA_POD_Int(16),
+                     SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(1 << SPA_DATA_MemFd)),
+         };
+ 
+diff --git a/src/config.c b/src/config.c
+index ca08166..134381d 100644
+--- a/src/config.c
++++ b/src/config.c
+@@ -113,9 +113,20 @@ apply_kv(struct pipeasio_config *config, const char *key, const char *value)
+     }
+     else if (!strcmp(key, PIPEASIO_KEY_BUFFER_SIZE))
+     {
+-        if (pipeasio_parse_int(value, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+-            && !(parsed & (parsed - 1)))
++        /* Any size inside [PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE]
++         * passes through as-is, power of two or not: Live accepts such sizes
++         * (it runs 882- and 960-frame buffers against FlexASIO), and
++         * rejecting them here replaced the user's value in silence
++         * (issue #49).  Out-of-range and unreadable values keep the default,
++         * and every adjustment is logged (pipeasio-any-buffer-size). */
++        if (pipeasio_parse_int(value, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE, &parsed))
+             config->buffer_size = parsed;
++        else
++            fprintf(stderr,
++                    "pipeasio: config buffer_size \"%s\" is outside [%d, %d] or unreadable; "
++                    "keeping %d (pipeasio-any-buffer-size)\n",
++                    value, PIPEASIO_MIN_BUFFER_SIZE, PIPEASIO_MAX_BUFFER_SIZE,
++                    config->buffer_size);
+     }
+     else if (!strcmp(key, PIPEASIO_KEY_FIXED_BUFFER_SIZE))
+     {
+diff --git a/tests/unit/test_config.c b/tests/unit/test_config.c
+index 7f90d1d..04b7f63 100644
+--- a/tests/unit/test_config.c
++++ b/tests/unit/test_config.c
+@@ -128,18 +128,45 @@ main(void)
+         EXPECT_TRUE(strcmp(c.node_name, "MyDAW") == 0);
+     }
+ 
+-    /* Out-of-range / malformed numerics fall back to defaults. */
++    /* Range validation (pipeasio-any-buffer-size): any buffer size inside
++     * [32, 8192] is accepted as-is, power of two or not; out-of-range and
++     * malformed numerics fall back to defaults. */
+     TEST_GROUP("validation")
+     {
+         write_cfg("[pipeasio]\n"
+                   "inputs = -3\n"
+-                  "buffer_size = 1000\n" /* not a power of two */
++                  "buffer_size = 1000\n" /* in range, not a power of two: valid */
+                   "sample_rate = -5\n");
+         struct pipeasio_config c;
+         pipeasio_config_load(&c);
+         EXPECT_EQ(c.inputs, PIPEASIO_DEFAULT_INPUTS);
+-        EXPECT_EQ(c.buffer_size, PIPEASIO_DEFAULT_BUFFER_SIZE);
++        EXPECT_EQ(c.buffer_size, 1000);
+         EXPECT_EQ(c.sample_rate, 0);
++
++        write_cfg("[pipeasio]\nbuffer_size = 16\n"); /* below the floor */
++        pipeasio_config_load(&c);
++        EXPECT_EQ(c.buffer_size, PIPEASIO_DEFAULT_BUFFER_SIZE);
++
++        write_cfg("[pipeasio]\nbuffer_size = 16384\n"); /* above the ceiling */
++        pipeasio_config_load(&c);
++        EXPECT_EQ(c.buffer_size, PIPEASIO_DEFAULT_BUFFER_SIZE);
++    }
++
++    /* The non-power-of-two sizes hosts actually use round-trip through the
++     * INI unchanged (Live runs 882/960-frame buffers; 1000 was the old
++     * fall-back-to-default case). */
++    TEST_GROUP("non-power-of-two INI round trip")
++    {
++        static const int sizes[] = { 883, 960, 1000 };
++        for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; ++i)
++        {
++            char body[64];
++            snprintf(body, sizeof body, "[pipeasio]\nbuffer_size = %d\n", sizes[i]);
++            write_cfg(body);
++            struct pipeasio_config c;
++            EXPECT_TRUE(pipeasio_config_load(&c));
++            EXPECT_EQ(c.buffer_size, sizes[i]);
++        }
+     }
+ 
+     /* Comments, stray whitespace, unknown keys, bool spellings, no header. */
+-- 
+2.55.0
+

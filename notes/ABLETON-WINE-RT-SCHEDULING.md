@@ -1,82 +1,41 @@
-# Realtime scheduling and low-core systems
+# Wine and PipeASIO scheduling
 
-Status: the launcher starts Wine under `SCHED_RR` priority 10 whenever
-`chrt -r 10 true` succeeds. Threads that inherit this policy use RR 10.
-PipeASIO separately requests `SCHED_FIFO` priority 15 for its data-loop thread.
-`ABLETON_RT=off` disables the launcher's RR policy for one launch, but not
-PipeASIO's policy. The effect on low-core systems has not been measured.
+The launcher and PipeASIO control different threads. The launcher uses
+round-robin priority 10 when `chrt -r 10 true` succeeds. PipeASIO 1.5 keeps its
+audio thread on normal scheduling by default, even if it inherited the
+launcher's policy.
 
-Realtime scheduling was not the cause of issue #29. The same host permissions
-worked in release 2026.07.17.3; the later playback fault came from
-`-DontCombineAPCs`. See
-[ABLETON-WINE-APC-COALESCING.md](ABLETON-WINE-APC-COALESCING.md).
-
-## Current launcher behavior
-
-The launcher tests `chrt -r 10 true`. When it succeeds, the launch command
-starts with `chrt -r 10 wine`.
-
-`scripts/setup-realtime.sh` can grant this permission, but some distributions
-already set a high `rtprio` limit. On those systems, realtime mode starts
-without running the setup script.
-
-To force normal scheduling:
+Compare the launcher with normal scheduling:
 
 ```bash
-ABLETON_RT=off "$HOME/.local/bin/ableton-live"
+env ABLETON_RT=off ableton-live
 ```
 
-## Low-core risks to test
-
-These are hypotheses, not confirmed faults:
-
-1. Linux normally limits realtime tasks to 950 ms of each one-second period.
-   Saturated realtime work can therefore be throttled for the remaining
-   50 ms.
-2. Live and Wine threads that inherit the launcher's policy share the same
-   round-robin priority. PipeASIO instead requests FIFO 15 for its data-loop
-   thread.
-3. Live's realtime threads outrank the separately running
-   `SCHED_OTHER` wineserver, even though they make synchronous wineserver
-   calls.
-
-## Pending comparison
-
-List the CPUs available to the current shell:
+Compare PipeASIO's own real-time request separately:
 
 ```bash
-taskset -pc "$$"
+env PIPEASIO_REALTIME=on ableton-live
+env PIPEASIO_REALTIME=off ableton-live
 ```
 
-Skip this comparison if the list contains fewer than four CPUs. Otherwise,
-replace `0-3` below with four CPU IDs from that list:
+`scripts/setup-realtime.sh` can grant the required user limit when the
+distribution does not already provide it.
 
-```bash
-CPUS=0-3
-ABLETON_RT=off taskset -c "$CPUS" "$HOME/.local/bin/ableton-live"
-taskset -c "$CPUS" "$HOME/.local/bin/ableton-live"
-```
+## Low-core comparison still needed
 
-Confirm the policies during each run:
+Launcher-wide round-robin scheduling has not been measured across low-core
+systems. Real-time work can be throttled after consuming the kernel's runtime
+allowance, and normal-scheduled wineserver work may still sit behind Live
+threads making synchronous requests.
+
+Use the same Set, buffer, CPU set, and run length. Record thread classes with:
 
 ```bash
 ps -eLo pid,tid,cls,rtprio,comm
 ```
 
-The `ABLETON_RT=off` run should show `TS` for Live and Wine threads. The
-default run should show `RR` for inherited threads. PipeASIO may show `FF` in
-both runs. Play the same reference set for five minutes and record the
-PipeWire xrun delta, Live's DSP load, and UI response. Keep Live open and
-playing while `scripts/bench-run.sh` samples it for 60 seconds:
-
-```bash
-./scripts/bench-run.sh before/launcher-rr 3 42
-./scripts/bench-run.sh after/launcher-rr 1 40
-```
-
-Use `before` for the `ABLETON_RT=off` run and `after` for the default RR run.
-Replace the example numbers with each run's five-minute `pw-top` ERR delta and
-Live DSP percentage. The script appends the result to `bench/results.csv`.
-
-Keep the current default until that comparison shows whether launcher-wide RR
-helps, needs a CPU-count limit, or should be narrowed.
+Record PipeWire xruns, Live DSP load, UI response, and process CPU. Compare
+`ABLETON_RT=off` with the default first, then compare
+`PIPEASIO_REALTIME=on` only as a separate variable. The
+`-DontCombineAPCs` playback failure was unrelated to real-time permission; see
+[the APC option record](ABLETON-WINE-APC-COALESCING.md).

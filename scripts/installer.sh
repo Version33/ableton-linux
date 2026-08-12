@@ -5,10 +5,14 @@
 set -euo pipefail
 export LC_ALL=C.UTF-8
 here="$(cd "$(dirname "$0")" && pwd)"
+root="$(cd "$here/.." && pwd)"
 if [ -d "$here/../bin" ]; then
-    export PATH="$(cd "$here/../bin" && pwd):$PATH"
+    kit_bin="$(cd "$here/../bin" && pwd)"
+    export PATH="$kit_bin:$PATH"
 fi
 . "$here/lib/config.sh"
+. "$here/lib/pipeasio.sh"
+. "$here/lib/manifest.sh"
 
 usage()
 {
@@ -21,6 +25,7 @@ Usage:
                    [--link=keep|off|session|always] [--yes] [--dry-run]
   installer runtime install [--runtime-root PATH] [--yes] [--dry-run]
   installer prefix create|update [--prefix PATH] [--live-major 11|12] [--dry-run]
+  installer prefix repair-live11 [--prefix PATH] [--dry-run]
   installer link enable [--mode=session|always] | disable | status
   installer uninstall [--keep-prefix|--delete-prefix] [--yes] [--dry-run]
   installer plan COMMAND ...
@@ -161,7 +166,7 @@ if [ "$explicit_command" -eq 1 ] && [ -n "$compat_mode" ]; then
     echo "!! an explicit command conflicts with a compatibility mode flag" >&2
     exit 2
 fi
-# The legacy --no-launch contract disabled both the Live payload and Link.
+# The legacy --no-launch behaviour disabled both the Live payload and Link.
 # Apply its Link default after parsing so an explicit modern or compatibility
 # Link option wins regardless of argument order.
 if [ "$compat_no_launch" -eq 1 ] && [ "$link_seen" -eq 0 ] && [ -z "$compat_link" ]; then
@@ -191,7 +196,8 @@ if [ "$compat_prefix" -eq 1 ]; then
 fi
 
 case "$command_name:$subcommand" in
-    runtime:install|prefix:create|prefix:update|link:enable|link:disable|link:status|install:|update:|uninstall:) ;;
+    runtime:install|prefix:create|prefix:update|prefix:repair-live11|\
+    link:enable|link:disable|link:status|install:|update:|uninstall:) ;;
     *) echo "!! invalid command: $command_name ${subcommand:-}" >&2; usage >&2; exit 2 ;;
 esac
 [ "$prefix_seen" -eq 0 ] || [ "$compat_prefix" -eq 1 ] || [ -n "$cli_prefix" ] || {
@@ -236,6 +242,11 @@ case "$command_name:$subcommand" in
     prefix:create|prefix:update)
         [ -z "$live_payload$cli_link$link_mode_option" ] || invalid_option "non-prefix options"
         [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] || invalid_option "non-prefix options" ;;
+    prefix:repair-live11)
+        [ -z "$live_payload$cli_runtime$cli_major$cli_link$link_mode_option" ] \
+            || invalid_option "non-repair options"
+        [ "$skip_live$delete_prefix$keep_prefix$assume_yes" = 0000 ] \
+            || invalid_option "non-repair options" ;;
     link:enable)
         if [ -n "$cli_link" ] && { [ "$explicit_command" -eq 1 ] || [ "$compat_link" != session ]; }; then
             invalid_option --link
@@ -254,6 +265,20 @@ if [ -n "$cli_prefix" ]; then ABLETON_WINEPREFIX="$cli_prefix"; export ABLETON_W
 if [ -n "$cli_runtime" ]; then ABLETON_WINE_ROOT="$cli_runtime"; export ABLETON_WINE_ROOT; fi
 if [ -n "$cli_major" ]; then ABLETON_LIVE_VERSION="$cli_major"; export ABLETON_LIVE_VERSION; fi
 ableton_config_init
+
+# PR #182 briefly owned a configured custom Link binary.  Only a narrowly
+# proven install of that release is migrated to the canonical managed path.
+if [ "$command_name" = install ] || [ "$command_name" = update ] \
+   || [ "$command_name:$subcommand" = link:enable ] \
+   || [ "$command_name:$subcommand" = link:disable ]; then
+    if [ "$ABLETON_LINKD" != "$ABLETON_DATA_HOME/ableton-linkd" ] \
+       && ableton_pr182_custom_link_recorded "$ABLETON_LINKD"; then
+        ABLETON_PR182_CUSTOM_LINKD="$ABLETON_LINKD"
+        ABLETON_LINKD="$ABLETON_DATA_HOME/ableton-linkd"
+        export ABLETON_PR182_CUSTOM_LINKD ABLETON_LINKD
+        ableton_config_snapshot_capture
+    fi
+fi
 
 prior_link="$ABLETON_LINK_MODE"
 desired_link="$cli_link"
@@ -362,6 +387,28 @@ host_preflight()
 }
 host_preflight
 
+# Gate only commands that replace the PipeASIO-bearing runtime or register it.
+# Plans, help, extraction transport, Link operations, and uninstall remain
+# available without a running PipeWire daemon.
+if [ "$dry_run" -eq 0 ]; then
+    pipewire_probe=""
+    case "$command_name:$subcommand" in
+        install:|update:|runtime:install)
+            pipewire_probe="$root/bin/pipewire-version-probe"
+            for pipewire_probe_candidate in \
+                "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
+                [ -x "$pipewire_probe_candidate" ] || continue
+                pipewire_probe="$pipewire_probe_candidate"
+                break
+            done ;;
+        prefix:create|prefix:update)
+            pipewire_probe="$ABLETON_WINE_ROOT/bin/pipewire-version-probe" ;;
+    esac
+    if [ -n "$pipewire_probe" ]; then
+        ableton_pipewire_preflight "$pipewire_probe" "changing PipeASIO"
+    fi
+fi
+
 install_args=()
 [ "$assume_yes" -eq 0 ] || install_args+=(--yes)
 [ "$dry_run" -eq 0 ] || install_args+=(--dry-run)
@@ -391,6 +438,14 @@ case "$command_name:$subcommand" in
             echo "!! no prefix at $ABLETON_WINEPREFIX; use prefix create" >&2; exit 2; }
         "$here/setup-prefix.sh" --refresh --validate
         if [ "$dry_run" -eq 1 ]; then printf 'PLAN: transactionally update prefix %s\n' "$ABLETON_WINEPREFIX"; exit; fi ;;
+    prefix:repair-live11)
+        if [ "$dry_run" -eq 1 ]; then
+            printf 'PLAN: move aside stale Live 11 Max preferences in %s\n' "$ABLETON_WINEPREFIX"
+            exit
+        fi
+        # setup-prefix owns the lock and performs only the idempotent preference
+        # move for this mode.  It deliberately needs neither Wine nor PipeWire.
+        exec "$here/setup-prefix.sh" --post-first-run ;;
     link:enable)
         "$here/install.sh" --link-assets-only --validate
         if [ "$dry_run" -eq 1 ]; then
@@ -429,6 +484,10 @@ case "$command_name:$subcommand" in
         fi ;;
 esac
 
+# Every path reaching this point performs a component, prefix, or Link
+# mutation.  Child scripts inherit the locked directory descriptor.
+ableton_install_lock_acquire
+
 if [ "$command_name:$subcommand" = runtime:install ]; then
     transaction="$(mktemp -d "${TMPDIR:-/tmp}/ableton-runtime-install.XXXXXX")"
 else
@@ -436,16 +495,51 @@ else
     mkdir -p -- "$ABLETON_STATE_HOME/transactions"
     transaction="$(mktemp -d "$ABLETON_STATE_HOME/transactions/installer.XXXXXX")"
 fi
+ABLETON_TRANSACTION_DIR="$transaction"
+export ABLETON_TRANSACTION_DIR
 config_backup="$transaction/config.before"
 config_existed=0
-if [ -e "$ABLETON_CONFIG_FILE" ]; then
+if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
+    { [ -f "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; } \
+        && [ ! -d "$ABLETON_CONFIG_FILE" ] \
+        && [ -n "$(ableton_manifest_digest "$ABLETON_CONFIG_FILE" 2>/dev/null || true)" ] || {
+        echo "!! current installer configuration is unsafe" >&2
+        exit 1
+    }
     mkdir -p -- "$(dirname "$config_backup")"
     cp -a -- "$ABLETON_CONFIG_FILE" "$config_backup"
     config_existed=1
 fi
+pipeasio_config_parent="$(ableton_realpath_m "${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio")"
+pipeasio_config="$pipeasio_config_parent/config.ini"
+case "$pipeasio_config" in *$'\n'*|*$'\r'*|*$'\t'*)
+    echo "!! PipeASIO configuration path contains a newline or tab" >&2; exit 2 ;;
+esac
+pipeasio_config_backup="$transaction/pipeasio-config.before"
+pipeasio_config_existed=0
+if [ -e "$pipeasio_config" ] || [ -L "$pipeasio_config" ]; then
+    { [ -f "$pipeasio_config" ] || [ -L "$pipeasio_config" ]; } \
+        && [ ! -d "$pipeasio_config" ] \
+        && [ -n "$(ableton_manifest_digest "$pipeasio_config" 2>/dev/null || true)" ] || {
+        echo "!! current PipeASIO configuration is unsafe" >&2
+        exit 1
+    }
+    cp -a -- "$pipeasio_config" "$pipeasio_config_backup"
+    pipeasio_config_existed=1
+fi
+panel_integration_existed=0
+ownership_manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
+if [ -r "$ownership_manifest" ] && awk -F '\t' -v b="$ABLETON_BIN_HOME/pipeasio-settings" \
+    -v d="${XDG_DATA_HOME:-$HOME/.local/share}/applications/pipeasio-settings.desktop" \
+    -v i="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/pipeasio.svg" \
+    '$2==b || $2==d || $2==i { found=1 } END { exit !found }' "$ownership_manifest"; then
+    panel_integration_existed=1
+fi
 transaction_complete=0
+committed_cleanup_step=""
 link_transaction=0
 live_unpack=""
+config_post_token=""
 
 cleanup_live_unpack()
 {
@@ -460,25 +554,90 @@ cleanup_live_unpack()
 
 rollback_all()
 {
-    local rc=$?
+    local rc=$? restore_error="" restoration_complete=yes failure_record="$transaction/FAILURE"
+    local rollback_preflight_ok=1 config_current_token="" config_prior_token=""
     trap - EXIT
     if [ "$transaction_complete" -ne 1 ]; then
         echo "!! installer transaction failed; restoring the previous component and prefix state" >&2
-        "$here/setup-prefix.sh" --rollback "$transaction" >/dev/null 2>&1 || true
-        "$here/install.sh" --rollback "$transaction" >/dev/null 2>&1 || true
-        if [ "$config_existed" -eq 1 ]; then
-            mkdir -p -- "$(dirname "$ABLETON_CONFIG_FILE")"
-            cp -a -- "$config_backup" "$ABLETON_CONFIG_FILE"
+        if ! "$here/setup-prefix.sh" --preflight-rollback "$transaction" >/dev/null 2>&1; then
+            restore_error="prefix rollback preflight failed"
+            rollback_preflight_ok=0
+        fi
+        if ! "$here/install.sh" --preflight-rollback "$transaction" >/dev/null 2>&1; then
+            restore_error="${restore_error}${restore_error:+; }component rollback preflight failed"
+            rollback_preflight_ok=0
+        fi
+        if [ "$link_transaction" -eq 1 ] \
+           && ! "$here/setup-link.sh" preflight-rollback "$transaction" >/dev/null 2>&1; then
+            restore_error="${restore_error}${restore_error:+; }Link rollback preflight failed"
+            rollback_preflight_ok=0
+        fi
+        if [ "$config_existed" -eq 1 ] \
+           && { [ ! -f "$config_backup" ] || [ -L "$config_backup" ]; }; then
+            restore_error="${restore_error}${restore_error:+; }installer configuration snapshot is unsafe"
+            rollback_preflight_ok=0
+        fi
+        if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
+            if [ -d "$ABLETON_CONFIG_FILE" ] \
+               || { [ ! -f "$ABLETON_CONFIG_FILE" ] && [ ! -L "$ABLETON_CONFIG_FILE" ]; }; then
+                restore_error="${restore_error}${restore_error:+; }installer configuration destination is unsafe"
+                rollback_preflight_ok=0
+            fi
+        fi
+        if [ "$rollback_preflight_ok" -eq 1 ] && [ -n "$config_post_token" ]; then
+            config_current_token="$(ableton_object_token "$ABLETON_CONFIG_FILE" 2>/dev/null || true)"
+            if [ "$config_existed" -eq 1 ]; then
+                config_prior_token="$(ableton_object_token "$config_backup" 2>/dev/null || true)"
+            else
+                config_prior_token=absent
+            fi
+            if [ -z "$config_current_token" ] \
+               || { [ "$config_current_token" != "$config_post_token" ] \
+                    && [ "$config_current_token" != "$config_prior_token" ]; }; then
+                restore_error="${restore_error}${restore_error:+; }installer configuration changed while the transaction was open"
+                rollback_preflight_ok=0
+            fi
+        fi
+        if [ "$rollback_preflight_ok" -eq 1 ] \
+           && ! "$here/setup-prefix.sh" --rollback "$transaction" >/dev/null 2>&1; then
+            restore_error="prefix rollback failed"
+        fi
+        if [ "$rollback_preflight_ok" -eq 1 ] \
+           && ! "$here/install.sh" --rollback "$transaction" >/dev/null 2>&1; then
+            restore_error="${restore_error}${restore_error:+; }component rollback failed"
+        fi
+        if [ "$rollback_preflight_ok" -eq 1 ] && [ "$config_existed" -eq 1 ]; then
+            if ! ableton_atomic_restore_object "$config_backup" "$ABLETON_CONFIG_FILE"; then
+                restore_error="${restore_error}${restore_error:+; }installer configuration restoration failed"
+            fi
+        elif [ "$rollback_preflight_ok" -eq 1 ] \
+             && [ "$config_existed" -eq 0 ] \
+             && ! rm -f -- "$ABLETON_CONFIG_FILE"; then
+            restore_error="${restore_error}${restore_error:+; }installer configuration cleanup failed"
+        fi
+        if [ "$rollback_preflight_ok" -eq 1 ] && [ "$link_transaction" -eq 1 ]; then
+            if ! "$here/setup-link.sh" rollback "$transaction" >/dev/null 2>&1; then
+                restore_error="${restore_error}${restore_error:+; }Link rollback failed"
+            fi
+        fi
+        if [ "$rollback_preflight_ok" -eq 1 ] && ! cleanup_live_unpack; then
+            restore_error="${restore_error}${restore_error:+; }temporary Live payload cleanup failed"
+        fi
+        [ -z "$restore_error" ] || restoration_complete=no
+        printf 'command=%s %s\nexit=%s\nrestoration_complete=%s\nrestoration_error=%s\n' \
+            "$command_name" "$subcommand" "$rc" "$restoration_complete" "$restore_error" \
+            > "$failure_record" || true
+        if [ "$restoration_complete" = yes ]; then
+            echo "!! rollback complete; failure record: $failure_record" >&2
         else
-            rm -f -- "$ABLETON_CONFIG_FILE"
+            echo "!! installer rollback is incomplete: $restore_error" >&2
+            echo "!! inspect $failure_record before retrying" >&2
         fi
-        if [ "$link_transaction" -eq 1 ]; then
-            "$here/setup-link.sh" rollback "$transaction" || \
-                echo "!! Link rollback was incomplete; inspect the failure record before retrying" >&2
-        fi
-        cleanup_live_unpack || echo "!! temporary Live payload directory requires manual cleanup: $live_unpack" >&2
-        printf 'command=%s %s\nexit=%s\n' "$command_name" "$subcommand" "$rc" > "$transaction/FAILURE"
-        echo "!! rollback complete; failure record: $transaction/FAILURE" >&2
+    elif [ "$rc" -ne 0 ]; then
+        printf 'command=%s %s\nstatus=committed-cleanup-incomplete\nstep=%s\nexit=%s\n' \
+            "$command_name" "$subcommand" "${committed_cleanup_step:-unknown}" "$rc" \
+            > "$transaction/COMMITTED_CLEANUP_FAILURE"
+        echo "!! installation committed, but rollback metadata or cleanup was incomplete: $transaction/COMMITTED_CLEANUP_FAILURE" >&2
     fi
     exit "$rc"
 }
@@ -494,6 +653,9 @@ esac
 
 ABLETON_LINK_MODE="$desired_link"
 export ABLETON_LINK_MODE
+if [ "$command_name:$subcommand" != runtime:install ]; then
+    config_post_token="$(ableton_expected_config_token)"
+fi
 
 case "$command_name:$subcommand" in
     runtime:install)
@@ -506,10 +668,15 @@ case "$command_name:$subcommand" in
         "$here/install.sh" --link-assets-only --transaction-dir "$transaction" "${install_args[@]}"
         "$here/setup-link.sh" enable "--mode=$desired_link" ;;
     link:disable)
+        if [ -n "${ABLETON_PR182_CUSTOM_LINKD:-}" ]; then
+            "$here/install.sh" --link-assets-only --transaction-dir "$transaction" "${install_args[@]}"
+        fi
         "$here/setup-link.sh" disable ;;
     install:|update:)
         components=(--runtime-only --integration-only)
-        [ "$desired_link" = off ] || components+=(--link-assets-only)
+        if [ "$desired_link" != off ] || [ -n "${ABLETON_PR182_CUSTOM_LINKD:-}" ]; then
+            components+=(--link-assets-only)
+        fi
         "$here/install.sh" "${components[@]}" --transaction-dir "$transaction" "${install_args[@]}"
         if [ "$command_name" = update ]; then
             ABLETON_PREFIX_MANAGED=1 "$here/setup-prefix.sh" --refresh --transaction-dir "$transaction"
@@ -619,6 +786,138 @@ esac
 
 if [ "$command_name:$subcommand" != runtime:install ]; then
     ableton_write_config
+    [ "$(ableton_object_token "$ABLETON_CONFIG_FILE")" = "$config_post_token" ] || {
+        echo "!! installed configuration does not match the resolved transaction" >&2
+        exit 1
+    }
+fi
+
+persist_runtime_rollback_metadata()
+{
+    local record="$transaction/runtime-rollback-path" rollback_path meta new_meta old_meta
+    local marker marker_tmp parent base target installer_state=absent pipeasio_state=absent
+    local old_moved=0
+    [ -r "$record" ] || return 0
+    rollback_path="$(sed -n '1p' "$record")" || return 1
+    parent="$(ableton_realpath_m "$(dirname "$rollback_path")")" || return 1
+    base="$(basename "$rollback_path")" || return 1
+    [ "$parent" = "$(ableton_realpath_m "$(dirname "$ABLETON_WINE_ROOT")")" ] \
+        && [[ "$base" = "$(basename "$ABLETON_WINE_ROOT")-rollback-"* ]] \
+        && [ ! -L "$rollback_path" ] && [ -x "$rollback_path/bin/wine" ] || {
+        echo "!! saved runtime rollback path is invalid" >&2
+        return 1
+    }
+    target="$rollback_path/.ableton-linux-runtime"
+    [ ! -L "$target" ] || {
+        echo "!! saved runtime ownership marker is unsafe" >&2
+        return 1
+    }
+    if [ -e "$target" ]; then
+        ableton_runtime_marker_valid "$rollback_path" "$ABLETON_RUNTIME_NAME" || {
+            echo "!! saved runtime ownership marker is invalid" >&2
+            return 1
+        }
+    else
+        marker_tmp="$(mktemp "$rollback_path/.runtime-marker.XXXXXX")" || return 1
+        if ! printf 'format=1\nname=%s\n' "$ABLETON_RUNTIME_NAME" > "$marker_tmp" \
+           || ! chmod 600 "$marker_tmp" \
+           || ! mv -T -n -- "$marker_tmp" "$target" \
+           || [ -e "$marker_tmp" ] \
+           || ! ableton_runtime_marker_valid "$rollback_path" "$ABLETON_RUNTIME_NAME"; then
+            rm -f -- "$marker_tmp"
+            echo "!! could not mark the saved runtime rollback" >&2
+            return 1
+        fi
+    fi
+    meta="$rollback_path/.ableton-linux-rollback"
+    if [ -e "$meta" ] || [ -L "$meta" ]; then
+        [ ! -L "$meta" ] && [ -d "$meta" ] || {
+            echo "!! saved runtime rollback metadata directory is unsafe" >&2
+            return 1
+        }
+    fi
+    new_meta="$(mktemp -d "$rollback_path/.ableton-linux-rollback.new.XXXXXX")" || return 1
+    old_meta="$rollback_path/.ableton-linux-rollback.previous.$$"
+    if [ -e "$old_meta" ] || [ -L "$old_meta" ]; then
+        rmdir -- "$new_meta" 2>/dev/null || true
+        echo "!! saved runtime has a conflicting rollback metadata path" >&2
+        return 1
+    fi
+    if [ "$config_existed" -eq 1 ]; then
+        if ! cp -a -- "$config_backup" "$new_meta/installer-config"; then
+            rm -rf -- "$new_meta"
+            echo "!! could not save the previous installer configuration" >&2
+            return 1
+        fi
+        installer_state=present
+    fi
+    if [ "$pipeasio_config_existed" -eq 1 ]; then
+        if ! cp -a -- "$pipeasio_config_backup" "$new_meta/pipeasio-config.ini"; then
+            rm -rf -- "$new_meta"
+            echo "!! could not save the previous PipeASIO configuration" >&2
+            return 1
+        fi
+        pipeasio_state=present
+    fi
+    if ! {
+        printf 'format=1\n'
+        printf 'runtime_root=%s\n' "$ABLETON_WINE_ROOT"
+        printf 'prefix=%s\n' "$ABLETON_WINEPREFIX"
+        printf 'installer_config_path=%s\n' "$ABLETON_CONFIG_FILE"
+        printf 'installer_config_state=%s\n' "$installer_state"
+        printf 'pipeasio_config_path=%s\n' "$pipeasio_config"
+        printf 'pipeasio_config_state=%s\n' "$pipeasio_state"
+        printf 'panel_integration=%s\n' "$panel_integration_existed"
+    } > "$new_meta/metadata" || ! chmod 600 "$new_meta/metadata"; then
+        rm -rf -- "$new_meta"
+        echo "!! could not write saved runtime rollback metadata" >&2
+        return 1
+    fi
+
+    # Publish the complete directory as a unit.  Keep any prior generation in
+    # place unless both short same-filesystem renames succeed.
+    trap '' INT TERM
+    if [ -d "$meta" ]; then
+        if ! mv -T -n -- "$meta" "$old_meta" \
+           || [ -e "$meta" ] || [ ! -d "$old_meta" ]; then
+            trap 'exit 130' INT; trap 'exit 143' TERM
+            rm -rf -- "$new_meta"
+            echo "!! could not stage existing rollback metadata" >&2
+            return 1
+        fi
+        old_moved=1
+    fi
+    if ! mv -T -n -- "$new_meta" "$meta" \
+       || [ -e "$new_meta" ] || [ ! -d "$meta" ]; then
+        if [ "$old_moved" -eq 1 ] && [ ! -e "$meta" ] && [ ! -L "$meta" ]; then
+            mv -T -n -- "$old_meta" "$meta" >/dev/null 2>&1 || true
+        fi
+        trap 'exit 130' INT; trap 'exit 143' TERM
+        [ ! -e "$new_meta" ] || rm -rf -- "$new_meta"
+        echo "!! could not publish saved runtime rollback metadata" >&2
+        return 1
+    fi
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [ "$old_moved" -eq 1 ]; then
+        rm -rf -- "$old_meta" || return 1
+    fi
+    marker="$rollback_path/.ableton-linux-rollback-incomplete"
+    rm -f -- "$marker" || return 1
+}
+
+# Validate every cleanup domain before any one of them retires its rollback
+# material.  A corrupt or concurrently changed later journal must leave all
+# component, prefix, and Link snapshots available for the ordinary rollback.
+if [ -n "$config_post_token" ] \
+   && [ "$(ableton_object_token "$ABLETON_CONFIG_FILE" 2>/dev/null || true)" != "$config_post_token" ]; then
+    echo "!! installer configuration changed while the transaction was open" >&2
+    exit 1
+fi
+"$here/install.sh" --preflight-commit "$transaction"
+"$here/setup-prefix.sh" --preflight-commit "$transaction"
+if [ "$link_transaction" -eq 1 ]; then
+    "$here/setup-link.sh" preflight-commit "$transaction"
 fi
 
 # Every requested component is valid and the persistent configuration is now
@@ -627,11 +926,15 @@ fi
 # from pre-state that another cleanup call may already have discarded.
 transaction_complete=1
 cleanup_status=0
+committed_cleanup_step="versioning the previous runtime"
+"$here/install.sh" --commit "$transaction"
+committed_cleanup_step="sealing runtime rollback metadata"
+persist_runtime_rollback_metadata
+committed_cleanup_step="retiring transaction snapshots"
 if [ "$link_transaction" -eq 1 ]; then
     "$here/setup-link.sh" commit "$transaction" || cleanup_status=1
 fi
 "$here/setup-prefix.sh" --commit "$transaction" || cleanup_status=1
-"$here/install.sh" --commit "$transaction" || cleanup_status=1
 rm -f -- "$transaction/active"
 trap - EXIT
 if [ "$cleanup_status" -ne 0 ]; then

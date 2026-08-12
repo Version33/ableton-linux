@@ -1,0 +1,470 @@
+From ddf089a18c7bf9b813b45ff8a273c1ffb9df322e Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Mon, 10 Aug 2026 14:20:00 +0200
+Subject: [PATCH] gui: accept any buffer size in the driver's range
+
+The driver takes any buffer size in [PIPEASIO_MIN_BUFFER_SIZE,
+PIPEASIO_MAX_BUFFER_SIZE], power of two or not, but the panel's own
+parseIni still carried the pow2 gate: opening and saving the panel
+replaced a working buffer_size = 883 with the 1024 default. The size
+combo made it worse by showing any unlisted value as 16 (index-0
+fallback), a size below the driver's own floor, and Apply then wrote
+that 16 back.
+
+Parse with the range check only, mirroring src/config.c. Drop 16 from
+the presets and make the combo editable (int validator across the
+driver's range) so an arbitrary stored or typed size is shown and
+saved verbatim; the latency readout follows the text, not the index.
+Apply rejects unfinished or out-of-range typed text instead of silently
+rewriting the last valid value to 1024. Covered in test_panel: parse
+bounds, an 883 open -> Apply round trip, typed sizes, and invalid text.
+
+Keep capture-only and playback-only configurations valid, but reject the
+zero-input plus zero-output combination before saving. Apply now surfaces
+configuration write failures both inline and in a nonblocking critical dialog,
+and tells the user whether a successful change was reloaded live or needs a
+driver/host restart. GUI tests cover both one-direction modes, zero/zero and
+invalid-buffer rejection without a write, save failure, and restart feedback.
+---
+ gui/Config.cpp           |   8 ++-
+ gui/SettingsDialog.cpp   |  81 ++++++++++++++++++++++++---
+ gui/SettingsDialog.hpp   |   1 +
+ tests/gui/test_panel.cpp | 143 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 221 insertions(+), 12 deletions(-)
+
+diff --git a/gui/Config.cpp b/gui/Config.cpp
+index ad84bc4..6dc60da 100644
+--- a/gui/Config.cpp
++++ b/gui/Config.cpp
+@@ -122,9 +122,13 @@ parseIni(const QString &text)
+         }
+         else if (key == QLatin1String(PIPEASIO_KEY_BUFFER_SIZE))
+         {
++            /* pipeasio-any-buffer-size-panel: any size inside the range,
++             * power of two or not, exactly like the driver's loader
++             * (src/config.c). The two parsers must agree on one file, or
++             * opening and saving the panel rewrites a config the driver
++             * runs happily. */
+             if (pipeasio_parse_int(bytes.constData(), PIPEASIO_MIN_BUFFER_SIZE,
+-                                   PIPEASIO_MAX_BUFFER_SIZE, &parsed)
+-                && !(parsed & (parsed - 1)))
++                                   PIPEASIO_MAX_BUFFER_SIZE, &parsed))
+                 c.buffer_size = parsed;
+         }
+         else if (key == QLatin1String(PIPEASIO_KEY_FIXED_BUFFER_SIZE))
+diff --git a/gui/SettingsDialog.cpp b/gui/SettingsDialog.cpp
+index 95b4cf4..b744131 100644
+--- a/gui/SettingsDialog.cpp
++++ b/gui/SettingsDialog.cpp
+@@ -30,6 +30,8 @@
+ #include <QDialogButtonBox>
+ #include <QFont>
+ #include <QFormLayout>
++#include <QIntValidator>
++#include <QMessageBox>
+ #include <QLabel>
+ #include <QLineEdit>
+ #include <QPushButton>
+@@ -37,12 +38,13 @@
+ #include <QString>
+ #include <QTabWidget>
+ #include <QVBoxLayout>
++#include <cstring>
+ #include <utility>
+
+ namespace
+ {
+
+-const int kBufferSizes[] = { 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
++const int kBufferSizes[] = { 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
+
+ struct SampleRateItem
+ {
+@@ -79,6 +81,11 @@ SettingsDialog::SettingsDialog(QWidget *parent, SettingsDialogOptions options) :
+
+     auto *layout = new QVBoxLayout(this);
+     layout->addWidget(tabs);
++    m_saveStatus = new QLabel(this);
++    m_saveStatus->setObjectName(QStringLiteral("saveStatus"));
++    m_saveStatus->setWordWrap(true);
++    m_saveStatus->hide();
++    layout->addWidget(m_saveStatus);
+     layout->addWidget(buttons);
+
+     const pipeasio_config cfg = Config::load();
+@@ -160,11 +167,21 @@ SettingsDialog::buildSettingsTab()
+
+     m_bufferSize = new QComboBox(page);
+     m_bufferSize->setObjectName(QStringLiteral("bufferSize"));
++    /* The driver accepts any size in [PIPEASIO_MIN_BUFFER_SIZE,
++     * PIPEASIO_MAX_BUFFER_SIZE], not just powers of two, so the list is only
++     * presets: the box is editable and an arbitrary size can be typed. */
++    m_bufferSize->setEditable(true);
++    m_bufferSize->setInsertPolicy(QComboBox::NoInsert);
++    m_bufferSize->setValidator(new QIntValidator(PIPEASIO_MIN_BUFFER_SIZE,
++                                                 PIPEASIO_MAX_BUFFER_SIZE, m_bufferSize));
+     for (int sz : kBufferSizes)
+         m_bufferSize->addItem(QString::number(sz), sz);
+     addRow(QStringLiteral("Buffer size"), m_bufferSize,
+-           QStringLiteral("Preferred buffer size in frames. Smaller means lower latency but "
+-                          "more CPU and a higher risk of dropouts (xruns)."));
++           QStringLiteral("Preferred buffer size in frames: pick a preset or type any value "
++                          "from %1 to %2. Smaller means lower latency but more CPU and a "
++                          "higher risk of dropouts (xruns).")
++                   .arg(PIPEASIO_MIN_BUFFER_SIZE)
++                   .arg(PIPEASIO_MAX_BUFFER_SIZE));
+
+     m_latency = new QLabel(page);
+     m_latency->setObjectName(QStringLiteral("latency"));
+@@ -229,7 +246,10 @@ SettingsDialog::buildSettingsTab()
+            QStringLiteral("Override the PipeWire node/client name. Leave empty to use the "
+                           "host application name."));
+
+-    connect(m_bufferSize, &QComboBox::currentIndexChanged, this,
++    /* currentTextChanged, not currentIndexChanged: typing a size into the
++     * editable box changes the text without moving the index, and the latency
++     * readout must follow the typed value too. */
++    connect(m_bufferSize, &QComboBox::currentTextChanged, this,
+             &SettingsDialog::updateLatencyLabel);
+     connect(m_sampleRate, &QComboBox::currentIndexChanged, this,
+             &SettingsDialog::updateLatencyLabel);
+@@ -358,7 +378,16 @@ SettingsDialog::buildAboutTab()
+ int
+ SettingsDialog::currentBufferSize() const
+ {
+-    return m_bufferSize->currentData().toInt();
++    /* The box is editable: the value is whatever the text says, preset or
++     * typed. The validator keeps committed input inside the range, but
++     * intermediate text ("5" on the way to "512") can be left behind; fall
++     * back to the default then, as the driver's loader does for any
++     * out-of-range value. */
++    bool      ok     = false;
++    const int frames = m_bufferSize->currentText().toInt(&ok);
++    if (ok && frames >= PIPEASIO_MIN_BUFFER_SIZE && frames <= PIPEASIO_MAX_BUFFER_SIZE)
++        return frames;
++    return PIPEASIO_DEFAULT_BUFFER_SIZE;
+ }
+
+ int
+@@ -385,8 +414,14 @@ SettingsDialog::applyConfig(const pipeasio_config &c)
+     m_inputs->setValue(c.inputs);
+     m_outputs->setValue(c.outputs);
+
+-    int bufIdx = m_bufferSize->findData(c.buffer_size);
+-    m_bufferSize->setCurrentIndex(bufIdx >= 0 ? bufIdx : 0);
++    const int bufIdx = m_bufferSize->findData(c.buffer_size);
++    if (bufIdx >= 0)
++        m_bufferSize->setCurrentIndex(bufIdx);
++    else
++        /* Not a preset: show the stored size itself. The driver accepts it,
++         * so the panel must not swap it for a listed one (the old index-0
++         * fallback displayed 16 for a stored 1000). */
++        m_bufferSize->setCurrentText(QString::number(c.buffer_size));
+
+     int srIdx = m_sampleRate->findData(c.sample_rate);
+     if (srIdx < 0 && c.sample_rate > 0)
+@@ -472,6 +507,7 @@ SettingsDialog::onDevicesEnumerated(bool success, const QList<DeviceEnumerator::
+ void
+ SettingsDialog::onRestoreDefaults()
+ {
++    m_saveStatus->hide();
+     applyConfig(Config::defaults());
+ }
+
+@@ -478,6 +514,30 @@ SettingsDialog::onRestoreDefaults()
+ void
+ SettingsDialog::onApply()
+ {
++    if (m_inputs->value() == 0 && m_outputs->value() == 0)
++    {
++        m_saveStatus->setText(QStringLiteral(
++                "Cannot save: expose at least one input or output channel. "
++                "Capture-only and output-only configurations are supported."));
++        m_saveStatus->show();
++        return;
++    }
++
++    bool      bufferOk   = false;
++    const int bufferSize = m_bufferSize->currentText().toInt(&bufferOk);
++    if (!bufferOk || bufferSize < PIPEASIO_MIN_BUFFER_SIZE
++        || bufferSize > PIPEASIO_MAX_BUFFER_SIZE)
++    {
++        m_saveStatus->setText(
++                QStringLiteral("Cannot save: buffer size must be a whole number from %1 to %2 frames.")
++                        .arg(PIPEASIO_MIN_BUFFER_SIZE)
++                        .arg(PIPEASIO_MAX_BUFFER_SIZE));
++        m_saveStatus->show();
++        m_bufferSize->setFocus();
++        return;
++    }
++
++    const pipeasio_config previous = Config::load();
+     pipeasio_config cfg     = Config::defaults();
+     cfg.inputs              = m_inputs->value();
+     cfg.outputs             = m_outputs->value();
+@@ -484,7 +544,7 @@ SettingsDialog::onApply()
+-    cfg.buffer_size         = currentBufferSize();
++    cfg.buffer_size         = bufferSize;
+     cfg.fixed_buffer_size   = m_fixedBuffer->isChecked();
+     cfg.sample_rate         = currentSampleRate();
+     cfg.auto_connect        = m_autoConnect->isChecked();
+     cfg.follow_device_clock = m_followDeviceClock->isChecked();
+     cfg.realtime            = m_realtime->isChecked();
+
+@@ -499,7 +559,33 @@ SettingsDialog::onApply()
+     const QByteArray node = m_nodeName->text().trimmed().toUtf8();
+     qstrncpy(cfg.node_name, node.constData(), sizeof(cfg.node_name));
+
+-    Config::save(cfg);
++    if (!Config::save(cfg))
++    {
++        const QString detail
++                = QStringLiteral("Could not save settings to %1. Check directory permissions and "
++                                 "available disk space; the previous configuration is unchanged.")
++                          .arg(Config::configPath());
++        m_saveStatus->setText(detail);
++        m_saveStatus->show();
++        auto *error = new QMessageBox(QMessageBox::Critical,
++                                      QStringLiteral("Could not save PipeASIO settings"), detail,
++                                      QMessageBox::Ok, this);
++        error->setObjectName(QStringLiteral("saveErrorDialog"));
++        error->setAttribute(Qt::WA_DeleteOnClose);
++        error->open();
++        return;
++    }
++
++    const bool restartRequired
++            = cfg.inputs != previous.inputs || cfg.outputs != previous.outputs
++              || std::strcmp(cfg.node_name, previous.node_name) != 0;
++    m_saveStatus->setText(
++            restartRequired
++                    ? QStringLiteral("Settings saved. Channel-count or node-name changes apply "
++                                     "after you reselect PipeASIO or restart the host.")
++                    : QStringLiteral("Settings saved. An active driver reloads these settings "
++                                     "automatically within about a second."));
++    m_saveStatus->show();
+ }
+
+ /* Device name on top, its attributes on a smaller muted line below. */
+diff --git a/gui/SettingsDialog.hpp b/gui/SettingsDialog.hpp
+index 1c4e1bf..024ee19 100644
+--- a/gui/SettingsDialog.hpp
++++ b/gui/SettingsDialog.hpp
+@@ -74,6 +74,7 @@ class SettingsDialog : public QDialog
+     QCheckBox                 *m_followDeviceClock = nullptr;
+     QCheckBox                 *m_realtime          = nullptr;
+     QLineEdit                 *m_nodeName          = nullptr;
++    QLabel                    *m_saveStatus        = nullptr;
+     DeviceEnumerator::Request *m_deviceRequest     = nullptr;
+     bool                       m_devicesLoading    = true;
+     int                        m_graphRate         = 0; /* pw-dump settings clock rate */
+diff --git a/tests/gui/test_panel.cpp b/tests/gui/test_panel.cpp
+index a607d79..f82aa9a 100644
+--- a/tests/gui/test_panel.cpp
++++ b/tests/gui/test_panel.cpp
+@@ -21,7 +21,10 @@
+ #include <QLabel>
+ #include <QElapsedTimer>
+ #include <QEventLoop>
++#include <QFile>
++#include <QMessageBox>
+ #include <QPushButton>
++#include <QSpinBox>
+ #include <QTemporaryDir>
+ #include <QTimer>
+
+@@ -81,6 +83,30 @@ test_config_roundtrip()
+     CHECK(std::strcmp(r.node_name, "Foo") == 0);
+ }
+
++/* The driver accepts any buffer size in [PIPEASIO_MIN_BUFFER_SIZE,
++ * PIPEASIO_MAX_BUFFER_SIZE], powers of two or not; the panel parser must
++ * agree, or opening and saving the panel destroys a config the driver runs
++ * happily. Out-of-range values fall back to the default, like the driver. */
++static void
++test_buffer_size_range()
++{
++    CHECK(Config::parseIni("buffer_size = 883").buffer_size == 883);
++    CHECK(Config::parseIni("buffer_size = 960").buffer_size == 960);
++    CHECK(Config::parseIni("buffer_size = 1000").buffer_size == 1000);
++    CHECK(Config::parseIni("buffer_size = 32").buffer_size == 32);
++    CHECK(Config::parseIni("buffer_size = 8192").buffer_size == 8192);
++
++    const int def = Config::defaults().buffer_size;
++    CHECK(Config::parseIni("buffer_size = 16").buffer_size == def);
++    CHECK(Config::parseIni("buffer_size = 31").buffer_size == def);
++    CHECK(Config::parseIni("buffer_size = 8193").buffer_size == def);
++
++    /* Serialization is verbatim: a non-power-of-two survives a round trip. */
++    pipeasio_config c = Config::defaults();
++    c.buffer_size     = 883;
++    CHECK(Config::parseIni(Config::serializeIni(c)).buffer_size == 883);
++}
++
+ /* The panel writes the file. The driver's C reader must parse it identically. */
+ static void
+ test_cross_language()
+@@ -120,8 +146,9 @@ test_cross_language()
+     CHECK(d.input_device[0] == '\0');
+     CHECK(std::strcmp(d.node_name, "Bar") == 0);
+
+-    /* Reject INI injection through discovered PipeWire names. */
+-    std::strcpy(c.output_device, "sink.test\nbuffer_size = 16");
++    /* Reject INI injection through discovered PipeWire names. The payload is
++     * a size both parsers accept, so only the newline rejection guards it. */
++    std::strcpy(c.output_device, "sink.test\nbuffer_size = 64");
+     CHECK(!Config::save(c));
+     CHECK(pipeasio_config_load(&d));
+     CHECK(d.buffer_size == 2048);
+@@ -540,6 +568,131 @@ test_dialog_loading_state()
+     }
+ }
+
++/* A stored size that is not a combo preset must be displayed as itself and
++ * survive open -> Apply unchanged. The old index-0 fallback displayed it as
++ * 16 (below the driver's floor) and Apply then wrote that 16 back. */
++static void
++test_buffer_size_dialog_roundtrip()
++{
++    pipeasio_config config = Config::defaults();
++    config.buffer_size     = 883;
++    CHECK(Config::save(config));
++
++    SettingsDialogOptions options;
++    options.monitorEnabled          = false;
++    options.deviceRequest.program   = QCoreApplication::applicationFilePath();
++    options.deviceRequest.arguments = { QStringLiteral("--devices") };
++    options.deviceRequest.timeoutMs = 1000;
++
++    SettingsDialog dialog(nullptr, options);
++    auto          *buffer = dialog.findChild<QComboBox *>(QStringLiteral("bufferSize"));
++    auto          *apply  = dialog.findChild<QPushButton *>(QStringLiteral("applyButton"));
++    CHECK(buffer != nullptr);
++    CHECK(apply != nullptr);
++    if (!buffer || !apply)
++        return;
++    CHECK(buffer->isEditable());
++    CHECK(buffer->findData(16) < 0); /* below the driver floor, not offered */
++    CHECK(buffer->currentText() == QStringLiteral("883"));
++
++    /* Open -> Apply, nothing touched: the file keeps 883 verbatim. */
++    apply->click();
++    CHECK(Config::load().buffer_size == 883);
++
++    /* A typed arbitrary size is saved verbatim and updates the latency
++     * readout (default rate 48000: 960 frames = 20.0 ms). */
++    auto *latency = dialog.findChild<QLabel *>(QStringLiteral("latency"));
++    CHECK(latency != nullptr);
++    buffer->setCurrentText(QStringLiteral("960"));
++    if (latency)
++        CHECK(latency->text() == QStringLiteral("20.0 ms"));
++    apply->click();
++    CHECK(Config::load().buffer_size == 960);
++
++    /* Leftover intermediate text (the validator allows "5" on the way to
++     * "512") must not silently replace a valid saved value with 1024. */
++    buffer->setCurrentText(QStringLiteral("5"));
++    apply->click();
++    CHECK(Config::load().buffer_size == 960);
++    auto *status = dialog.findChild<QLabel *>(QStringLiteral("saveStatus"));
++    CHECK(status != nullptr);
++    if (status)
++        CHECK(status->text().startsWith(QStringLiteral("Cannot save:")));
++
++    /* A preset keeps working through the data role. */
++    buffer->setCurrentIndex(buffer->findData(512));
++    apply->click();
++    CHECK(Config::load().buffer_size == 512);
++}
++
++static void
++test_channel_validation_and_save_feedback()
++{
++    CHECK(Config::save(Config::defaults()));
++    SettingsDialogOptions options;
++    options.monitorEnabled          = false;
++    options.deviceRequest.program   = QCoreApplication::applicationFilePath();
++    options.deviceRequest.arguments = { QStringLiteral("--devices") };
++    options.deviceRequest.timeoutMs = 1000;
++
++    SettingsDialog dialog(nullptr, options);
++    auto          *inputs  = dialog.findChild<QSpinBox *>(QStringLiteral("inputs"));
++    auto          *outputs = dialog.findChild<QSpinBox *>(QStringLiteral("outputs"));
++    auto          *apply   = dialog.findChild<QPushButton *>(QStringLiteral("applyButton"));
++    auto          *status  = dialog.findChild<QLabel *>(QStringLiteral("saveStatus"));
++    CHECK(inputs && outputs && apply && status);
++    if (!inputs || !outputs || !apply || !status)
++        return;
++
++    /* Either direction may be disabled independently. */
++    inputs->setValue(2);
++    outputs->setValue(0);
++    apply->click();
++    CHECK(Config::load().inputs == 2 && Config::load().outputs == 0);
++    CHECK(status->isVisibleTo(&dialog));
++    CHECK(status->text().contains(QStringLiteral("reselect PipeASIO")));
++
++    inputs->setValue(0);
++    outputs->setValue(2);
++    apply->click();
++    CHECK(Config::load().inputs == 0 && Config::load().outputs == 2);
++
++    /* The unusable 0/0 combination is rejected visibly and never written. */
++    inputs->setValue(0);
++    outputs->setValue(0);
++    apply->click();
++    CHECK(Config::load().inputs == 0 && Config::load().outputs == 2);
++    CHECK(status->text().startsWith(QStringLiteral("Cannot save:")));
++
++    /* I/O failures are not swallowed.  Point the config root at a regular
++     * file so mkpath/open must fail, then confirm both durable inline feedback
++     * and a nonblocking, parent-owned critical dialog. */
++    const QByteArray oldRoot = qgetenv("XDG_CONFIG_HOME");
++    QTemporaryDir    blocked;
++    CHECK(blocked.isValid());
++    const QString blocker = blocked.path() + QStringLiteral("/not-a-directory");
++    QFile         file(blocker);
++    CHECK(file.open(QIODevice::WriteOnly));
++    file.close();
++    qputenv("XDG_CONFIG_HOME", blocker.toUtf8());
++    inputs->setValue(1);
++    outputs->setValue(1);
++    apply->click();
++    CHECK(status->text().startsWith(QStringLiteral("Could not save settings")));
++    QApplication::processEvents();
++    auto *error = dialog.findChild<QMessageBox *>(QStringLiteral("saveErrorDialog"));
++    CHECK(error != nullptr);
++    if (error)
++    {
++        CHECK(error->icon() == QMessageBox::Critical);
++        CHECK(error->isVisible());
++        CHECK(error->text().contains(QStringLiteral("previous configuration is unchanged")));
++        error->done(QMessageBox::Ok);
++        QApplication::processEvents();
++    }
++    qputenv("XDG_CONFIG_HOME", oldRoot);
++}
++
+ /* Issue #20 follow-up: with "Follow PipeWire" selected the latency readout
+  * must use the graph clock rate from the pw-dump snapshot, not 48 kHz. */
+ static void
+@@ -678,6 +814,7 @@ main(int argc, char **argv)
+         return helper;
+
+     test_config_roundtrip();
++    test_buffer_size_range();
+     test_cross_language();
+     test_line_length_boundary();
+     test_parse_pwdump();
+@@ -687,6 +824,8 @@ main(int argc, char **argv)
+     test_resolve_connections();
+     test_async_enumerator();
+     test_dialog_loading_state();
++    test_buffer_size_dialog_roundtrip();
++    test_channel_validation_and_save_feedback();
+     test_latency_follows_graph_rate();
+     test_tooltip_wrapping();
+     test_monitor_transient_hold();
+
+--
+2.43.0

@@ -19,15 +19,18 @@ uninstall:                    ## remove installed Wine tree + launcher
 	./scripts/installer.sh uninstall --keep-prefix
 
 test:                         ## run installer and launcher lifecycle gates
+	./scripts/test-tsan-policy.sh
+	./scripts/test-release-policy.sh
 	./scripts/test-shortcut-hold.sh
 	./scripts/test-desktop-integration.sh
 	./scripts/test-installer-lifecycle.sh
+	./scripts/test-pipeasio-installer.sh
 
 vendor-cache:                 ## populate vendor/winetricks-cache for offline setup
 	./scripts/vendor-winetricks-cache.sh
 
 verify: pointer-safety-check  ## check vendored inputs and pointer safety rules
-	cd vendor && sha256sum -c wine-base.sha256 pipeasio.sha256 pipewire-sdk.sha256 ntsync-uapi.sha256 link.sha256
+	cd vendor && sha256sum -c wine-base.sha256 pipeasio.sha256 pipewire-sdk.sha256 ntsync-uapi.sha256 link.sha256 cabextract.sha256 bitstream-vera.sha256 llvm-apt-key.sha256
 
 check: pointer-safety-check   ## run deterministic pointer safety checks
 

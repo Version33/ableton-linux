@@ -8,6 +8,7 @@ root="$(cd "$here/.." && pwd)"
 . "$here/lib/config.sh"
 . "$here/lib/lifecycle.sh"
 . "$here/lib/manifest.sh"
+. "$here/lib/pipeasio.sh"
 
 want_runtime=0
 want_integration=0
@@ -36,6 +37,12 @@ while [ $# -gt 0 ]; do
         --rollback)
             [ $# -ge 2 ] || { echo "!! --rollback needs a transaction directory" >&2; exit 2; }
             operation=rollback; transaction_arg="$2"; shift ;;
+        --preflight-rollback)
+            [ $# -ge 2 ] || { echo "!! --preflight-rollback needs a transaction directory" >&2; exit 2; }
+            operation=preflight-rollback; transaction_arg="$2"; shift ;;
+        --preflight-commit)
+            [ $# -ge 2 ] || { echo "!! --preflight-commit needs a transaction directory" >&2; exit 2; }
+            operation=preflight-commit; transaction_arg="$2"; shift ;;
         --commit)
             [ $# -ge 2 ] || { echo "!! --commit needs a transaction directory" >&2; exit 2; }
             operation=commit; transaction_arg="$2"; shift ;;
@@ -52,56 +59,264 @@ apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 mime_root="${XDG_DATA_HOME:-$HOME/.local/share}/mime"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+ownership_manifest_was_present=0
+[ ! -r "$ABLETON_STATE_HOME/install-manifest.tsv" ] || ownership_manifest_was_present=1
+
+if [ "$operation" != install ] || { [ "$validate_only" -eq 0 ] && [ "$dry_run" -eq 0 ]; }; then
+    ableton_install_lock_acquire
+fi
 
 rollback_runtime()
 {
-    local txn="$1" target backup safe
+    local txn="$1" target backup safe backup_safe expected_backup
     [ -r "$txn/runtime.tsv" ] || return 0
     IFS=$'\t' read -r target backup < "$txn/runtime.tsv"
     [ -n "$target" ] || return 0
     safe="$(ableton_path_is_safe_delete_target "$target")" || {
         echo "!! refusing unsafe runtime rollback target: $target" >&2; return 1; }
+    [ "$target" = "$safe" ] && [ "$safe" = "$(ableton_realpath_m "$ABLETON_WINE_ROOT")" ] || {
+        echo "!! runtime rollback target does not match this installation: $target" >&2; return 1; }
+    if [ "$backup" != absent ]; then
+        expected_backup="$safe.transaction-${txn##*/}"
+        backup_safe="$(ableton_path_is_safe_delete_target "$backup")" || {
+            echo "!! refusing unsafe runtime rollback backup: $backup" >&2; return 1; }
+        if ! { [ "$backup" = "$expected_backup" ] && [ "$backup" = "$backup_safe" ] \
+               && [ -d "$backup" ] && [ ! -L "$backup" ] \
+               && ableton_runtime_marker_valid "$backup" "$ABLETON_RUNTIME_NAME"; }; then
+            echo "!! runtime rollback backup is missing, misplaced, or unrecognised: $backup" >&2
+            return 1
+        fi
+    fi
     if [ -e "$safe" ]; then
         [ ! -L "$safe" ] || { echo "!! refusing symlink runtime rollback target: $safe" >&2; return 1; }
-        if [ ! -f "$safe/.ableton-linux-runtime" ]; then
+        if ! ableton_runtime_marker_valid "$safe" "$ABLETON_RUNTIME_NAME"; then
             echo "!! refusing to remove unmarked runtime during rollback: $safe" >&2
             return 1
         fi
-        rm -rf -- "$safe"
+        rm -rf -- "$safe" || return 1
     fi
-    if [ "$backup" != absent ] && [ -e "$backup" ]; then
-        mv -- "$backup" "$safe"
+    if [ "$backup" != absent ]; then
+        mv -T -n -- "$backup" "$safe" || return 1
+        [ ! -e "$backup" ] && [ ! -L "$backup" ] \
+            && [ -d "$safe" ] && [ ! -L "$safe" ] || return 1
     fi
-    rm -f -- "$txn/runtime.tsv"
+    rm -f -- "$txn/runtime.tsv" || return 1
+}
+
+validate_runtime_transaction()
+{
+    local txn="$1" mode="${2:-rollback}" record="$1/runtime.tsv" target backup extra safe backup_safe expected_backup
+    local public_record="$1/runtime-rollback-path" public="" public_parent public_base target_parent target_base
+    if [ ! -e "$record" ] && [ ! -L "$record" ]; then return 0; fi
+    [ -f "$record" ] && [ ! -L "$record" ] && [ -r "$record" ] \
+        && ableton_file_has_no_nul "$record" \
+        && [ "$(wc -l < "$record")" -eq 1 ] || {
+        echo "!! runtime rollback record is unsafe or invalid" >&2; return 1; }
+    IFS=$'\t' read -r target backup extra < "$record"
+    [ -z "$extra" ] && [ -n "$target" ] && [ -n "$backup" ] || {
+        echo "!! runtime rollback record is malformed" >&2; return 1; }
+    safe="$(ableton_path_is_safe_delete_target "$target")" || {
+        echo "!! refusing unsafe runtime rollback target: $target" >&2; return 1; }
+    [ "$target" = "$safe" ] && [ "$safe" = "$(ableton_realpath_m "$ABLETON_WINE_ROOT")" ] || {
+        echo "!! runtime rollback target does not match this installation: $target" >&2; return 1; }
+    if [ -e "$safe" ] || [ -L "$safe" ]; then
+        if ! { [ -d "$safe" ] && [ ! -L "$safe" ] \
+               && ableton_runtime_marker_valid "$safe" "$ABLETON_RUNTIME_NAME"; }; then
+            echo "!! runtime rollback target is unrecognised: $safe" >&2
+            return 1
+        fi
+    fi
+    if [ "$backup" != absent ]; then
+        expected_backup="$safe.transaction-${txn##*/}"
+        backup_safe="$(ableton_path_is_safe_delete_target "$backup")" || {
+            echo "!! refusing unsafe runtime rollback backup: $backup" >&2; return 1; }
+        [ "$backup" = "$expected_backup" ] && [ "$backup" = "$backup_safe" ] || {
+            echo "!! runtime rollback backup is misplaced: $backup" >&2; return 1; }
+        if [ -e "$backup" ] || [ -L "$backup" ]; then
+            if ! { [ -d "$backup" ] && [ ! -L "$backup" ] \
+                   && ableton_runtime_marker_valid "$backup" "$ABLETON_RUNTIME_NAME"; }; then
+                echo "!! runtime rollback backup is unrecognised: $backup" >&2
+                return 1
+            fi
+        elif [ "$mode" != commit ]; then
+            echo "!! runtime rollback backup is missing: $backup" >&2
+            return 1
+        fi
+
+        if [ "$mode" = commit ] && { [ -e "$public_record" ] || [ -L "$public_record" ]; }; then
+            [ -f "$public_record" ] && [ ! -L "$public_record" ] && [ -r "$public_record" ] \
+                && ableton_file_has_no_nul "$public_record" \
+                && [ "$(wc -l < "$public_record")" -eq 1 ] || {
+                echo "!! saved runtime rollback record is unsafe" >&2; return 1; }
+            public="$(sed -n '1p' "$public_record")"
+            public_parent="$(ableton_realpath_m "$(dirname "$public")")" || return 1
+            public_base="$(basename "$public")" || return 1
+            target_parent="$(ableton_realpath_m "$(dirname "$safe")")" || return 1
+            target_base="$(basename "$safe")" || return 1
+            [ "$public_parent" = "$target_parent" ] \
+                && [[ "$public_base" == "$target_base-rollback-"* ]] || {
+                echo "!! saved runtime rollback record has an invalid path" >&2; return 1; }
+            if [ -e "$public" ] || [ -L "$public" ]; then
+                if ! { [ -d "$public" ] && [ ! -L "$public" ] \
+                       && ableton_runtime_marker_valid "$public" "$ABLETON_RUNTIME_NAME"; }; then
+                    echo "!! saved runtime rollback is unrecognised" >&2
+                    return 1
+                fi
+            fi
+        fi
+        if [ "$mode" = commit ] && [ ! -d "$backup" ]; then
+            [ -n "$public" ] && [ -d "$public" ] && [ ! -L "$public" ] || {
+                echo "!! saved runtime transaction backup is missing" >&2; return 1; }
+        fi
+    fi
+}
+
+preflight_rollback_transaction()
+{
+    local txn="$1"
+    [ -d "$txn" ] && [ ! -L "$txn" ] || {
+        echo "!! component transaction directory is missing or unsafe" >&2; return 1; }
+    validate_runtime_transaction "$txn" rollback || return 1
+    ableton_txn_preflight_rollback_files "$txn"
+}
+
+preflight_commit_transaction()
+{
+    local txn="$1"
+    [ -d "$txn" ] && [ ! -L "$txn" ] || return 1
+    validate_runtime_transaction "$txn" commit || return 1
+    ableton_txn_preflight_commit_files "$txn"
 }
 
 rollback_transaction()
 {
-    local txn="$1"
-    rollback_runtime "$txn"
-    ableton_txn_rollback_files "$txn"
+    local txn="$1" rc=0
+    preflight_rollback_transaction "$txn" || return 1
+    rollback_runtime "$txn" || rc=1
+    ableton_txn_rollback_files "$txn" || rc=1
     update-mime-database "$mime_root" >/dev/null 2>&1 || true
     update-desktop-database "$apps" >/dev/null 2>&1 || true
     gtk-update-icon-cache -q "$icons" >/dev/null 2>&1 || true
-    rm -f -- "$txn/active"
+    if [ "$rc" -eq 0 ]; then
+        rm -f -- "$txn/active" || rc=1
+    fi
+    return "$rc"
+}
+
+incomplete_rollback_marker_valid()
+{
+    local marker="$1"
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+        && [ "$(stat -c '%a' -- "$marker" 2>/dev/null || true)" = 600 ] \
+        && cmp -s -- "$marker" <(printf 'format=1\n')
 }
 
 commit_transaction()
 {
-    local txn="$1" target backup rollback
+    local txn="$1" metadata_pending="${2:-1}" target backup rollback marker marker_tmp=""
+    local record="$1/runtime-rollback-path" record_tmp="" recorded=""
+    preflight_commit_transaction "$txn" || return 1
     if [ -r "$txn/runtime.tsv" ]; then
         IFS=$'\t' read -r target backup < "$txn/runtime.tsv"
-        if [ "$backup" != absent ] && [ -e "$backup" ]; then
-            rollback="$target-rollback-$stamp"
-            [ ! -e "$rollback" ] || rollback="$rollback-$$"
-            mv -- "$backup" "$rollback"
-            printf '%s\n' "$rollback" > "$txn/runtime-rollback-path"
+        if [ "$backup" != absent ]; then
+            if [ -e "$record" ] || [ -L "$record" ]; then
+                [ -f "$record" ] && [ ! -L "$record" ] \
+                    && [ "$(wc -l < "$record" 2>/dev/null || true)" -eq 1 ] || {
+                    echo "!! saved runtime rollback record is unsafe" >&2
+                    return 1
+                }
+                recorded="$(sed -n '1p' "$record")" || return 1
+                if [ "$(ableton_realpath_m "$(dirname "$recorded")")" \
+                        = "$(ableton_realpath_m "$(dirname "$target")")" ] \
+                   && [[ "$(basename "$recorded")" == "$(basename "$target")-rollback-"* ]]; then
+                    rollback="$recorded"
+                else
+                    echo "!! saved runtime rollback record has an invalid path" >&2
+                    return 1
+                fi
+            else
+                rollback="$target-rollback-$stamp"
+                if [ -e "$rollback" ] || [ -L "$rollback" ]; then rollback="$rollback-$$"; fi
+                [ ! -e "$rollback" ] && [ ! -L "$rollback" ] || {
+                    echo "!! cannot choose an unused runtime rollback path" >&2
+                    return 1
+                }
+            fi
+            # A public rollback name is selectable by rollback.sh.  Seal the
+            # old runtime as incomplete while it still has its private
+            # transaction name, then expose it with one same-filesystem rename.
+            if [ -e "$backup" ] || [ -L "$backup" ]; then
+                [ -d "$backup" ] && [ ! -L "$backup" ] || {
+                    echo "!! saved runtime transaction backup is unsafe" >&2
+                    return 1
+                }
+                ableton_runtime_marker_valid "$backup" "$ABLETON_RUNTIME_NAME" || {
+                    echo "!! saved runtime transaction backup has an invalid ownership marker" >&2
+                    return 1
+                }
+            elif [ ! -d "$rollback" ] || [ -L "$rollback" ]; then
+                echo "!! saved runtime transaction backup is missing" >&2
+                return 1
+            elif ! ableton_runtime_marker_valid "$rollback" "$ABLETON_RUNTIME_NAME"; then
+                echo "!! saved runtime rollback has an invalid ownership marker" >&2
+                return 1
+            fi
+            if [ "$metadata_pending" -ne 0 ] && [ -d "$backup" ]; then
+                marker="$backup/.ableton-linux-rollback-incomplete"
+                if [ -e "$marker" ] || [ -L "$marker" ]; then
+                    incomplete_rollback_marker_valid "$marker" || {
+                        echo "!! saved runtime has an invalid rollback marker" >&2
+                        return 1
+                    }
+                else
+                    marker_tmp="$(mktemp "$backup/.rollback-incomplete.XXXXXX")" || return 1
+                    if ! printf 'format=1\n' > "$marker_tmp" \
+                       || ! chmod 600 "$marker_tmp" \
+                       || ! incomplete_rollback_marker_valid "$marker_tmp" \
+                       || ! mv -T -n -- "$marker_tmp" "$marker" \
+                       || [ -e "$marker_tmp" ] || ! incomplete_rollback_marker_valid "$marker"; then
+                        rm -f -- "$marker_tmp"
+                        echo "!! could not seal the saved runtime rollback as incomplete" >&2
+                        return 1
+                    fi
+                fi
+            fi
+            if [ ! -e "$record" ] && [ ! -L "$record" ]; then
+                record_tmp="$(mktemp "$txn/.runtime-rollback-path.XXXXXX")" || return 1
+                if ! printf '%s\n' "$rollback" > "$record_tmp" \
+                   || ! chmod 600 "$record_tmp" \
+                   || ! mv -T -n -- "$record_tmp" "$record" \
+                   || [ -e "$record_tmp" ]; then
+                    rm -f -- "$record_tmp"
+                    echo "!! could not record the saved runtime rollback" >&2
+                    return 1
+                fi
+            fi
+            if [ -d "$backup" ]; then
+                component_commit_started=1
+                mv -T -n -- "$backup" "$rollback"
+                [ ! -e "$backup" ] && [ ! -L "$backup" ] \
+                    && [ -d "$rollback" ] && [ ! -L "$rollback" ] || {
+                    echo "!! could not version the previous runtime" >&2
+                    return 1
+                }
+            fi
+            if [ "$metadata_pending" -ne 0 ]; then
+                incomplete_rollback_marker_valid \
+                    "$rollback/.ableton-linux-rollback-incomplete" || {
+                    echo "!! public saved runtime lacks its incomplete marker" >&2
+                    return 1
+                }
+            fi
         fi
     fi
-    rm -f -- "$txn/active"
+    component_commit_started=1
+    rm -f -- "$txn/active" || return 1
 }
 
 case "$operation" in
+    preflight-rollback) preflight_rollback_transaction "$transaction_arg"; exit ;;
+    preflight-commit) preflight_commit_transaction "$transaction_arg"; exit ;;
     rollback) rollback_transaction "$transaction_arg"; exit ;;
     commit) commit_transaction "$transaction_arg"; exit ;;
 esac
@@ -112,7 +327,8 @@ esac
 own_transaction=0
 if [ -n "$transaction_arg" ]; then
     ABLETON_TRANSACTION_DIR="$transaction_arg"
-elif [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
+elif [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ] \
+     || { [ "$want_runtime" -eq 1 ] && [ "$want_integration" -eq 0 ] && [ "$want_link" -eq 0 ]; }; then
     ABLETON_TRANSACTION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ableton-install-plan.XXXXXX")"
     own_transaction=1
 else
@@ -123,23 +339,41 @@ else
 fi
 export ABLETON_TRANSACTION_DIR
 ableton_txn_init
+ableton_validate_install_state_journals
 stage=""
+component_commit_started=0
 cleanup()
 {
-    local rc=$?
+    local rc=$? restore_error="" restoration_complete=yes
     trap - EXIT
-    [ -z "$stage" ] || rm -rf -- "$stage"
-    if [ "$rc" -ne 0 ] && [ -e "$ABLETON_TRANSACTION_DIR/active" ]; then
-        echo "!! component installation failed; rolling its recorded mutations back" >&2
-        rollback_transaction "$ABLETON_TRANSACTION_DIR" || true
-        if [ "$own_transaction" -eq 1 ]; then
-            printf 'component=install.sh\nexit=%s\n' "$rc" > "$ABLETON_TRANSACTION_DIR/FAILURE"
-            echo "!! rollback complete; failure record: $ABLETON_TRANSACTION_DIR/FAILURE" >&2
-        fi
+    if [ -n "$stage" ] && ! rm -rf -- "$stage"; then
+        restore_error="temporary runtime cleanup failed"
+        rc=1
     fi
-    if [ "$own_transaction" -eq 1 ] && [ "$rc" -eq 0 ]; then
-        commit_transaction "$ABLETON_TRANSACTION_DIR"
-        rm -rf -- "$ABLETON_TRANSACTION_DIR"
+    if [ "$rc" -ne 0 ] && [ "$component_commit_started" -eq 1 ]; then
+        printf 'component=install.sh\nstatus=committed-cleanup-incomplete\nexit=%s\ncleanup_error=%s\n' \
+            "$rc" "$restore_error" > "$ABLETON_TRANSACTION_DIR/COMMITTED_CLEANUP_FAILURE" 2>/dev/null || true
+        echo "!! component installation is committed, but cleanup is incomplete" >&2
+        echo "!! inspect $ABLETON_TRANSACTION_DIR/COMMITTED_CLEANUP_FAILURE before retrying" >&2
+    elif [ "$rc" -ne 0 ] && [ -e "$ABLETON_TRANSACTION_DIR/active" ]; then
+        echo "!! component installation failed; rolling its recorded mutations back" >&2
+        if ! rollback_transaction "$ABLETON_TRANSACTION_DIR"; then
+            restore_error="${restore_error}${restore_error:+; }component rollback failed"
+        fi
+        [ -z "$restore_error" ] || restoration_complete=no
+        if [ "$own_transaction" -eq 1 ]; then
+            printf 'component=install.sh\nexit=%s\nrestoration_complete=%s\nrestoration_error=%s\n' \
+                "$rc" "$restoration_complete" "$restore_error" \
+                > "$ABLETON_TRANSACTION_DIR/FAILURE" || true
+            if [ "$restoration_complete" = yes ]; then
+                echo "!! rollback complete; failure record: $ABLETON_TRANSACTION_DIR/FAILURE" >&2
+            else
+                echo "!! component rollback is incomplete: $restore_error" >&2
+                echo "!! inspect $ABLETON_TRANSACTION_DIR/FAILURE before retrying" >&2
+            fi
+        fi
+    elif [ "$rc" -ne 0 ] && [ -n "$restore_error" ]; then
+        echo "!! component cleanup is incomplete: $restore_error" >&2
     fi
     exit "$rc"
 }
@@ -149,20 +383,40 @@ trap 'exit 143' TERM
 
 tarball=""
 candidate=""
+runtime_info=""
+bundle_probe=""
 linkd_source=""
 unit_source=""
 
 validate_runtime_payload()
 {
-    # Developer -debug trees lack wineboot/winepath/wine.inf and must never win
-    # the newest-version selection over a release tree.
-    tarball="$(find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
-        ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -n 1 || true)"
-    [ -n "$tarball" ] || { echo "!! no $ABLETON_RUNTIME_NAME-*.tar.zst payload found" >&2; return 1; }
+    local version version_lines checksum expected_sha checksum_name checksum_extra actual_sha
+    [ -r "$root/VERSION" ] || { echo "!! installer kit has no VERSION" >&2; return 1; }
+    version_lines="$(wc -l < "$root/VERSION")"
+    version="$(sed -n '1p' "$root/VERSION")"
+    [ "$version_lines" -eq 1 ] && [[ "$version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || {
+        echo "!! installer kit has an invalid VERSION" >&2; return 1; }
+    tarball="$root/dist/$ABLETON_RUNTIME_NAME-$version.tar.zst"
+    [ -f "$tarball" ] || { echo "!! exact runtime $ABLETON_RUNTIME_NAME-$version.tar.zst is missing" >&2; return 1; }
+    checksum="$tarball.sha256"
+    [ -s "$checksum" ] || { echo "!! runtime checksum is missing" >&2; return 1; }
+    [ "$(wc -l < "$checksum")" -eq 1 ] || { echo "!! runtime checksum record is malformed" >&2; return 1; }
+    read -r expected_sha checksum_name checksum_extra < "$checksum"
+    [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] && [ -z "$checksum_extra" ] || {
+        echo "!! runtime checksum record is malformed" >&2; return 1; }
+    checksum_name="${checksum_name#\*}"
+    [ "$checksum_name" = "$(basename "$tarball")" ] || {
+        echo "!! runtime checksum names a different payload" >&2; return 1; }
+    actual_sha="$(sha256sum -- "$tarball" | awk '{print $1}')"
+    [ "$actual_sha" = "$expected_sha" ] || { echo "!! runtime checksum does not match" >&2; return 1; }
+    runtime_info="$root/BUILD-INFO-$version.txt"
+    [ -s "$runtime_info" ] || runtime_info="$root/dist/BUILD-INFO-$version.txt"
+    [ -s "$runtime_info" ] || { echo "!! exact BUILD-INFO-$version.txt is missing" >&2; return 1; }
+    bundle_probe="$root/bin/pipewire-version-probe"
+    [ -x "$bundle_probe" ] || bundle_probe="$root/dist/pipewire-version-probe"
+    [ -x "$bundle_probe" ] || { echo "!! installer kit is missing its PipeWire compatibility check" >&2; return 1; }
     echo "== validate runtime payload: $(basename "$tarball") =="
-    if [ -f "$tarball.sha256" ]; then
-        ( cd "$(dirname "$tarball")" && sha256sum -c "$(basename "$tarball").sha256" )
-    fi
+    echo "$(basename "$tarball"): OK"
     local parent
     parent="$(dirname "$ABLETON_WINE_ROOT")"
     if [ "$validate_only" -eq 1 ] || [ "$dry_run" -eq 1 ]; then
@@ -182,19 +436,16 @@ validate_runtime_payload()
         ableton_run_bounded "$extract_timeout" tar -C "$stage" -I zstd -xf "$tarball"
     fi
     candidate="$stage/$ABLETON_RUNTIME_NAME"
-    # setup-prefix.sh and ableton-live call wineboot, winepath, and wine.inf
-    # by absolute path.  A tree without them passes installation and then
-    # cannot boot a prefix.  wineboot and winepath are symlinks to wine,
-    # which -s follows.
     local required
     for required in \
-        bin/wine bin/wineserver bin/wineboot bin/winepath \
-        share/wine/wine.inf \
+        bin/wine bin/wineserver \
         lib/wine/x86_64-windows/libusb-1.0.dll \
         lib/wine/x86_64-unix/libusb-1.0.so \
         lib/wine/x86_64-unix/comdlg32.so \
         lib/wine/x86_64-unix/winealsa.so \
         lib/wine/x86_64-unix/winegstreamer.so \
+        bin/pipewire-version-probe \
+        ABLETON-WINE-BUILD-INFO.txt \
         lib/wine/x86_64-windows/pipeasio64.dll \
         lib/wine/x86_64-windows/pipeasio.dll \
         lib/wine/x86_64-unix/pipeasio64.dll.so \
@@ -209,18 +460,32 @@ validate_runtime_payload()
         readelf -d "$candidate/lib/wine/x86_64-unix/pipeasio64.dll.so" | grep -F 'Shared library: [libpipewire-0.3.so.0]' >/dev/null
         readelf -d "$candidate/lib/wine/x86_64-unix/winegstreamer.so" | grep -F 'Shared library: [libgstreamer-1.0.so.0]' >/dev/null
     fi
+    ableton_pipeasio_validate_runtime "$candidate" "$runtime_info" "$version"
+    cmp -s -- "$bundle_probe" "$candidate/bin/pipewire-version-probe" || {
+        echo "!! installer and runtime compatibility checks do not match" >&2; return 1; }
     ableton_run_bounded 30 "$candidate/bin/wine" --version
 }
 
 validate_integration_sources()
 {
-    local required
-    for required in ableton-live max9 detect-scale.sh detect-theme.sh shortcut-hold.sh; do
+    local required probe_source=""
+    for required in ableton-live max9 detect-scale.sh detect-theme.sh shortcut-hold.sh \
+                    setup-realtime.sh audio-report.sh rollback.sh; do
         [ -f "$here/$required" ] || { echo "!! installer kit is missing scripts/$required" >&2; return 1; }
     done
-    for required in config.sh lifecycle.sh manifest.sh; do
+    for required in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
         [ -f "$here/lib/$required" ] || { echo "!! installer kit is missing scripts/lib/$required" >&2; return 1; }
     done
+    for required in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
+                    "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
+        [ -x "$required" ] || continue
+        probe_source="$required"
+        break
+    done
+    [ -n "$probe_source" ] || {
+        echo "!! installer kit is missing its PipeWire compatibility check" >&2
+        return 1
+    }
     for required in ableton-live.desktop.in ableton-linux-protocol.desktop.in \
                     ableton-linux-auz.desktop.in x-wine-extension-auz.xml; do
         [ -f "$root/desktop/$required" ] || {
@@ -260,7 +525,18 @@ validate_link_sources()
 
 if [ "$validate_only" -eq 1 ]; then
     echo "OK: selected component payloads are valid"
+    if [ -n "$stage" ]; then
+        case "$(basename "$stage")" in ableton-runtime-validate.*) ;; *)
+            echo "!! refusing unexpected validation staging path: $stage" >&2; exit 1 ;; esac
+        [ -d "$stage" ] && [ ! -L "$stage" ] \
+            && rm -rf -- "$stage" && [ ! -e "$stage" ] || exit 1
+        stage=""
+    fi
     rm -f -- "$ABLETON_TRANSACTION_DIR/active"
+    if [ "$own_transaction" -eq 1 ]; then
+        rm -rf -- "$ABLETON_TRANSACTION_DIR"
+    fi
+    trap - EXIT
     exit 0
 fi
 
@@ -272,7 +548,7 @@ if [ "$dry_run" -eq 1 ]; then
     }
     if [ "$want_integration" -eq 1 ]; then
         printf '  write launcher: %s/ableton-live\n' "$bin"
-        printf '  write launcher support: %s/{lib/config.sh,lib/lifecycle.sh,lib/manifest.sh,detect-scale.sh,detect-theme.sh,shortcut-hold.sh}\n' "$data"
+        printf '  write launcher support and recovery tools below: %s\n' "$data"
         printf '  write helper assets when packaged: %s/{setsyscolors.exe,learnheal.exe}\n' "$data"
         printf '  write desktop entries: %s/{ableton-live,%s,%s}\n' \
             "$apps" "$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID"
@@ -287,16 +563,41 @@ if [ "$dry_run" -eq 1 ]; then
         fi
     fi
     if [ "$want_link" -eq 1 ]; then
-        printf '  write Link binary: %s\n' "$ABLETON_LINKD"
+        if [ "$ABLETON_LINKD" = "$ABLETON_DATA_HOME/ableton-linkd" ]; then
+            printf '  write Link binary: %s\n' "$ABLETON_LINKD"
+        else
+            printf '  use external Link binary without taking ownership: %s\n' "$ABLETON_LINKD"
+        fi
         printf '  write Link controller/setup/unit assets: %s/{ableton-linkctl,setup-link.sh,ableton-linkd.service}\n' "$data"
         printf '  write Link support libraries: %s/lib/{config.sh,lifecycle.sh}\n' "$data"
     fi
     if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
         printf '  write component version: %s/VERSION\n' "$data"
+    fi
+    if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ] \
+       || { [ "$want_runtime" -eq 1 ] && [ "$ownership_manifest_was_present" -eq 1 ]; }; then
         printf '  update ownership manifest: %s/install-manifest.tsv\n' "$ABLETON_STATE_HOME"
     fi
+    if [ -n "$stage" ]; then
+        case "$(basename "$stage")" in ableton-runtime-validate.*) ;; *)
+            echo "!! refusing unexpected validation staging path: $stage" >&2; exit 1 ;; esac
+        [ -d "$stage" ] && [ ! -L "$stage" ] \
+            && rm -rf -- "$stage" && [ ! -e "$stage" ] || exit 1
+        stage=""
+    fi
     rm -f -- "$ABLETON_TRANSACTION_DIR/active"
+    if [ "$own_transaction" -eq 1 ]; then
+        rm -rf -- "$ABLETON_TRANSACTION_DIR"
+    fi
+    trap - EXIT
     exit 0
+fi
+
+# Direct component use receives the same gate as the wrapper. Validation and
+# dry-run remain usable without a running daemon; Link/integration-only work
+# carries no PipeASIO driver replacement and is not gated.
+if [ "$want_runtime" -eq 1 ]; then
+    ableton_pipewire_preflight "$candidate/bin/pipewire-version-probe" "installing PipeASIO"
 fi
 
 runtime_pids_all()
@@ -339,26 +640,40 @@ stop_runtime_clients()
 
 promote_runtime()
 {
-    local target="$ABLETON_WINE_ROOT" parent backup safe
-    stop_runtime_clients
+    local target="$ABLETON_WINE_ROOT" parent backup safe marker marker_tmp record
     parent="$(dirname "$target")"
     mkdir -p -- "$parent"
     safe="$(ableton_path_is_safe_delete_target "$target")" || { echo "!! unsafe runtime target: $target" >&2; return 1; }
     backup=absent
     if [ -e "$safe" ]; then
         [ ! -L "$safe" ] || { echo "!! refusing to replace symlink runtime $safe" >&2; return 1; }
-        if [ ! -f "$safe/.ableton-linux-runtime" ] \
-           && [ "$safe" != "$(ableton_realpath_m "$HOME/.local/opt/$ABLETON_RUNTIME_NAME")" ]; then
+        ableton_adopt_runtime_marker "$safe" "$ABLETON_RUNTIME_NAME" || {
             echo "!! refusing to replace an unrecognised runtime directory: $safe" >&2
             return 1
-        fi
+        }
         backup="$safe.transaction-${ABLETON_TRANSACTION_DIR##*/}"
-        [ ! -e "$backup" ] || { echo "!! transaction backup already exists: $backup" >&2; return 1; }
-        mv -- "$safe" "$backup"
+        [ ! -e "$backup" ] && [ ! -L "$backup" ] \
+            || { echo "!! transaction backup already exists: $backup" >&2; return 1; }
     fi
-    printf '%s\t%s\n' "$safe" "$backup" > "$ABLETON_TRANSACTION_DIR/runtime.tsv"
-    mv -- "$candidate" "$safe"
-    printf 'format=1\nname=%s\n' "$ABLETON_RUNTIME_NAME" > "$safe/.ableton-linux-runtime"
+    stop_runtime_clients
+    # Mark and verify the staged tree before it can become the live runtime.
+    marker="$candidate/.ableton-linux-runtime"
+    [ ! -e "$marker" ] && [ ! -L "$marker" ] || {
+        echo "!! staged runtime already has an ownership marker" >&2; return 1; }
+    marker_tmp="$(mktemp "$candidate/.runtime-marker.XXXXXX")" || return 1
+    if ! printf 'format=1\nname=%s\n' "$ABLETON_RUNTIME_NAME" > "$marker_tmp" \
+       || ! chmod 600 "$marker_tmp" \
+       || ! mv -T -n -- "$marker_tmp" "$marker" \
+       || [ -e "$marker_tmp" ] || [ ! -f "$marker" ] || [ -L "$marker" ] \
+       || ! ableton_runtime_marker_valid "$candidate" "$ABLETON_RUNTIME_NAME"; then
+        rm -f -- "$marker_tmp"
+        echo "!! could not mark the staged runtime safely" >&2
+        return 1
+    fi
+    record="$ABLETON_TRANSACTION_DIR/runtime.tsv"
+    ableton_promote_directory "$candidate" "$safe" "$backup" "$record"
+    ableton_runtime_marker_valid "$safe" "$ABLETON_RUNTIME_NAME" || {
+        echo "!! promoted runtime lost its ownership marker" >&2; return 1; }
     ABLETON_RUNTIME_INSTALLED=1
     export ABLETON_RUNTIME_INSTALLED
     "$safe/bin/wine" --version
@@ -371,34 +686,58 @@ sed_escape()
 
 record_mime_prestate()
 {
-    local state="$ABLETON_STATE_HOME/mime-prestate.tsv" type old
+    local state="$ABLETON_STATE_HOME/mime-prestate.tsv" type old tmp
+    ableton_validate_mime_prestate "$state" || return 1
     [ -e "$state" ] && return 0
     ableton_txn_snapshot "$state"
     ableton_mark_state_home
-    : > "$state"
-    command -v xdg-mime >/dev/null 2>&1 || return 0
-    for type in x-scheme-handler/ableton application/x-wine-extension-auz \
-                application/x-ableton-live-set application/x-ableton-live-clip \
-                application/x-ableton-live-pack application/x-ableton-live-max-device \
-                x-scheme-handler/c74max; do
-        old="$(xdg-mime query default "$type" 2>/dev/null || true)"
-        printf '%s\t%s\n' "$type" "$old" >> "$state"
-    done
+    tmp="$(mktemp "$ABLETON_STATE_HOME/.mime-prestate.XXXXXX")" || return 1
+    if command -v xdg-mime >/dev/null 2>&1; then
+        for type in x-scheme-handler/ableton application/x-wine-extension-auz \
+                    application/x-ableton-live-set application/x-ableton-live-clip \
+                    application/x-ableton-live-pack application/x-ableton-live-max-device \
+                    x-scheme-handler/c74max; do
+            old="$(xdg-mime query default "$type" 2>/dev/null || true)"
+            printf '%s\t%s\n' "$type" "$old" >> "$tmp"
+        done
+    fi
+    if ! chmod 600 "$tmp" \
+       || ! ableton_txn_expect "$state" "$(ableton_regular_source_token "$tmp")" \
+       || ! mv -f -- "$tmp" "$state"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
 }
 
 install_integration()
 {
     local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
+    local probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
     local -a handler_templates=(ableton-linux-protocol ableton-linux-auz)
     echo "== install launchers and host integration =="
-    for tool in config.sh lifecycle.sh manifest.sh; do
+    for tool in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
     ableton_install_file 755 "$here/ableton-live" "$bin/ableton-live"
     for tool in detect-scale.sh detect-theme.sh shortcut-hold.sh; do
         ableton_install_file 644 "$here/$tool" "$data/$tool"
     done
+    for tool in setup-realtime.sh audio-report.sh rollback.sh; do
+        ableton_install_file 755 "$here/$tool" "$data/$tool"
+    done
+    for source in "$ABLETON_WINE_ROOT/bin/pipewire-version-probe" \
+                  "$root/bin/pipewire-version-probe" "$root/dist/pipewire-version-probe"; do
+        [ -x "$source" ] || continue
+        probe_source="$source"
+        break
+    done
+    [ -n "$probe_source" ] || {
+        echo "!! installer kit is missing its PipeWire compatibility check" >&2
+        return 1
+    }
+    ableton_install_file 755 "$probe_source" "$data/pipewire-version-probe"
     for tool in setsyscolors.exe learnheal.exe; do
         for source in "$here/$tool" "$root/tools/$tool"; do
             [ -f "$source" ] || continue
@@ -473,9 +812,39 @@ install_integration()
     ableton_install_file 644 "$root/desktop/icons/application-ableton-live.xml" "$mime_root/packages/application-ableton-live.xml"
 
     record_mime_prestate
-    ableton_txn_snapshot "${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    if command -v xdg-mime >/dev/null 2>&1; then
+        if [ -e "$mimeapps_file" ] || [ -L "$mimeapps_file" ]; then
+            [ -f "$mimeapps_file" ] && [ ! -L "$mimeapps_file" ] || {
+                echo "!! refusing unsafe MIME association file $mimeapps_file" >&2; return 1; }
+        fi
+        mime_stage="$(mktemp -d "${TMPDIR:-/tmp}/ableton-mimeapps.XXXXXX")" || return 1
+        [ ! -e "$mimeapps_file" ] || cp -- "$mimeapps_file" "$mime_stage/mimeapps.list"
+        if ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                "$ABLETON_PROTOCOL_DESKTOP_ID" x-scheme-handler/ableton \
+           || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                "$ABLETON_AUZ_DESKTOP_ID" application/x-wine-extension-auz \
+           || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                ableton-live.desktop application/x-ableton-live-set \
+                application/x-ableton-live-clip application/x-ableton-live-pack; then
+            rm -rf -- "$mime_stage"
+            echo "!! MIME association staging failed; existing associations were unchanged" >&2
+            return 1
+        fi
+        if [ -f "$max_unix" ] \
+           && { ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                    max9.desktop application/x-ableton-live-max-device \
+                || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                    wine-protocol-c74max.desktop x-scheme-handler/c74max; }; then
+            rm -rf -- "$mime_stage"
+            echo "!! MIME association staging failed; existing associations were unchanged" >&2
+            return 1
+        fi
+        if [ -e "$mime_stage/mimeapps.list" ]; then
+            ableton_txn_replace_unowned_file "$mime_stage/mimeapps.list" "$mimeapps_file"
+        fi
+        rm -rf -- "$mime_stage"
+    fi
 
-    local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     if [ -f "$max_unix" ]; then
         ableton_install_file 755 "$here/max9" "$bin/max9"
         for d in max9 wine-protocol-c74max; do
@@ -528,6 +897,8 @@ install_link_assets()
 {
     echo "== install Link assets (not enabled or started) =="
     local tool restart_always=0 fragment="" expected_unit
+    local managed_linkd="$ABLETON_DATA_HOME/ableton-linkd"
+    local legacy_custom="${ABLETON_PR182_CUSTOM_LINKD:-}"
     if [ -x "$ABLETON_LINKD" ]; then
         [ "$ABLETON_LINK_MODE" != always ] || restart_always=1
         if command -v systemctl >/dev/null 2>&1; then
@@ -544,7 +915,29 @@ install_link_assets()
     for tool in config.sh lifecycle.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
-    ableton_install_file 755 "$linkd_source" "$ABLETON_LINKD"
+    if [ -n "$legacy_custom" ]; then
+        ableton_txn_authorize_pr182_custom_link "$legacy_custom" || {
+            echo "!! legacy custom Link ownership could not be verified" >&2
+            return 1
+        }
+        ableton_retire_pr182_custom_link "$legacy_custom" || return 1
+        if [ "$ABLETON_PR182_RETIREMENT" = retired ]; then
+            echo "   retired the PR #182 custom Link binary ownership"
+        else
+            echo "   kept and de-owned the modified former PR #182 Link binary"
+        fi
+    fi
+    # A configured external Link daemon may be executed by the controller, but
+    # it is never installed, claimed, restored, or removed by this project.
+    if [ "$ABLETON_LINKD" = "$managed_linkd" ]; then
+        ableton_install_file 755 "$linkd_source" "$managed_linkd"
+    else
+        [ -x "$ABLETON_LINKD" ] || {
+            echo "!! configured external Link daemon is not executable: $ABLETON_LINKD" >&2
+            return 1
+        }
+        printf '   using external Link daemon without taking ownership: %s\n' "$ABLETON_LINKD"
+    fi
     ableton_install_file 755 "$here/ableton-linkctl" "$data/ableton-linkctl"
     ableton_install_file 755 "$here/setup-link.sh" "$data/setup-link.sh"
     ableton_install_file 644 "$unit_source" "$data/ableton-linkd.service"
@@ -554,24 +947,66 @@ install_link_assets()
 }
 
 [ "$want_runtime" -eq 0 ] || promote_runtime
-[ "$want_integration" -eq 0 ] || install_integration
+if [ "$want_integration" -eq 1 ]; then
+    install_integration
+    ableton_pipeasio_optional_tools_advice
+fi
 [ "$want_link" -eq 0 ] || install_link_assets
 
-if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
-    mkdir -p -- "$data"
-    printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" > "$data/VERSION.tmp"
-    ableton_install_file 644 "$data/VERSION.tmp" "$data/VERSION"
-    rm -f -- "$data/VERSION.tmp"
+# The panel follows the selected runtime even for a runtime-only update.  An
+# integration-only install remains independently usable when no runtime has
+# been installed yet.
+if [ "$want_runtime" -eq 1 ]; then
+    ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT"
+    if [ "$want_integration" -eq 1 ]; then
+        ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
+    else
+        ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" reconcile
+    fi
+elif [ "$want_integration" -eq 1 ]; then
+    if grep -qxF 'pipeasio-panel: built' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null \
+       || grep -qxF 'pipeasio-panel: skipped' "$ABLETON_WINE_ROOT/ABLETON-WINE-BUILD-INFO.txt" 2>/dev/null; then
+        if ableton_pipeasio_validate_runtime "$ABLETON_WINE_ROOT" >/dev/null 2>&1; then
+            ableton_pipeasio_sync_panel "$ABLETON_WINE_ROOT" install
+        else
+            echo "   kept existing PipeASIO panel links; this runtime uses a different contract"
+        fi
+    else
+        echo "   no current PipeASIO panel contract; launcher integration continues without it"
+    fi
 fi
+
 if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
+    version_tmp=""
+    mkdir -p -- "$data"
+    version_tmp="$(mktemp "$data/.VERSION.XXXXXX")" || exit 1
+    if ! printf '%s\n' "$(cat "$root/VERSION" 2>/dev/null || echo unknown)" > "$version_tmp" \
+       || ! ableton_install_file 644 "$version_tmp" "$data/VERSION"; then
+        rm -f -- "$version_tmp"
+        exit 1
+    fi
+    rm -f -- "$version_tmp"
+fi
+if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ] \
+   || { [ "$want_runtime" -eq 1 ] && [ "$ownership_manifest_was_present" -eq 1 ]; }; then
     ableton_write_ownership_manifest
 fi
 
-if [ "$own_transaction" -eq 1 ]; then
-    commit_transaction "$ABLETON_TRANSACTION_DIR"
-fi
-rm -f -- "$ABLETON_TRANSACTION_DIR/active"
-trap - EXIT
 [ -z "$stage" ] || rm -rf -- "$stage"
-[ "$own_transaction" -eq 0 ] || rm -rf -- "$ABLETON_TRANSACTION_DIR"
+stage=""
+if [ "$own_transaction" -eq 1 ]; then
+    commit_transaction "$ABLETON_TRANSACTION_DIR" 0
+    if ! rm -rf -- "$ABLETON_TRANSACTION_DIR"; then
+        echo "!! committed component transaction could not be retired" >&2
+        exit 1
+    fi
+else
+    rm -f -- "$ABLETON_TRANSACTION_DIR/active"
+fi
+trap - EXIT
 echo "OK: selected components installed transactionally"
+if [ "$want_integration" -eq 1 ]; then
+    printf '   Audio report: %s/audio-report.sh\n' "$data"
+    printf '   Realtime setup: %s/setup-realtime.sh\n' "$data"
+    printf '   Runtime rollback: %s/rollback.sh\n' "$data"
+fi

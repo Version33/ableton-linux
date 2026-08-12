@@ -1,61 +1,27 @@
-# Linux-native plugin routing test
+# Test Linux-native plug-ins through Carla
 
-This workflow is untested. It runs Linux plugins in Carla, then connects them
-to PipeASIO through PipeWire. This keeps the Linux plugin host outside Live's
-Wine process. The PipeASIO port layout was verified for issue #15 on
-2026-07-18.
+Ableton Linux does not yet load Linux VST or CLAP plug-ins inside Live. This
+experimental route runs the plug-in in Carla and connects audio and MIDI
+through PipeWire.
 
-## Setup
+## Try the route
 
-1. Install Carla from the distribution packages.
-2. Start the host through PipeWire's JACK compatibility layer:
+1. Install Carla and the Linux plug-in through the distribution.
+2. Start Carla with PipeWire support and load the plug-in.
+3. Start Live with PipeASIO.
+4. Connect a Live or MIDI-controller output to Carla's MIDI input.
+5. Connect Carla's audio outputs to the intended PipeWire playback or recording
+   inputs.
 
-   ```bash
-   pw-jack carla
-   ```
+Use `qpwgraph`, `helvum`, or `pw-link` to inspect and create links. Save the
+Carla rack separately from the Live Set.
 
-3. Load the Linux plugin.
-4. In Live, select **ASIO** and **PipeASIO** under
-   **Preferences > Audio**.
-5. Connect the ports with qpwgraph or `pw-link`.
+## What this does not provide
 
-List and connect ports from the shell:
+Live does not see the Linux plug-in as a device. It cannot store the plug-in
+state in the Set, automate parameters through its plug-in API, compensate its
+latency as an in-host device, or reopen its editor from the device rack. Links
+may need restoring after either application restarts.
 
-```bash
-pw-link -o
-pw-link -i
-pw-link 'OUTPUT_PORT' 'INPUT_PORT'
-```
-
-Replace `OUTPUT_PORT` and `INPUT_PORT` with names from the two lists. For audio
-into Live, connect the plugin host's outputs to PipeASIO's inputs.
-For an external effect loop, connect PipeASIO outputs to the host inputs and
-return the processed signal to PipeASIO inputs.
-
-The default PipeASIO configuration provides `in_1`, `in_2`, `out_1`, and
-`out_2` at a fixed 256-frame buffer. Settings are in
-`~/.config/pipeasio/config.ini`.
-
-For MIDI, use the ALSA sequencer ports exposed to Live by `winealsa.drv`.
-qpwgraph shows them in its MIDI view, and `aconnect -l` lists them from the
-shell.
-
-Save the connections as a qpwgraph patchbay profile if they should return with
-the session.
-
-## In-host integration
-
-Carla's
-[Wine-native bridge](https://kx.studio/News/?action=view&url=carla-21-rc1-is-here)
-loads Linux binaries inside Windows applications running under Wine.
-[Winesulin](https://github.com/falkTX/winesulin) uses the same general model:
-a Windows plugin shim loads a Linux plugin inside the host.
-
-This project has not integrated or tested either approach yet.
-
-## Limits
-
-- Carla port names depend on the installed build. Confirm them before saving a
-  profile.
-- The plugin chain shares PipeWire's graph quantum with Live. Watch `pw-top`
-  for xruns under load.
+Measure round-trip latency and check transport, sample rate, graph quantum,
+and reconnect behaviour before using the route in a performance.
