@@ -219,11 +219,11 @@ exist and need no new tooling: `max_boot` (the interval from "Started" to
 "Max: Version" in Log.txt, parsed by scripts/bench-workload.sh on the
 moonshot branch) and the MaxPlug phase log.
 
-### P-M1. Cache the host font list across processes and sessions (patch 0095, implemented)
+### P-M1. Cache the host font list across processes and sessions (patch 0096, implemented)
 
 Implemented 2026-08-04 as patch 0070 on the performance-moonshot branch.
 On this branch it is
-`patches/0095-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`,
+`patches/0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch`,
 repaired and renumbered; the addendum at the end of this section has the
 details.
 
@@ -335,9 +335,9 @@ is unchanged.
   counts every name, and turns the cache off when a walk reaches the
   cap.
 
-The patch is 0095 on this branch: the Alt+F10 menu patch took 0070 on
-main while PR 139 was open, and numbers 0090 to 0094 stay reserved for
-the issue 169 pointer gesture work.
+The patch is 0096 on this branch: the Alt+F10 menu patch took 0070 on
+main while PR 139 was open, and the issue 169 pointer gesture series
+then merged as 0090 to 0095.
 
 Rechecks on the rebuilt patch, against a scratch build and a fresh
 prefix: the list after a replay is identical to the list after a full

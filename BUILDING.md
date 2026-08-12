@@ -12,6 +12,7 @@ The build requires:
 - `zstd`
 - `cabextract`
 - `binutils`
+- a host C compiler and maths library for `make check`
 
 ## Build and install from source
 
@@ -63,12 +64,18 @@ settings.
 
 ## Run the checks
 
-Run the shortcut and installer lifecycle checks:
+Run the repository checks:
 
 ```bash
+make check
+make verify
 scripts/test-shortcut-hold.sh
 scripts/test-installer-lifecycle.sh
 ```
+
+`make check` inspects the pointer changes and tests their limits with difficult
+input. `make verify` also checks the pinned source files. Neither command starts
+Wine or Live.
 
 Build the Wine menu test with all compiler warnings enabled. Then run its two
 modes:
@@ -79,8 +86,8 @@ winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
 ./altnum-menu-repro.exe pass
 ```
 
-The GNOME test uses temporary data and does not change the desktop settings.
-The Wine test sends keys to its own window. It needs a working Wine display.
+The GNOME check uses temporary data and does not change the desktop settings.
+The Wine check sends keys to its own window. It needs a working Wine display.
 Each mode returns a non-zero status when a required result fails.
 
 ## Configure Ableton Link
@@ -106,17 +113,12 @@ The result is `dist/ableton-wine-setup-<version>.run`. The installer includes
 the runtime, launchers, Ableton Link support, setup scripts, and corresponding
 source required by bundled licences.
 
-Verify pinned source inputs with:
-
-```bash
-make verify
-```
-
 ## Environment variables
 
-Command-line options override these variables. Exported variables override the
-persistent XDG configuration, and the persistent configuration overrides the
-compatibility defaults.
+For installer and launcher settings, command-line options override exported
+variables, exported variables override saved XDG settings, and saved settings
+override the defaults. The `WINE_X11_*` values below override saved Wine
+settings for one launch.
 
 - `ABLETON_WINE_ROOT` selects the Wine runtime. The default is
   `~/.local/opt/wine-d2d1-nspa-11.13`.
@@ -145,6 +147,40 @@ compatibility defaults.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` controls smooth
+  scrolling for one launch. `precise` is the default. `notched` keeps
+  whole wheel steps. `disabled` leaves normal mouse-wheel input available.
+- `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` controls touchpad pinch zoom for
+  one launch. Pinch zoom is on by default.
+- `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` controls
+  middle-button drag navigation for one launch. Navigation is on by default.
+- `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` controls continued movement
+  after a quick smooth scroll. It defaults to `enabled`. `auto` currently
+  behaves like `disabled` on X11. Turning inertia off leaves direct scrolling
+  unchanged.
+- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls whether movement
+  continues after the user releases a middle-button drag. It defaults to
+  `enabled`. `disabled` leaves direct middle-button navigation unchanged.
+- `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
+  mouse-wheel clicks while another button is held. It defaults to `enabled`.
+  The wheel stays blocked during middle-button navigation. Touchpad scrolling,
+  pinch and continued movement stay blocked during a drag.
+- `WINE_X11_INERTIA_CURVE=exponential|linear` selects how continued movement
+  slows. `WINE_X11_INERTIA_RATE=<0.5..16.0>` selects how soon it stops. The
+  default rate is `3.0`. Lower values keep movement going for longer. Higher
+  values stop it sooner.
+- `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
+  for faders and knobs that move farther than the pointer. It defaults to
+  `disabled`. `auto` waits until it sees the fault twice. `enabled` forces the
+  repair for one launch.
+
+Named pointer values ignore letter case. `off` and `0` mean `disabled` where
+supported. Wine reports an invalid value in the normal launch log, then uses
+the next saved choice or default.
+
+The settings, defaults, limits, and hands-on checks are in
+[the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
+
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
 - `ABLETON_POWER=off` keeps the computer's power mode unchanged for one
   launch.

@@ -27,6 +27,7 @@ on:
     paths:
       - patches/**
       - Containerfile
+      - Makefile
       - build.sh
       - scripts/container-build.sh
       - scripts/build-ableton-linkd.sh
@@ -38,6 +39,7 @@ on:
     paths:
       - patches/**
       - Containerfile
+      - Makefile
       - build.sh
       - scripts/container-build.sh
       - scripts/build-ableton-linkd.sh
@@ -58,6 +60,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Check pointer safety invariants
+        run: make check
 
       - name: Restore ccache (compiled-object cache, keyed loosely on purpose)
         uses: actions/cache@v6
