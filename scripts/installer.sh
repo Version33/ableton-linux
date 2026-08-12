@@ -55,6 +55,7 @@ delete_prefix=0
 keep_prefix=0
 compat_mode=""
 compat_link=""
+compat_no_launch=0
 compat_prefix=0
 explicit_command=0
 payload_seen=0
@@ -137,7 +138,8 @@ while [ $# -gt 0 ]; do
             warn_compat --update update ;;
         --no-launch)
             skip_live=1
-            warn_compat --no-launch --skip-live-install ;;
+            compat_no_launch=1
+            warn_compat --no-launch "--skip-live-install --link=off" ;;
         --no-link)
             [ -z "$compat_link" ] || { echo "!! --no-link conflicts with --link" >&2; exit 2; }
             compat_link=off
@@ -158,6 +160,12 @@ done
 if [ "$explicit_command" -eq 1 ] && [ -n "$compat_mode" ]; then
     echo "!! an explicit command conflicts with a compatibility mode flag" >&2
     exit 2
+fi
+# The legacy --no-launch contract disabled both the Live payload and Link.
+# Apply its Link default after parsing so an explicit modern or compatibility
+# Link option wins regardless of argument order.
+if [ "$compat_no_launch" -eq 1 ] && [ "$link_seen" -eq 0 ] && [ -z "$compat_link" ]; then
+    compat_link=off
 fi
 if [ -z "$command_name" ]; then
     case "$compat_mode" in

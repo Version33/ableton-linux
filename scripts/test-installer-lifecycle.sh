@@ -135,13 +135,15 @@ fi
 ok "runtime-only rejects unrelated Link options before mutation"
 
 base="$(new_env compat-plan)"
-run_isolated "$base" bash "$here/installer.sh" install --no-launch --no-link \
-    --runtime-root "$base/runtime" --prefix "$base/prefix" --live-major 12 --dry-run >"$base/out" 2>"$base/err"
+run_isolated "$base" bash "$here/installer.sh" --no-launch --dry-run >"$base/out" 2>"$base/err"
 grep -q 'write launcher:' "$base/out" || fail "no-launch still means skip Live payload only"
-grep -q 'final Link policy: off' "$base/out" || fail "no-link maps to off"
-! grep -q 'write Link binary:' "$base/out" || fail "link off installs no Link assets"
+grep -q 'final Link policy: off' "$base/out" || fail "no-launch defaults Link off"
+! grep -Eq 'write Link binary:|write Link controller/setup/unit assets:' "$base/out" \
+    || fail "no-launch stages Link assets"
+! grep -Eq 'write ownership-marked user unit|launchers start session daemon|enable/start the owned user unit' "$base/out" \
+    || fail "no-launch plans a Link service action"
 grep -q 'deprecated' "$base/err" || fail "compatibility warning is printed"
-ok "compatibility flags map deterministically to the new contract"
+ok "no-launch compatibility excludes Link assets and service enablement"
 
 base="$(new_env update-policy)"
 mkdir -p "$base/config/ableton-wine" "$base/prefix"
