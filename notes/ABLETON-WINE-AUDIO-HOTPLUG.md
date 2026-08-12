@@ -1,37 +1,19 @@
-# Audio reconnect behavior
+# Audio device reconnect behaviour
 
-Current PipeASIO installs expose Live as a native PipeWire client.
-WirePlumber reconnects its streams when an audio device returns. The Live
-launcher does not start a hotplug helper.
+PipeASIO talks to PipeWire directly. PipeWire keeps device and graph changes
+outside Wine, so reconnecting an interface does not require WineASIO's JACK
+port restoration helper.
 
-If Live remains silent after a device reconnect, inspect WirePlumber and the
-PipeWire graph. `jacklinkd` cannot repair Live's PipeASIO connections.
+If an interface disappears while Live runs, wait for PipeWire and WirePlumber
+to restore it, then set Live's Audio Device to None and back to PipeASIO. Run
+`pw-top` or `wpctl status` to confirm that the device has returned before
+diagnosing Live.
 
-## Previous WineASIO behavior
+The older WineASIO setup exposed JACK ports owned by Wine. A reconnect could
+replace those ports, so `tools/jacklinkd.c` watched the graph and restored
+links. Current launchers do not start that helper.
 
-Releases through 2026.07.17.1 routed Live through the PipeWire JACK graph.
-Unplugging an interface removed the JACK links between WineASIO and the
-hardware ports. PipeWire did not restore those links when the device
-returned.
-
-The launcher therefore started `jacklinkd`. It recorded JACK links and
-recreated them when ports with the same names returned. PipeASIO removed JACK
-from Live's audio path, so release 2026.07.17.2 stopped starting this helper.
-
-## Separate JACK graphs
-
-[`tools/jacklinkd.c`](../tools/jacklinkd.c) remains available for setups that
-still use JACK outside Live. The tester kit also includes it under advanced
-probes.
-
-`jacklinkd` can restore only links it has already observed. It matches port
-names, so renamed or renumbered ports do not match and identical names can
-collide.
-
-WirePlumber also needs prior routing state before it can restore a native
-stream. Neither tool can infer routing that was never connected.
-
-PipeWire resamples a returning device when its rate differs from the graph.
-The [PipeASIO patches](../patches/pipeasio/) also clamp unsupported rate
-requests; without that clamp, Live could fail at startup with
-`ASE_NoClock`.
+Two input and output devices can still use different PipeWire clock domains.
+PipeASIO 1.5 reports those domains and anchors capture timing to the playback
+clock. Test reconnects with both devices active; do not reduce a two-device
+report to a single-device setup.
