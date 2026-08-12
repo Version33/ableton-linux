@@ -60,6 +60,26 @@ run_isolated "$base" bash "$here/installer.sh" --help > "$base/out"
 grep -q 'runtime install' "$base/out" || fail "help exposes subcommands"
 ok "help exposes subcommands"
 
+# make-installer's own [5/5] self-check runs --help, which returns before the
+# delegation, so only this case guards the header's exit path.
+base="$(new_env run-header)"
+kit="$base/kit"
+mkdir -p "$kit/scripts"
+printf '#!/bin/sh\nexit "${STUB_EXIT:-0}"\n' > "$kit/scripts/installer.sh"
+tar -cf "$base/payload.tar" -C "$kit" .
+sed -e 's/@VERSION@/suite-check/g' \
+    -e "s/@PAYLOAD_SHA@/$(sha256sum "$base/payload.tar" | awk '{print $1}')/g" \
+    "$here/setup-run-header.sh" > "$base/kit.run"
+cat "$base/payload.tar" >> "$base/kit.run"
+run_isolated "$base" env STUB_EXIT=0 sh "$base/kit.run" >"$base/out" 2>"$base/err" \
+    || fail "a successful delegated install exits zero through the .run header"
+status=0
+run_isolated "$base" env STUB_EXIT=42 sh "$base/kit.run" >>"$base/out" 2>>"$base/err" || status=$?
+[ "$status" -eq 42 ] || fail "a delegated install failure code passes through the .run header"
+! find "$base/tmp" -mindepth 1 -maxdepth 1 -name 'ableton-installer.*' 2>/dev/null | grep -q . \
+    || fail "the .run header removes its work directory"
+ok "the .run header propagates the delegated installer exit code"
+
 base="$(new_env noninteractive)"
 if run_isolated "$base" bash "$here/installer.sh" >"$base/out" 2>"$base/err"; then
     fail "noninteractive install requires an explicit payload"

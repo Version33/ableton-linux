@@ -19,7 +19,7 @@ VERSION="$(cat VERSION)"
 # incomplete developer -debug tree
 tarball="dist/${NAME}-${VERSION}.tar.zst"
 [ -f "$tarball" ] || tarball="$(find dist -maxdepth 1 -type f -name "${NAME}-*.tar.zst" \
-    ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -1)"
+    ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -1 || true)"
 
 [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "!! no ${NAME}-*.tar.zst in dist/: run ./build.sh first" >&2; exit 1; }
 [ -f "$tarball.sha256" ] || { echo "!! $tarball.sha256 missing" >&2; exit 1; }

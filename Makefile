@@ -1,5 +1,5 @@
 # Convenience wrapper over the scripts. See README.md.
-.PHONY: all build install setup uninstall test vendor-cache verify clean distclean
+.PHONY: all build install setup refresh uninstall test vendor-cache verify clean distclean
 
 all: build
 
@@ -9,8 +9,11 @@ build:                        ## build runtime and Link helper with Podman -> di
 install:                      ## install the built Wine tree + launcher (end user)
 	./scripts/installer.sh install --skip-live-install
 
-setup:                        ## create the Wine prefix (refresh: installer.sh prefix update)
+setup:                        ## create the Wine prefix (end user)
 	./scripts/installer.sh prefix create
+
+refresh:                      ## refresh the existing Wine prefix (end user)
+	./scripts/installer.sh prefix update
 
 uninstall:                    ## remove installed Wine tree + launcher
 	./scripts/installer.sh uninstall --keep-prefix

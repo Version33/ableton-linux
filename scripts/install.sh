@@ -157,7 +157,7 @@ validate_runtime_payload()
     # Developer -debug trees lack wineboot/winepath/wine.inf and must never win
     # the newest-version selection over a release tree.
     tarball="$(find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
-        ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -n 1)"
+        ! -name '*-debug.tar.zst' -print 2>/dev/null | sort -V | tail -n 1 || true)"
     [ -n "$tarball" ] || { echo "!! no $ABLETON_RUNTIME_NAME-*.tar.zst payload found" >&2; return 1; }
     echo "== validate runtime payload: $(basename "$tarball") =="
     if [ -f "$tarball.sha256" ]; then
