@@ -23,25 +23,35 @@ fail()
     exit 1
 }
 
-# The suite installs the real build artifacts: the runtime tarball from the
+# The suite installs real build artifacts: the exact VERSION runtime from the
 # runtime-plan check onwards and dist/ableton-linkd from the link-prestate
-# check.  Without this gate a fresh clone dies mid-suite on set -e, the
-# component's message stays in a discarded log, and the terminal shows a few
-# ok lines with no failure line.
+# check.  A checkout can update the tracked runtime checksum while retaining
+# an ignored, now-stale tarball.  Validate the pair here because its first use
+# redirects the diagnostic to a temporary log and set -e would otherwise end
+# the suite without a failure line or summary.
 . "$here/lib/config.sh"
-missing=0
-find "$root/dist" "$root" -maxdepth 1 -type f -name "$ABLETON_RUNTIME_NAME-*.tar.zst" \
-    ! -name '*-debug.tar.zst' -print -quit 2>/dev/null | grep -q . || {
-    echo "!! missing build artifact: dist/$ABLETON_RUNTIME_NAME-<version>.tar.zst" >&2
-    missing=1
-}
+prerequisite_failed=0
+version="$(sed -n '1p' "$root/VERSION")"
+runtime="$root/dist/$ABLETON_RUNTIME_NAME-$version.tar.zst"
+runtime_checksum="$runtime.sha256"
+if [ ! -f "$runtime" ]; then
+    echo "!! missing build artifact: dist/$(basename "$runtime")" >&2
+    prerequisite_failed=1
+elif [ ! -s "$runtime_checksum" ]; then
+    echo "!! missing build artifact: dist/$(basename "$runtime_checksum")" >&2
+    prerequisite_failed=1
+elif ! ( cd "$root/dist" && sha256sum -c --quiet "$(basename "$runtime_checksum")" ) \
+        >/dev/null 2>&1; then
+    echo "!! invalid build artifact: dist/$(basename "$runtime") does not match its checksum" >&2
+    prerequisite_failed=1
+fi
 [ -f "$root/dist/ableton-linkd" ] || [ -f "$root/bin/ableton-linkd" ] || {
     echo "!! missing build artifact: dist/ableton-linkd" >&2
-    missing=1
+    prerequisite_failed=1
 }
-if [ "$missing" -eq 1 ]; then
+if [ "$prerequisite_failed" -eq 1 ]; then
     echo "!! run ./build.sh first" >&2
-    fail "prerequisite build artifacts are present"
+    fail "prerequisite build artifacts are valid"
 fi
 
 new_env()
