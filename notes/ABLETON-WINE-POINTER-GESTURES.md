@@ -6,7 +6,7 @@ Wine uses 120 units for one wheel step.
 
 By default, Live provides:
 
-- smooth vertical and horizontal scrolling;
+- whole-notch vertical and horizontal scrolling;
 - pinch zoom;
 - middle-button drag navigation;
 - scrolling inertia after a quick release;
@@ -18,6 +18,18 @@ By default, Live provides:
 middle-button movement after release. Turning either one off leaves direct
 scrolling and direct middle-button navigation unchanged.
 
+`SmoothScrolling` defaults to `disabled` because any other value selects
+XI2 motion and button events on our own windows. That selection stops core
+event delivery for the device on those windows, and a button press then
+creates an implicit XI2 device grab. `X11DRV_SetCursorPos` and
+`grab_clipping_window` both take a core `XGrabPointer`, which fails against
+that grab, so while a button is held every warp is refused and cursor
+clipping is never established. Live drags a fader by re-anchoring the
+pointer with `SetCursorPos`, so each refused re-anchor leaves it
+accumulating raw physical motion and the control crosses its whole range
+from a small movement. Setting `precise` or `notched` restores fractional
+scrolling and reintroduces this.
+
 The XWayland correction for faders and knobs defaults to `disabled`.
 KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 
@@ -25,7 +37,7 @@ KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 
 | Setting | Launch variable | Default | Choices |
 | --- | --- | --- | --- |
-| `SmoothScrolling` | `WINE_X11_SMOOTH_SCROLLING` | `precise` | `disabled`, `precise`, `notched` |
+| `SmoothScrolling` | `WINE_X11_SMOOTH_SCROLLING` | `disabled` | `disabled`, `precise`, `notched` |
 | `TouchpadInertia` | `WINE_X11_TOUCHPAD_INERTIA` | `enabled` | `disabled`, `auto`, `enabled` |
 | `PinchZoom` | `WINE_X11_PINCH_ZOOM` | `legacy-wheel` | `disabled`, `legacy-wheel` |
 | `MiddleDrag` | `WINE_X11_MIDDLE_DRAG` | `navigate` | `disabled`, `navigate`, `navigate-notched` |
