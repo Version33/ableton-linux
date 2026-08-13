@@ -18,8 +18,13 @@ By default, Live provides:
 middle-button movement after release. Turning either one off leaves direct
 scrolling and direct middle-button navigation unchanged.
 
-The XWayland correction for faders and knobs defaults to `enabled`.
-KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
+The XWayland correction for faders and knobs defaults to `auto`: it engages
+only after Wine observes failed pointer warps, never preemptively, so desktops
+whose warps work see no behaviour change. A button release is reported in the
+corrected coordinate space only when the drag's own motion was delivered
+there; a drag whose motion went out uncorrected ends with an uncorrected
+release. COSMIC/XWayland, KDE/XWayland, GNOME/XWayland and Xorg checks remain
+open.
 
 ## Settings
 
@@ -33,7 +38,8 @@ KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 | `WheelWhileButtonHeld` | `WINE_X11_WHEEL_WHILE_BUTTON_HELD` | `enabled` | `disabled`, `enabled` |
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` | `exponential` | `exponential`, `linear` |
 | `InertiaRate` | `WINE_X11_INERTIA_RATE` | `4.0` | 0.5 to 16.0 |
-| `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `enabled` | `disabled`, `auto`, `enabled` |
+| `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `auto` | `disabled`, `auto`, `enabled` |
+| (all of the above) | `WINE_X11_POINTER_FEATURES` | unset | `disabled`, `off` or `0` turns every pointer feature off |
 
 The launcher sets none of these variables. A launch variable overrides a saved
 choice for that launch. Named values ignore letter case. `off` and `0` mean
@@ -43,6 +49,23 @@ log, then tries the saved choice or default.
 `TouchpadInertia=auto` currently behaves like `disabled` on X11.
 Lower `InertiaRate` values keep continued movement going for longer. Higher
 values stop it sooner.
+
+`WINE_X11_POINTER_FEATURES` is the master switch. Set it to `disabled`, `off`
+or `0` and every pointer feature above turns off regardless of any other
+source, restoring stock pointer behaviour for baseline comparisons. Wine
+reports the switch in the normal launch log.
+
+## Held left button always bypasses this work
+
+Pressing any ordinary mouse button suspends every optimisation in this series
+for the whole drag, on every desktop, from the moment Live loads. While a
+button is held there is no XInput2 involvement at all: the X server owns its
+stock grab and delivers ordinary core motion, smooth scrolling and pinch are
+suspended, inertia and throw cannot start, and the XWayland correction stays
+off unless its warps verifiably fail. Wine never adds smoothing, acceleration,
+a sensitivity change or a coordinate rewrite to a held-button drag. The same
+applies at release: the release is delivered in the same coordinate space the
+drag's motion used, never at a saved anchor.
 
 ## Safety rules
 
@@ -137,9 +160,18 @@ with Live's Master fader low.
    scroll, it must not replay missed movement when it responds.
 9. Repeat the held-control, inertia and throw checks in Live's main window and
    in a separate plug-in window.
-10. Run the fader and knob checks on KDE/XWayland, GNOME/XWayland and Xorg. On
-    XWayland, compare `WarpEmulation=disabled`, `auto` and `enabled` with the
-    pointer shown and hidden. No setting may double the control's movement.
+10. Run the fader and knob checks on COSMIC/XWayland, KDE/XWayland,
+    GNOME/XWayland and Xorg. On XWayland, compare `WarpEmulation=disabled`,
+    `auto` and `enabled` with the pointer shown and hidden. No setting may
+    double the control's movement.
+11. COSMIC/XWayland, from a fresh Live launch, with no window resize first:
+    drag one fader. Sensitivity must match the pointer and the fader must keep
+    its value on release. With `WINEDEBUG=+cursor,+event`, the log must show
+    `X server delivered core MotionNotify while XI scroll motion is suspended`
+    during the drag, proving the server owned the drag. Repeat with
+    `WINE_X11_POINTER_FEATURES=disabled`; behaviour must be identical and
+    equally free of acceleration or snap-back. Then repeat checks 1-5 for
+    two-finger scroll, pinch, middle-drag pan and inertia outside drags.
 
 Record the pointing device, Linux distribution, desktop, Xorg or XWayland,
 Live version, setting and result for each check.

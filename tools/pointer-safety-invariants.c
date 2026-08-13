@@ -300,8 +300,24 @@ static void check_warp_emulation(const char *stack, const char *warp, const char
     ok &= forbid_text("warp state has no event-count timeout", warp, "warp_idle");
     ok &= forbid_text("warp state has no polling-rate-dependent event limit", warp, ">512");
 
-    ok &= require_text("warp emulation is enabled by default", ownership,
-                       ".warp_emulation=POINTER_WARP_ENABLED");
+    ok &= require_text("warp emulation is automatic by default", ownership,
+                       ".warp_emulation=POINTER_WARP_AUTO");
+    ok &= forbid_text("warp emulation is never forced on by default", ownership,
+                      ".warp_emulation=POINTER_WARP_ENABLED");
+    ok &= require_text("a release is remapped only after emulated drag motion", ownership,
+                       "if(button_up_flags[button]&&warp_emulation_delivered_this_drag())");
+    ok &= require_text("emulated drag motion is tracked for the release", ownership,
+                       "if(allow_probe)warp_emulation.delivered_this_drag=TRUE;");
+    ok &= require_text("native drag motion keeps the release native", ownership,
+                       "if(allow_probe)warp_emulation.delivered_this_drag=FALSE;");
+    ok &= require_text("a master switch disables every pointer feature", ownership,
+                       "getenv(\"WINE_X11_POINTER_FEATURES\")");
+    ok &= require_order("the master switch is evaluated before individual settings", ownership,
+                        "WINE_X11_POINTER_FEATURES", "value=pointer_config.smooth_scrolling;");
+    ok &= require_text("the master switch forces warp emulation off", ownership,
+                       "pointer_config.warp_emulation=POINTER_WARP_DISABLED;");
+    ok &= require_text("the master switch reports on the diagnostic channel", ownership,
+                       "WINE_X11_POINTER_FEATURES=%sdisableseverypointerfeature");
     ok &= require_text("warp emulation has a registry setting and environment escape hatch", stack,
                        "pointer_option_enum(defkey,appkey,\"WarpEmulation\","
                        "\"WINE_X11_WARP_EMULATION\"");

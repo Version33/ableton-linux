@@ -438,7 +438,9 @@ Apply them in sequence with the rest of the series.
   drag suppress only their correlated legacy core wheel copies, while physical
   wheel buttons retain the stock core path. Scroll baselines are invalidated at
   both drag boundaries. Event tracing records whether the server delivered an
-  accepted core `MotionNotify` before the drag ended. Warp emulation joins the
-  other pointer features as an enabled built-in default; registry and launch
-  overrides can still disable it. See
+  accepted core `MotionNotify` before the drag ended. Warp emulation defaults
+  to `auto`: it engages only after observed failed warps, never preemptively,
+  and a button release is reported in the emulated coordinate space only when
+  the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
+  disables every pointer feature at once for baseline comparisons. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.

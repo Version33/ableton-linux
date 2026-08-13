@@ -5,12 +5,12 @@ prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocat
 patches:      105
 wine-patches: 96
 pipeasio-patches: 9
-patch-head:   9b28972780687b333c191a5ee378b290e2e62a92
-patch-stack:  93303588bfb70d8ed6dd7161794f9e3da2dbc281a50b1367ff8c752a9b44101e
-source-tree:  bcd03564fbc1f3561a53cedd70349ad4602440250c4b5112a984fdee58fa9d94
+patch-head:   0d7a8c77a4b25cf5d2344f34626ff6e8503f6a59
+patch-stack:  d7207111901ff7f717f257f15d52e70d38ad256590524ffa5dc859a800fa1b20
+source-tree:  a8ec76f102b46ed984e345f10527f9a68a5dbd5d9513c978ca3294da8e7edda0
 builder-packages: 1dcd332ce0fa5ccbf47b1a26d6288e11c6de0584571d7239e7e63ba641a4187c
 cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
-ableton-linkd: 6743616fb3dfd7f3d7e5e0c85b3eaa4095f2822e0a96facc07bc1a144aa738bd
+ableton-linkd: a85089e05d6dca5acac891c23ecd4a453525c747b9e0842a330b71e36a13107d
 pipeasio:     1.5.0
 pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)
 pipewire-version-probe: 4ea7a631decb71c0c9dfa562c916efeb82df8b5d7187b06e942f74dbbb63c31f
@@ -21,9 +21,9 @@ pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, A
 pipeasio-no-qt: CMake driver build/install + non-integration CTest passed
 pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed
 ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
-libusb-pe:    9f4722cfe64231c1e60dfc231299796811d07cbf3f09bedc5abcb377b4cd3608
+libusb-pe:    da8adab3fdd45ea3f630778d512c2a9e7af2cd35e834a7ed926d609a1b0018e6
 libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
 portal-unix:  2bc1af44d3aa5452d8ecee3c1cea3fd948cd1019222ac46eb00b17b251b8fa57
 pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
-pipeasio-unix: 7a089d57d99bb051001c0158361e814539dbb80136fc1c2a101bcbff759f92c5
+pipeasio-unix: 70b48b3cfb9b9fc9df7b5dab68a58aef3577acf2c589d0e31368dbb91fc5b42a
 built-on:     Ubuntu 22.04 (glibc 2.35)

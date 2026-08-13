@@ -54,8 +54,18 @@
   pause.
 - Added a repair for fader jumps after loading a Max for Live device. Testing
   on the affected Fedora computer remains open.
-- Added an off-by-default XWayland repair for faders and knobs that move farther
-  than the pointer. Desktop testing remains open.
+- Fixed faders, sliders and knobs jumping, running ahead of the pointer or
+  snapping back on release during left- and right-button drags. While any
+  ordinary mouse button is held, Wine now leaves the drag entirely to the X
+  server's stock pointer path: no smooth-scroll selection, no XInput2
+  reconstruction, no inertia, no pinch, and no coordinate rewrites, on every
+  desktop and from the moment Live loads.
+- Added an XWayland repair for faders and knobs that move farther than the
+  pointer. It defaults to `auto`, engaging only after Wine observes failed
+  warps, and a button release is repaired only when the drag's own motion was.
+  Desktop testing remains open.
+- Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns every
+  pointer feature off for one launch for baseline comparisons.
 - Named pointer values ignore letter case. `off` and `0` work wherever
   `disabled` works. Invalid settings appear in the normal launch log.
 
