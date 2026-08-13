@@ -99,6 +99,32 @@ This workaround is only needed for affected plugins. See the
 [Pianoteq investigation](notes/ABLETON-WINE-PIANOTEQ-DPI-GHOST-BUG.md) for the
 confirmed failure mode.
 
+## A plugin with an OpenGL interface fails to open
+
+The plugin loads and appears on the track, but its window never opens. Check the log:
+
+```bash
+grep -i "Failed to realize\|glActiveTexture" ~/.local/state/ableton-wine/logs/live.log
+```
+
+Switch that prefix to Wine's GLX backend:
+
+```bash
+WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.13/bin/wine reg add 'HKCU\Software\Wine\X11 Driver' /v UseEGL /d N /f
+```
+
+Start Live and open the plugin again. The setting is stored in the prefix and persists across launches. To undo it:
+
+```bash
+WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.13/bin/wine reg delete 'HKCU\Software\Wine\X11 Driver' /v UseEGL /f
+```
+
+Wine 11 selects EGL rather than GLX for OpenGL on X11. On some drivers that path does not complete, and Wine does not return to GLX once EGL has been selected, so the plugin never gets a rendering context. This has been observed with the NVIDIA proprietary driver.
+
+Only plugins that draw their interface in OpenGL are affected. Most plugin interfaces use GDI or Direct2D and open normally on the same prefix, so a single plugin failing while every other one works is the expected shape of this problem.
+
+If GLX does not fix it, [open an issue](https://github.com/shibco/ableton-linux/issues) and include your graphics card, driver version, and whether your session is X11 or Wayland.
+
 ## Live's "Enable GPU Renderer" setting is greyed out
 
 If you're experiencing performance issues or high CPU usage when idle, Live
