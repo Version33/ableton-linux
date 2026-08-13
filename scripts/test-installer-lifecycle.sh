@@ -3,8 +3,23 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/ableton-installer-test.XXXXXX")"
+# Checks that expect an installer run to succeed redirect its diagnostics into
+# the per-case log, so set -e ends the suite on an unexpected non-zero exit
+# with no failure line, leaving make's exit code as the only evidence.  Report
+# the case and replay what the run wrote.  The shell can exit while the failing
+# command's redirections are still applied, so this reports on a saved copy of
+# the suite's own stderr rather than into the log it is replaying.
+exec {suite_stderr}>&2
+reported=0
 cleanup()
 {
+    local code=$?
+    if [ "$code" -ne 0 ] && [ "$reported" -eq 0 ]; then
+        [ -z "${base:-}" ] || [ ! -s "$base/err" ] \
+            || sed -n '1,40p' "$base/err" >&"$suite_stderr"
+        printf 'not ok - a command exited %d unexpectedly in %s\n' \
+            "$code" "$(basename "${base:-unknown-case}")" >&"$suite_stderr"
+    fi
     [ "${ABLETON_KEEP_TEST_WORK:-0}" -eq 0 ] || { printf 'kept test work: %s\n' "$work" >&2; return; }
     rm -rf -- "$work"
 }
@@ -19,6 +34,7 @@ ok()
 
 fail()
 {
+    reported=1
     printf 'not ok - %s\n' "$1" >&2
     exit 1
 }

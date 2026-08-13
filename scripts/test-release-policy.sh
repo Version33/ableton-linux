@@ -223,7 +223,7 @@ grep -qF -- '--runtime "wine-d2d1-nspa-11.13-$ver.tar.zst" \' \
 grep -qF -- '--installer "ableton-wine-setup-$ver.run"' \
     "$root/.github/workflows/release.yml" \
     || fail 'published-asset verification omits the installer wrapper'
-if rg -q 'sh .*ableton-wine-setup.*\.run.*extract' "$root/.github/workflows/release.yml"; then
+if grep -qE 'sh .*ableton-wine-setup.*\.run.*extract' "$root/.github/workflows/release.yml"; then
     fail 'published-asset verification executes the untrusted installer candidate'
 fi
 grep -qF './scripts/make-installer.sh' "$root/scripts/release.sh" \
@@ -264,13 +264,19 @@ series="$root/patches/SERIES.sha256"
 bash "$series_checker" --check-series-policy "$series" >/dev/null \
     || fail 'complete patch series failed its terminal-member policy'
 
-grep -v '  0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch$' \
+# Read the terminal members off the manifest rather than naming them: the
+# policy pins whichever patch currently ends each series, so a hardcoded name
+# turns into a failing negative test the next time either series grows.
+wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
+pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$series" | sort | tail -1)"
+
+grep -v "  $wine_tail\$" \
     "$series" > "$tmp/no-wine-tail"
 if bash "$series_checker" --check-series-policy "$tmp/no-wine-tail" >/dev/null 2>&1; then
     fail 'series policy accepted a missing final Wine patch'
 fi
 
-grep -v '  pipeasio/0011-controlpanel-dialog-off-the-host-gui-thread.patch$' \
+grep -v "  $pipeasio_tail\$" \
     "$series" > "$tmp/no-pipeasio-tail"
 if bash "$series_checker" --check-series-policy "$tmp/no-pipeasio-tail" >/dev/null 2>&1; then
     fail 'series policy accepted a missing final PipeASIO patch'
