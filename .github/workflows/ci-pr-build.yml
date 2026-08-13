@@ -120,10 +120,13 @@ jobs:
             [ ! -e "$path" ] || sudo chown -R "$owner" "$path"
           done
 
+      # xdg-utils, desktop-file-utils and shared-mime-info carry xdg-mime,
+      # update-desktop-database and update-mime-database, which install.sh
+      # requires before it will plan or apply the integration component.
       - name: Install installer test requirements
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cabextract
+          sudo apt-get install --yes cabextract xdg-utils desktop-file-utils shared-mime-info
 
       - name: Test installer and launcher lifecycle
         run: make test
