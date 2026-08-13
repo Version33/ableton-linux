@@ -55,19 +55,19 @@ or `0` and every pointer feature above turns off regardless of any other
 source, restoring stock pointer behaviour for baseline comparisons. Wine
 reports the switch in the normal launch log.
 
-## Held left button always bypasses this work
+## Primary solution to issues associated with inerta work
 
 Pressing any ordinary mouse button suspends every optimisation in this series
 for the whole drag, on every desktop, from the moment Live loads. While a
 button is held there is no XInput2 involvement at all: the X server owns its
 stock grab and delivers ordinary core motion, smooth scrolling and pinch are
 suspended, inertia and throw cannot start, and the XWayland correction stays
-off unless its warps verifiably fail. Wine never adds smoothing, acceleration,
+off unless its warps verifiably fail. We forcefully prevent smoothing, acceleration,
 a sensitivity change or a coordinate rewrite to a held-button drag. The same
 applies at release: the release is delivered in the same coordinate space the
-drag's motion used, never at a saved anchor.
+drag's motion used.
 
-## Safety rules
+## Mitigations
 
 - A mouse-button press stops older scrolling inertia or middle-drag throw.
 - Adding a second touch and scrolling cannot speed up a left- or right-button
@@ -176,7 +176,7 @@ with Live's Master fader low.
 Record the pointing device, Linux distribution, desktop, Xorg or XWayland,
 Live version, setting and result for each check.
 
-## Known limits
+## Limitations and additional notes
 
 - Wine cannot tell whether smooth scrolling came from a touchpad, a precision
   mouse wheel or a free-spinning wheel. All three may keep moving after input
