@@ -18,7 +18,7 @@ By default, Live provides:
 middle-button movement after release. Turning either one off leaves direct
 scrolling and direct middle-button navigation unchanged.
 
-The XWayland correction for faders and knobs defaults to `disabled`.
+The XWayland correction for faders and knobs defaults to `enabled`.
 KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 
 ## Settings
@@ -33,7 +33,7 @@ KDE/XWayland, GNOME/XWayland and Xorg checks remain open.
 | `WheelWhileButtonHeld` | `WINE_X11_WHEEL_WHILE_BUTTON_HELD` | `enabled` | `disabled`, `enabled` |
 | `InertiaCurve` | `WINE_X11_INERTIA_CURVE` | `exponential` | `exponential`, `linear` |
 | `InertiaRate` | `WINE_X11_INERTIA_RATE` | `4.0` | 0.5 to 16.0 |
-| `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `disabled` | `disabled`, `auto`, `enabled` |
+| `WarpEmulation` | `WINE_X11_WARP_EMULATION` | `enabled` | `disabled`, `auto`, `enabled` |
 
 The launcher sets none of these variables. A launch variable overrides a saved
 choice for that launch. Named values ignore letter case. `off` and `0` mean
