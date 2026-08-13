@@ -38,9 +38,10 @@ You need an x86-64 Linux system that meets Ableton Live's hardware requirements.
 Additionally, you need:
 
 - glibc 2.35 or newer
-- PipeWire (1.4.2 or newer recommended; older versions run with standard buffer sizes only)
+- PipeWire 0.3.56 or newer (we recommend 1.6 or newer for audio performance)
 - GStreamer with its base and good plugin sets
 - GNU coreutils, `tar`, `zstd`, and `flock`
+- `unzip`, `bsdtar`, or Python 3 when the Ableton download is a ZIP file
 - your installation files and activation details from Ableton
 
 For most people, a modern and up-to-date Linux distribution, such as SteamOS,
@@ -51,21 +52,21 @@ requirements.
 
 1. Download the Ableton Live installation ZIP from Ableton.com.
 2. Download [the latest version of our installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run).
-3. From a terminal, run the installer:
+3. Put both files in the same folder, such as `~/Downloads`.
+4. From a terminal, run the installer:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run install
+   sh ~/Downloads/install-ableton-latest.run
    ```
 
-When you run the installer interactively, it finds one Ableton installer beside
-the `.run` file. Scripts must name the installer file explicitly.
+The installer looks for the Ableton download beside its own file. Any edition
+works, as either the `ableton_live*.zip` from Ableton.com or an already
+unpacked installer `.exe`. If it finds more than one, it asks which to use.
 
-`--link=session` enables Link while Live or Max is in use. The installer may
-ask for `sudo` to allow Link through an active firewall. Use `--link=off` if
-you do not use Link. This installs or starts nothing for Link. During an
-update, it removes only Link files and settings that this project added. The
-installer remembers your choice. `--link=always` keeps Link running after
-login.
+Ableton Link is set up during the installation. The installer may ask for
+`sudo` to allow Link through an active firewall. Pass `--no-link` if you do not
+use Link; the installer remembers that and later runs stay quiet until you pass
+`--link` to configure it.
 
 ### Running Live
 
@@ -101,15 +102,19 @@ To update this project's Wine runtime, launchers, and compatibility fixes,
 download the latest release and run:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run update
+sh ~/Downloads/install-ableton-latest.run --update
 ```
 
 This will bring the new fixes and features listed in the release notes to your
 Live Linux environment. Your Live installation, authorization, and projects are
 preserved. Compatibility-related Wine and Live settings may be updated.
 
-An update preserves the current Link policy unless you explicitly pass
-`--link=off`, `--link=session`, or `--link=always`.
+An update keeps your earlier Link choice. Pass `--link` to configure Link if
+you skipped or declined it before.
+
+An update keeps the previous runtime in a dated folder beside the new one,
+under `~/.local/opt`. The installer prints that path when it finishes, so you
+can put the old runtime back if you need to.
 
 ### Uninstalling
 
@@ -117,17 +122,19 @@ To remove this project's runtime and desktop integration while keeping Live and
 its authorization:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run uninstall --keep-prefix
+sh ~/Downloads/install-ableton-latest.run --uninstall
 ```
 
-To remove Live and its authorization too:
+To delete the managed Wine prefix as well, including Live, its Wine-side
+authorization, any Windows plugins, and every other file stored inside that
+prefix:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run uninstall --delete-prefix
+sh ~/Downloads/install-ableton-latest.run --uninstall --prefix
 ```
 
-The second command asks for confirmation. Neither command touches your Live
-Sets.
+The second command asks for confirmation. Both commands leave Live Sets stored
+outside the prefix unchanged.
 
 ## Running different versions of Ableton Live on the same computer
 
@@ -137,8 +144,8 @@ edition together.
 
 ### Live 12
 
-The installer detects Live 12 from the named Ableton installer file. If it
-cannot identify a renamed file, pass `--live-major 12` explicitly.
+The installer prepares the prefix for Live 12 by default. Nothing extra is
+needed.
 
 ### Live 11
 
@@ -151,7 +158,7 @@ To install Live 11:
 1. In your terminal window, tell the installer you want to install Live 11:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run install --live-major 11
+   env ABLETON_LIVE_VERSION=11 sh ~/Downloads/install-ableton-latest.run
    ```
 
    The first setup downloads extra Live 11 support files, so it needs internet
@@ -237,7 +244,8 @@ display does not start.
 The installer sets up Ableton Link for you. In Live, enable
 **Show Link Toggle** under
 **Settings/Preferences > Link, Tempo & MIDI**, then enable Link in the control
-bar. Devices on the same local network should appear automatically.
+bar. Peers must share a local network that carries multicast traffic; devices
+on such a network appear automatically.
 
 See [Link troubleshooting](TROUBLESHOOTING.md#ableton-link-does-not-find-peers)
 if no peers appear.
@@ -260,8 +268,12 @@ Start with:
 
 - [Build from source](BUILDING.md)
 - [Implementation notes](notes/)
+- [Patch provenance](patches/BASE.txt)
+- [Changelog](CHANGELOG.md)
 
 Contributors must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Licence: [LICENCE](LICENCE)
 
 ## Credits
 
