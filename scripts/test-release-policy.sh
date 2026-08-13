@@ -223,7 +223,7 @@ grep -qF -- '--runtime "wine-d2d1-nspa-11.13-$ver.tar.zst" \' \
 grep -qF -- '--installer "ableton-wine-setup-$ver.run"' \
     "$root/.github/workflows/release.yml" \
     || fail 'published-asset verification omits the installer wrapper'
-if rg -q 'sh .*ableton-wine-setup.*\.run.*extract' "$root/.github/workflows/release.yml"; then
+if grep -qE 'sh .*ableton-wine-setup.*\.run.*extract' "$root/.github/workflows/release.yml"; then
     fail 'published-asset verification executes the untrusted installer candidate'
 fi
 grep -qF './scripts/make-installer.sh' "$root/scripts/release.sh" \
