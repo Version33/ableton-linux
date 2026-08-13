@@ -51,17 +51,14 @@ requirements.
 
 1. Download the Ableton Live installation ZIP from Ableton.com.
 2. Download [the latest version of our installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run).
-3. From a terminal, pass the Ableton download to the installer explicitly:
+3. From a terminal, run the installer:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run install \
-     --live-installer "$HOME/Downloads/Ableton Live 12 Installer.zip" \
-     --link=session
+   sh ~/Downloads/install-ableton-latest.run install
    ```
 
-Replace the example ZIP name with the file you downloaded. When you run the
-installer interactively, it can still find one Ableton installer beside the
-`.run` file. Scripts must name the installer file.
+When you run the installer interactively, it finds one Ableton installer beside
+the `.run` file. Scripts must name the installer file explicitly.
 
 `--link=session` enables Link while Live or Max is in use. The installer may
 ask for `sudo` to allow Link through an active firewall. Use `--link=off` if
@@ -154,9 +151,7 @@ To install Live 11:
 1. In your terminal window, tell the installer you want to install Live 11:
 
    ```bash
-   sh ~/Downloads/install-ableton-latest.run install \
-     --live-installer "$HOME/Downloads/Ableton Live 11 Installer.zip" \
-     --live-major 11 --link=session
+   sh ~/Downloads/install-ableton-latest.run install --live-major 11
    ```
 
    The first setup downloads extra Live 11 support files, so it needs internet
