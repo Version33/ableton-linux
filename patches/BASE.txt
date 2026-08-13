@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 94 files, numbered 0001 through 0096.
+The current Wine series contains 95 files, numbered 0001 through 0097.
 Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
 once numbered 0066 and 0067 now appear after the gesture patches as 0093
 and 0094, because 0066 through 0068 were held for this GPU series.
@@ -425,3 +425,8 @@ Apply them in sequence with the rest of the series.
   PR 139 first shipped this patch as 0070; it is 0096 here, renumbered
   above the merged 0090-0095 pointer gesture series and repaired before
   merge. See `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.
+- `0097`: use the final 100 ms of movement for inertia and middle-drag throw.
+  Set the default rate to 4.0 and raise the continuation limits. Stop a second
+  touch from speeding up a left- or right-button control drag. Keep one-finger
+  dragging and middle-button navigation unchanged. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.

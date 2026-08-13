@@ -2,11 +2,11 @@ dist-version: 2026.08.12.1
 wine:         wine-11.13
 base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
 prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocatable, see relocation gate)
-patches:      100
-wine-patches: 91
+patches:      104
+wine-patches: 95
 pipeasio-patches: 9
 patch-head:   90472db514b010d5850329c7becd79590ed76280
-patch-stack:  b04fd3fa4a22528aff869ba282c252e5d4c92fb85724d19c45eb1666d0b58b16
+patch-stack:  15aa927749cf70fe6e44bcf54219df5ac289df948d70e037a8fff90caf0ffae1
 source-tree:  ab2bac2aa25ef84412a61636571097d8b69881b862862ed6f5b403cfc63cc234
 builder-packages: 1dcd332ce0fa5ccbf47b1a26d6288e11c6de0584571d7239e7e63ba641a4187c
 cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
