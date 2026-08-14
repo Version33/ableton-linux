@@ -501,6 +501,7 @@ ableton_pipeasio_register()
         return 1
     }
     printf '%s\n' "$result" | awk -v wanted="$ABLETON_PIPEASIO_CLSID" '
+        { gsub(/\r/, "") }   # reg output is CRLF
         toupper($1)=="CLSID" && toupper($2)=="REG_SZ" \
             && toupper($3)==toupper(wanted) && NF==3 { found=1 }
         END { exit !found }
