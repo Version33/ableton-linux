@@ -163,8 +163,12 @@ These environment variables change one launch without changing the saved install
   values stop it sooner.
 - `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
   for faders and knobs that move farther than the pointer. It defaults to
-  `disabled`. `auto` waits until it sees the fault twice. `enabled` forces the
-  repair for one launch.
+  `auto`, which applies the repair only after Wine observes failed warps; a
+  button release is repaired only when the drag's own motion was. `enabled`
+  forces the repair for one launch.
+- `WINE_X11_POINTER_FEATURES=disabled` turns every pointer feature off for one
+  launch regardless of any other setting, restoring stock pointer behaviour
+  for baseline comparisons.
 
 Named pointer values ignore letter case. `off` and `0` mean `disabled` where
 supported. Wine reports an invalid value in the normal launch log, then uses

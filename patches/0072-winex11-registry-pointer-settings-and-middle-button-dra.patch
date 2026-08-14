@@ -388,7 +388,7 @@ index 500a013..f0cc453 100644
 + * the registry nor the environment names a value */
 +struct x11drv_pointer_config pointer_config =
 +{
-+    .smooth_scrolling = POINTER_SCROLL_DISABLED,
++    .smooth_scrolling = POINTER_SCROLL_PRECISE,
 +    .touchpad_inertia = POINTER_INERTIA_ENABLED,
 +    .pinch_zoom       = POINTER_PINCH_LEGACY_WHEEL,
 +    .middle_drag      = POINTER_MIDDLE_DRAG_NAVIGATE,

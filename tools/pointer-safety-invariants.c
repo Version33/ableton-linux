@@ -5,8 +5,9 @@
  *
  * Wine is carried here as a patch stack rather than directly linkable source.
  * The checker reads guarded delivery from 0092, warp handling from 0094,
- * lifecycle rules from 0095 and final gesture changes from 0096. It ignores
- * removed lines and commit prose.
+ * lifecycle rules from 0095, final gesture changes from 0097, and the
+ * core-button ownership override from 0098. It ignores removed lines and
+ * commit prose.
  */
 
 #include <ctype.h>
@@ -271,8 +272,14 @@ static void check_pointer_setting_fallback(const char *stack, const char *safety
     ok &= require_text("held-button wheel input has an independent setting", lifecycle,
                        "pointer_option_enum(defkey,appkey,\"WheelWhileButtonHeld\","
                        "\"WINE_X11_WHEEL_WHILE_BUTTON_HELD\"");
+    ok &= require_text("precise scrolling is enabled by default", stack,
+                       ".smooth_scrolling=POINTER_SCROLL_PRECISE");
     ok &= require_text("fine inertia is enabled by default", lifecycle,
                        ".touchpad_inertia=POINTER_INERTIA_ENABLED");
+    ok &= require_text("pinch zoom is enabled by default", stack,
+                       ".pinch_zoom=POINTER_PINCH_LEGACY_WHEEL");
+    ok &= require_text("middle drag navigation is enabled by default", stack,
+                       ".middle_drag=POINTER_MIDDLE_DRAG_NAVIGATE");
     ok &= require_text("middle throw is enabled by default", lifecycle,
                        ".middle_drag_throw=POINTER_MIDDLE_DRAG_THROW_ENABLED");
     ok &= require_text("physical wheel input while held remains enabled by default", lifecycle,
@@ -282,7 +289,7 @@ static void check_pointer_setting_fallback(const char *stack, const char *safety
     if (ok) pass("all eight named settings plus InertiaRate preserve safe source fallback");
 }
 
-static void check_warp_emulation(const char *stack, const char *warp)
+static void check_warp_emulation(const char *stack, const char *warp, const char *ownership)
 {
     int ok = 1;
 
@@ -293,8 +300,24 @@ static void check_warp_emulation(const char *stack, const char *warp)
     ok &= forbid_text("warp state has no event-count timeout", warp, "warp_idle");
     ok &= forbid_text("warp state has no polling-rate-dependent event limit", warp, ">512");
 
-    ok &= require_text("warp emulation remains opt-in until the hardware matrix is complete", stack,
-                       ".warp_emulation=POINTER_WARP_DISABLED");
+    ok &= require_text("warp emulation is automatic by default", ownership,
+                       ".warp_emulation=POINTER_WARP_AUTO");
+    ok &= forbid_text("warp emulation is never forced on by default", ownership,
+                      ".warp_emulation=POINTER_WARP_ENABLED");
+    ok &= require_text("a release is remapped only after emulated drag motion", ownership,
+                       "if(button_up_flags[button]&&warp_emulation_delivered_this_drag())");
+    ok &= require_text("emulated drag motion is tracked for the release", ownership,
+                       "if(allow_probe)warp_emulation.delivered_this_drag=TRUE;");
+    ok &= require_text("native drag motion keeps the release native", ownership,
+                       "if(allow_probe)warp_emulation.delivered_this_drag=FALSE;");
+    ok &= require_text("a master switch disables every pointer feature", ownership,
+                       "getenv(\"WINE_X11_POINTER_FEATURES\")");
+    ok &= require_order("the master switch is evaluated before individual settings", ownership,
+                        "WINE_X11_POINTER_FEATURES", "value=pointer_config.smooth_scrolling;");
+    ok &= require_text("the master switch forces warp emulation off", ownership,
+                       "pointer_config.warp_emulation=POINTER_WARP_DISABLED;");
+    ok &= require_text("the master switch reports on the diagnostic channel", ownership,
+                       "WINE_X11_POINTER_FEATURES=%sdisableseverypointerfeature");
     ok &= require_text("warp emulation has a registry setting and environment escape hatch", stack,
                        "pointer_option_enum(defkey,appkey,\"WarpEmulation\","
                        "\"WINE_X11_WARP_EMULATION\"");
@@ -472,83 +495,173 @@ static void check_held_and_direct_input(const char *stack, const char *safety,
     if (ok) pass("only provenance-matched physical wheel input bypasses fixed gesture delivery");
 }
 
-static void check_legacy_wheel_copy_guard(const char *final)
+static void check_core_button_ownership(const char *ownership)
 {
     int ok = 1;
 
-    ok &= require_text("legacy wheel-copy correlation is per X11 thread", final,
+    ok &= require_text("smooth observation selects XI motion outside drags", ownership,
+                       "XISetMask(mask_bits,XI_Motion);");
+    if (count_occurrences(ownership, "XISetMask(mask_bits,XI_ButtonPress);") != 1)
+    {
+        fail("application-window smooth observation does not select XI button presses",
+             "only the pre-existing root raw-input selection may remain");
+        ok = 0;
+    }
+    ok &= forbid_text("application-window smooth observation does not select XI button releases",
+                      ownership, "XISetMask(mask_bits,XI_ButtonRelease);");
+    ok &= require_text("the smooth generic-event dispatch accepts motion", ownership,
+                       "caseXI_Motion:ret=X11DRV_SmoothScrollEvent(event);");
+    ok &= forbid_text("the smooth generic-event dispatch cannot accept button presses",
+                      ownership, "caseXI_ButtonPress:");
+    ok &= forbid_text("the smooth generic-event dispatch cannot accept button releases",
+                      ownership, "caseXI_ButtonRelease:");
+    ok &= require_text("XI forwarding is motion-only", ownership,
+                       "staticBOOLforward_xinput2_core_motion(HWNDhwnd,XIDeviceEvent*event,");
+    ok &= forbid_text("XI forwarding does not reconstruct core button structures",
+                      ownership, "core.xbutton");
+    ok &= forbid_text("XI forwarding cannot call the core button-press handler",
+                      ownership, "X11DRV_ButtonPress(hwnd,&core)");
+    ok &= forbid_text("XI forwarding cannot call the core button-release handler",
+                      ownership, "X11DRV_ButtonRelease(hwnd,&core)");
+    ok &= require_text("each X11 thread records the window whose core drag owns motion", ownership,
+                       "Windowxinput2_core_drag_window;");
+    ok &= require_text("each X11 thread records all ordinary buttons in that grab", ownership,
+                       "unsignedintxinput2_core_drag_buttons;");
+    ok &= require_text("each X11 thread records the first accepted core drag motion", ownership,
+                       "BOOLxinput2_core_drag_motion_seen;");
+    ok &= require_text("the application XI mask excludes motion throughout a recorded core drag",
+                       ownership,
+                       "if(xinput2_smooth_scroll&&!(data->xinput2_core_drag_buttons&&"
+                       "data->xinput2_core_drag_window==window)){");
+    ok &= require_text("a core press replaces and flushes the XI mask without motion", ownership,
+                       "data->xinput2_core_drag_buttons|=bit;"
+                       "x11drv_xinput2_enable(display,window);XFlush(display);");
+    ok &= require_text("only the final core release reaches XI restoration", ownership,
+                       "data->xinput2_core_drag_buttons&=~bit;"
+                       "if(data->xinput2_core_drag_buttons)return;");
+    ok &= require_order("the final core release reports actual delivery before clearing its state",
+                        ownership,
+                        "corebutton%ucompleteddragonwindow%lx;servercoremotionseen%u",
+                        "data->xinput2_core_drag_window=None;");
+    ok &= require_text("the final core release clears measurement state and flushes XI restoration",
+                       ownership,
+                       "data->xinput2_core_drag_window=None;"
+                       "data->xinput2_core_drag_motion_seen=FALSE;"
+                       "x11drv_xinput2_enable(display,window);XFlush(display);");
+    ok &= require_text("accepted core motion has a once-per-drag runtime marker", ownership,
+                       "if(!event->send_event&&!co_reported_scroll&&"
+                       "data->xinput2_core_drag_buttons&&"
+                       "data->xinput2_core_drag_window==event->window&&"
+                       "!data->xinput2_core_drag_motion_seen){"
+                       "data->xinput2_core_drag_motion_seen=TRUE;"
+                       "TRACE(\"XserverdeliveredcoreMotionNotifywhileXIscrollmotionis"
+                       "suspendedonwindow%lx\\n\",event->window);}");
+    ok &= require_order("synthetic warp motion cannot satisfy the core-delivery marker", ownership,
+                        "if(warp_emulation_ignore_synthetic(pt))returnFALSE;",
+                        "XserverdeliveredcoreMotionNotifywhileXIscrollmotionissuspended");
+    ok &= require_text("XI motion queued across the press boundary cannot be reconstructed", ownership,
+                       "if(data->xinput2_core_drag_buttons&&"
+                       "data->xinput2_core_drag_window==event->event){"
+                       "TRACE(\"discardingXImotionqueuedbeforecore-dragsuspensiononwindow%lx\\n\","
+                       "event->event);returnTRUE;}");
+    ok &= require_order("core motion is deselected before the press boundary is invalidated", ownership,
+                        "xinput2_core_drag_transition(event->display,event->window,event->button,TRUE);",
+                        "corebutton%ubeginsexclusivestockpointerownership;"
+                        "invalidatingXIscrollbaselines");
+    ok &= require_order("release invalidation happens before XI motion is restored", ownership,
+                        "corebutton%uendsexclusivestockpointerownership;"
+                        "invalidatingXIscrollbaselines",
+                        "xinput2_core_drag_transition(event->display,event->window,event->button,FALSE);");
+    ok &= require_text("ordinary core presses invalidate hidden XI scroll movement", ownership,
+                       "corebutton%ubeginsexclusivestockpointerownership;"
+                       "invalidatingXIscrollbaselines");
+    ok &= require_text("ordinary core releases invalidate hidden XI scroll movement", ownership,
+                       "corebutton%uendsexclusivestockpointerownership;"
+                       "invalidatingXIscrollbaselines");
+    if (count_occurrences(ownership, "pointer_scroll_invalidate_baselines();") != 2)
+    {
+        fail("core drag boundaries each invalidate scroll baselines",
+             "expected one invalidation on ordinary press and one on ordinary release");
+        ok = 0;
+    }
+    if (ok) pass("XI scroll selection is suspended while the X server owns each core drag");
+}
+
+static void check_legacy_wheel_copy_guard(const char *stack, const char *ownership)
+{
+    int ok = 1;
+
+    ok &= require_text("legacy wheel-copy correlation remains per X11 thread", stack,
                        "structx11drv_legacy_wheel_copylegacy_wheel_copy;");
-    ok &= require_text_between("legacy wheel-copy tags retain raw X time", final,
+    ok &= require_text_between("legacy wheel-copy tags retain raw X time", stack,
                                "structx11drv_legacy_wheel_copy{",
                                "externvoidpointer_scroll_invalidate_baselines", "Timetime;");
-    ok &= require_text_between("legacy wheel-copy tags retain expected directions", final,
+    ok &= require_text_between("legacy wheel-copy tags retain expected directions", stack,
                                "structx11drv_legacy_wheel_copy{",
                                "externvoidpointer_scroll_invalidate_baselines",
                                "unsignedintwheel_buttons;");
-    ok &= require_text_between("legacy wheel-copy tags retain the held mask", final,
+    ok &= require_text_between("legacy wheel-copy tags retain the held mask", stack,
                                "structx11drv_legacy_wheel_copy{",
                                "externvoidpointer_scroll_invalidate_baselines",
                                "unsignedintheld_buttons;");
-    ok &= require_text_between("legacy wheel-copy tags retain the X target window", final,
+    ok &= require_text_between("legacy wheel-copy tags retain the X target window", stack,
                                "structx11drv_legacy_wheel_copy{",
                                "externvoidpointer_scroll_invalidate_baselines", "Windowwindow;");
-    ok &= require_text("an emulated XI report without held buttons cannot arm suppression", final,
-                       "if(!held_buttons){legacy_wheel_copy_reset("
-                       "\"emulatedXIreporthasnoheldordinarybutton\");return;}");
-    ok &= require_text("vertical legacy directions come from the changed XI axis", final,
+    ok &= forbid_text("normal no-button smooth scrolling may arm duplicate suppression",
+                      ownership, "if(!held_buttons)");
+    ok &= require_text("vertical legacy directions come from the changed XI axis", stack,
                        "legacy_wheel_copy_direction(&src->scroll_y,value_y,4,5)");
-    ok &= require_text("horizontal legacy directions come from the changed XI axis", final,
+    ok &= require_text("horizontal legacy directions come from the changed XI axis", stack,
                        "legacy_wheel_copy_direction(&src->scroll_x,value_x,6,7)");
-    ok &= require_text("a tag generation is keyed by time held mask and target window", final,
+    ok &= require_text("a tag generation is keyed by time held mask and target window", ownership,
                        "if(!copy->valid||copy->time!=event->time||"
                        "copy->held_buttons!=held_buttons||copy->window!=event->event)");
-    ok &= require_text("a new tag generation clears all prior correlation state", final,
-                       "if(copy->valid)legacy_wheel_copy_reset(\"newemulatedXIreport\");"
+    ok &= require_text("a new native tag generation clears all prior correlation state", ownership,
+                       "if(copy->valid)legacy_wheel_copy_reset(\"newnativeXIscrollreport\");"
                        "copy->time=event->time;");
-    ok &= require_text("a later directionless XI report expires an older tag", final,
+    ok &= require_text("a later directionless native report expires an older tag", ownership,
                        "if(copy->valid&&copy->time!=event->time)legacy_wheel_copy_reset("
-                       "\"newemulatedXIreporthasnolegacycopy\");");
-    ok &= require_text("a tag stores the raw XI time mask and target", final,
+                       "\"newnativeXIscrollreporthasnolegacycopy\");");
+    ok &= require_text("a tag stores the raw XI time mask and target", stack,
                        "copy->time=event->time;copy->held_buttons=held_buttons;"
                        "copy->window=event->event;copy->wheel_buttons=0;copy->valid=TRUE;");
-    ok &= require_order("the emulated XI tag is captured before baselines advance", final,
+    ok &= forbid_text_between("an emulated physical-wheel XI report cannot arm suppression",
+                              ownership, "if(emulated){", "/*Nativesmoothinput",
+                              "legacy_wheel_copy_tag(");
+    ok &= require_order("native smooth input arms suppression before delivery baselines advance",
+                        ownership,
                         "legacy_wheel_copy_tag(event,src,have_x,value_x,have_y,value_y);",
-                        "if(have_x)smooth_scroll_delta(&src->scroll_x,value_x,TRUE,FALSE,NULL);");
-    ok &= require_text_between("only an emulated XI scroll report arms a legacy tag", final,
-                               "if(emulated){", "/*Forwardco-reportedpointermotion",
-                               "legacy_wheel_copy_tag(event,src,have_x,value_x,have_y,value_y);");
+                        "buttons_down=xinput2_any_button_down(event);");
 
-    ok &= require_text("a different raw X timestamp expires the tag", final,
+    ok &= require_text("a different raw X timestamp expires the tag", stack,
                        "if(event->time!=copy->time){legacy_wheel_copy_reset("
                        "\"legacycorewheeltimechanged\");returnFALSE;}");
-    ok &= require_text("only matching direction time window held state and server events suppress", final,
+    ok &= require_text("only matching direction time window held state and server events suppress", ownership,
                        "if(event->send_event||event->window!=copy->window||"
-                       "!(copy->wheel_buttons&button_bit)||!held_buttons||"
+                       "!(copy->wheel_buttons&button_bit)||"
                        "held_buttons!=copy->held_buttons)");
-    ok &= forbid_text_between("one same-time smooth report may suppress all of its legacy copies", final,
-                              "staticBOOLlegacy_wheel_copy_suppress(",
-                              "staticvoidlegacy_wheel_copy_button_release(",
-                              "copy->wheel_buttons&=");
-    ok &= require_text("tagged legacy copies are rejected before physical-wheel routing", final,
-                       "if(legacy_wheel_copy_suppress(event,event_button_mask)){"
-                       "pinch_button_release(event->button);returnTRUE;}"
-                       "#endifsend_discrete_wheel_input(");
-
-    ok &= require_text("ordinary button presses reset a pending legacy tag", final,
-                       "if(!pinch_button_is_wheel(event->button))legacy_wheel_copy_reset("
-                       "\"corebuttonpressboundary\");");
-    ok &= require_text("button releases apply the legacy-tag boundary", final,
-                       "legacy_wheel_copy_button_release(event);");
-    ok &= require_text("later or non-wheel releases expire a legacy tag", final,
-                       "if(!pinch_button_is_wheel(event->button)||event->time!=copy->time)"
-                       "legacy_wheel_copy_reset(\"corebuttonreleaseboundary\");");
-    ok &= require_text("scroll baseline invalidation expires a legacy tag", final,
-                       "legacy_wheel_copy_reset(\"scrollbaselineinvalidation\");");
-    ok &= require_text("scroll metadata changes expire a legacy tag", final,
-                       "legacy_wheel_copy_reset(\"scrolldevicemetadatachanged\");");
-    ok &= require_text("scroll device removal expires a legacy tag", final,
-                       "legacy_wheel_copy_reset(\"scrolldeviceremovedordisabled\");");
-    if (ok) pass("held-button legacy smooth-scroll copies require exact X event correlation");
+    ok &= forbid_text("one same-time smooth report may suppress all of its legacy copies",
+                      ownership, "copy->wheel_buttons&=");
+    if (count_occurrences(ownership,
+                          "legacy_wheel_copy_suppress(event,event_button_mask)") != 2)
+    {
+        fail("matching legacy press and release copies are both suppressed",
+             "expected one early guard in each core wheel handler");
+        ok = 0;
+    }
+    ok &= require_order("tagged legacy presses are rejected before pointer side effects", ownership,
+                        "legacy_wheel_copy_suppress(event,event_button_mask)",
+                        "if((data=get_win_data(hwnd)))");
+    ok &= require_text("tagged legacy releases return before release bookkeeping", ownership,
+                       "if(pinch_button_is_wheel(event->button)&&"
+                       "legacy_wheel_copy_suppress(event,event_button_mask))returnTRUE;"
+                       "if(pinch_button_is_wheel(event->button))"
+                       "legacy_wheel_copy_button_release(event);else{");
+    ok &= require_order("release baseline invalidation precedes coordinate side effects", ownership,
+                        "corebutton%uendsexclusivestockpointerownership;"
+                        "invalidatingXIscrollbaselines",
+                        "pt=map_event_coords(hwnd,event->window,event->root,root,pt);");
+    if (ok) pass("native smooth reports suppress only their correlated legacy core copies");
 }
 
 static void check_direct_packet_bounds(const char *stack, const char *safety,
@@ -568,10 +681,22 @@ static void check_direct_packet_bounds(const char *stack, const char *safety,
     ok &= require_text("smooth excess is discarded after one notch", stack,
                        "if((delta=round(units))>max_delta||delta<-max_delta){axis->value=value;"
                        "returndelta>0?max_delta:-max_delta;}");
+    ok &= require_text("middle-drag horizontal input is inverted", final,
+                       "move_x=drag->last.x-pt.x;");
+    ok &= require_text("middle-drag vertical input is inverted", final,
+                       "move_y=drag->last.y-pt.y;");
     ok &= require_text("middle-drag vertical movement is bounded before delivery", final,
                        "delta_y=middle_drag_delta(&drag->accum_y,notched);");
     ok &= require_text("middle-drag horizontal movement is bounded before delivery", final,
                        "delta_x=middle_drag_delta(&drag->accum_x,notched);");
+    ok &= require_text("Ctrl inverts the vertical middle-drag sign", final,
+                       "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_y=-delta_y;");
+    ok &= require_text_between("Ctrl inverts only after the vertical bound", final,
+                               "delta_y=middle_drag_delta(&drag->accum_y,notched);",
+                               "if(delta_y)",
+                               "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_y=-delta_y;");
+    ok &= forbid_text("Ctrl does not touch the horizontal sign", final,
+                      "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_x=-delta_x;");
     ok &= require_text_between("pinch reports are limited to one notch", stack,
                                "staticBOOLX11DRV_GesturePinchEvent(",
                                "pthread_mutex_lock(&pinch_mutex);",
@@ -1393,7 +1518,7 @@ static int reference_legacy_copy_suppress(
     if (!valid || event_time != tag_time) return 0;
     button_bit = button <= 7 ? 1u << button : 0;
     return !send_event && event_window == tag_window &&
-           (wheel_buttons & button_bit) && event_held && event_held == tag_held;
+           (wheel_buttons & button_bit) && event_held == tag_held;
 }
 
 static void check_legacy_wheel_copy_model(void)
@@ -1403,19 +1528,21 @@ static void check_legacy_wheel_copy_model(void)
     const unsigned int held = 1u << 0;
     int ok = 1;
 
-    /* Direction bits deliberately survive repeated generated notches carrying
-     * the same X timestamp. All other identity fields remain exact. */
-    if (!reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
+    /* Normal smooth scrolling has no held buttons. Direction bits deliberately
+     * survive repeated generated notches carrying one X timestamp; all other
+     * identity fields remain exact, including a non-zero held mask if present. */
+    if (!reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 4, 0) ||
+        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 4, 0) ||
+        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, horizontal_left, 0, 0, 6, 0) ||
         !reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
-        !reference_legacy_copy_suppress(1, 100, 100, 9, 9, horizontal_left, held, held, 6, 0) ||
-        reference_legacy_copy_suppress(0, 100, 100, 9, 9, vertical_up, held, held, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 101, 9, 9, vertical_up, held, held, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 10, vertical_up, held, held, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 5, 0) ||
+        reference_legacy_copy_suppress(0, 100, 100, 9, 9, vertical_up, 0, 0, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 101, 9, 9, vertical_up, 0, 0, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 10, vertical_up, 0, 0, 4, 0) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 5, 0) ||
         reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, 2u, 4, 0) ||
         reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, 0u, 4, 0) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 4, 1) ||
-        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, held, held, 8, 0))
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 4, 1) ||
+        reference_legacy_copy_suppress(1, 100, 100, 9, 9, vertical_up, 0, 0, 8, 0))
         ok = 0;
     if (!ok)
         fail("legacy wheel-copy model admits only an exact generated event",
@@ -1842,33 +1969,37 @@ int main(int argc, char **argv)
         "patches/0093-winex11-release-stale-cursor-clipping-state-when-X-f.patch",
         "patches/0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch",
         "patches/0095-winex11-separate-pointer-coast-sources.patch",
-        "patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch"
+        "patches/0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch",
+        "patches/0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch"
     };
     struct text stack_source = {0}, safety_source = {0}, warp_source = {0};
-    struct text lifecycle_source = {0}, final_source = {0};
-    const char *paths[9];
-    char *stack, *safety, *warp, *lifecycle, *final;
+    struct text lifecycle_source = {0}, final_source = {0}, ownership_source = {0};
+    const char *paths[10];
+    char *stack, *safety, *warp, *lifecycle, *final, *ownership;
     int i;
 
-    if (argc != 1 && argc != 10)
+    if (argc != 1 && argc != 11)
     {
-        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094 0095 0096]\n", argv[0]);
+        fprintf(stderr, "usage: %s [0090 0091 0074 0072 0092 0093 0094 0095 0097 0098]\n",
+                argv[0]);
         return 2;
     }
-    for (i = 0; i < 9; i++) paths[i] = argc == 10 ? argv[i + 1] : defaults[i];
-    for (i = 0; i < 9; i++)
+    for (i = 0; i < 10; i++) paths[i] = argc == 11 ? argv[i + 1] : defaults[i];
+    for (i = 0; i < 10; i++)
         if (!read_patch_new_side(paths[i], &stack_source)) return 2;
     if (!read_patch_new_side(paths[4], &safety_source)) return 2;
     if (!read_patch_new_side(paths[6], &warp_source)) return 2;
     if (!read_patch_new_side(paths[7], &lifecycle_source)) return 2;
     if (!read_patch_new_side(paths[8], &final_source)) return 2;
+    if (!read_patch_new_side(paths[9], &ownership_source)) return 2;
 
     stack = compact(stack_source.data ? stack_source.data : "");
     safety = compact(safety_source.data ? safety_source.data : "");
     warp = compact(warp_source.data ? warp_source.data : "");
     lifecycle = compact(lifecycle_source.data ? lifecycle_source.data : "");
     final = compact(final_source.data ? final_source.data : "");
-    if (!stack || !safety || !warp || !lifecycle || !final)
+    ownership = compact(ownership_source.data ? ownership_source.data : "");
+    if (!stack || !safety || !warp || !lifecycle || !final || !ownership)
     {
         fprintf(stderr, "FAIL: out of memory while compacting patch sources\n");
         free(stack_source.data);
@@ -1876,18 +2007,21 @@ int main(int argc, char **argv)
         free(warp_source.data);
         free(lifecycle_source.data);
         free(final_source.data);
+        free(ownership_source.data);
         free(stack);
         free(safety);
         free(warp);
         free(lifecycle);
         free(final);
+        free(ownership);
         return 2;
     }
 
     check_pointer_setting_fallback(stack, safety, lifecycle, final);
-    check_warp_emulation(stack, warp);
+    check_warp_emulation(stack, warp, ownership);
     check_held_and_direct_input(stack, safety, lifecycle, final);
-    check_legacy_wheel_copy_guard(lifecycle);
+    check_core_button_ownership(ownership);
+    check_legacy_wheel_copy_guard(stack, ownership);
     check_direct_packet_bounds(stack, safety, final);
     check_continuation_sources(lifecycle, final);
     check_inertia_timer_initialization(lifecycle);
@@ -1909,11 +2043,13 @@ int main(int argc, char **argv)
     free(warp_source.data);
     free(lifecycle_source.data);
     free(final_source.data);
+    free(ownership_source.data);
     free(stack);
     free(safety);
     free(warp);
     free(lifecycle);
     free(final);
+    free(ownership);
     if (failures)
     {
         fprintf(stderr, "pointer safety checks: %u failure%s\n",

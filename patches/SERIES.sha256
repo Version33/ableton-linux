@@ -67,7 +67,7 @@ b65877e816921195b1b0f45b901dc512b0c1111b9ea3e034e73aaa57362596b2  0067-wined3d-s
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 e97acef9969ada9041f66c80d58dcb9b94fa3bcbba62b7fa99beba33ae9bbedd  0070-win32u-break-alt-f10-menu-arming-on-consumed-keys.patch
 f45f017f21733461ddcc11ab443526ad999d43d3a220e191ce05e973a790148c  0071-wined3d-count-and-report-sustained-present-size-fall.patch
-2987dcaf498f8e7258dfc2e068b4e87b5bdea6ff752286d95730f8f7f5086495  0072-winex11-registry-pointer-settings-and-middle-button-dra.patch
+f94996e6fa27bba4ad0db107438a9f45176ac77ac41b2f773f117a3e027e03b0  0072-winex11-registry-pointer-settings-and-middle-button-dra.patch
 73bd659652f4e9a493ed0eb70807107905101da12c61ac32f771ce6e9948b141  0073-win32u-server-keep-horizontal-wheel-coordinates-in-screen.patch
 55fcbef84ff3ec6c03907626af252f1bbbe40c851642cac3dbfd1729d4231350  0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch
 8520b205e8b38440ed942c1b88ee4f48c6dd6e38f93c758104d85b4dcca931ec  0075-kernel32-add-UnregisterApplicationRecoveryCallback.patch
@@ -92,7 +92,8 @@ f0d2d0f95df6c1af3996699bb69e3a307c4052df7448798619e3a06a48a15fb9  0092-winex11-b
 601b585508cccacb51b1dd36dfcd9ea2749226743ca805e544b25c5b2a1f40c5  0094-winex11-emulate-only-observed-failed-pointer-warps-o.patch
 b644c922888e201e1ae525ab22993d89bee835410cd36a739b9f84387009d009  0095-winex11-separate-pointer-coast-sources.patch
 707a404f2c1d4e02abfa4eb4cbe35669f0caa46ce12dd685d5748f3a699d1186  0096-win32u-cache-the-enumerated-host-font-list-in-the-pr.patch
-e24107a439d4fad00457ae47ffc06367adea89de481001145685f62f7212e322  0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch
+80c69a6f555ecc8fcf36fb5d7f466ab9fe4cc1a09f48db7c1cbac442197faef7  0097-winex11-restore-pointer-inertia-and-ignore-held-scroll.patch
+5296ad3f9f91911cf13849e2edf33793d97c2c4d0c06fbee0f119cb06e1114fc  0098-winex11-suspend-XI-scroll-selection-during-core-drags.patch
 e2759a5aee2cc5820a3ed27d2d4f954a6a5262c1a95172ad11ffa5302c487387  pipeasio/0001-asio-clamp-unavailable-sample-rate-requests.patch
 b4d53b6ebb24e39c7d23efcbddd837149d4d08886167637a73bb085af851d2c1  pipeasio/0002-asio-report-timeGetTime-in-ASIO-systemTime.patch
 65555e38187564f77ac4f2ba1dd76d812e452c5442e21474b9c8a31706beb7ba  pipeasio/0004-accept-any-buffer-size-in-range-log-every-adjustment.patch

@@ -60,12 +60,15 @@
 
 ### Pointer input
 
-- Added vertical and horizontal scrolling, pinch zoom, and middle-button
-  navigation. A plain middle click remains a click.
-- Scrolling sends whole wheel notches. `WINE_X11_SMOOTH_SCROLLING=precise`
-  restores fractional scrolling, but on XWayland it makes faders and knobs
-  cross their whole range from a small movement, so it is off by default.
-  Found by Lucas Gillingham.
+- Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
+  navigation. Middle-button dragging moves the content with the pointer on
+  both axes. Holding Ctrl during that drag zooms instead, with a drag towards
+  the top of the screen zooming in. A plain middle click remains a click.
+- Scrolling sends fractional movement by default. Selecting the XI2 events it
+  needs once made faders and knobs cross their whole range from a small
+  movement on XWayland; the held-button repair below stops that, so the
+  setting no longer has to be off. `WINE_X11_SMOOTH_SCROLLING=disabled`
+  restores whole wheel notches. Found by Lucas Gillingham.
 - Fixed left- and right-button control drags speeding up when a second touch
   starts scrolling. Normal one-finger dragging and middle-button navigation
   remain unchanged.
@@ -79,8 +82,18 @@
   pause.
 - Added a repair for fader jumps after loading a Max for Live device. Testing
   on the affected Fedora computer remains open.
-- Added an off-by-default XWayland repair for faders and knobs that move farther
-  than the pointer. Desktop testing remains open.
+- Fixed faders, sliders and knobs jumping, running ahead of the pointer or
+  snapping back on release during left- and right-button drags. While any
+  ordinary mouse button is held, Wine now leaves the drag entirely to the X
+  server's stock pointer path: no smooth-scroll selection, no XInput2
+  reconstruction, no inertia, no pinch, and no coordinate rewrites, on every
+  desktop and from the moment Live loads.
+- Added an XWayland repair for faders and knobs that move farther than the
+  pointer. It defaults to `auto`, engaging only after Wine observes failed
+  warps, and a button release is repaired only when the drag's own motion was.
+  Desktop testing remains open.
+- Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns every
+  pointer feature off for one launch for baseline comparisons.
 - Named pointer values ignore letter case. `off` and `0` work wherever
   `disabled` works. Invalid settings appear in the normal launch log.
 

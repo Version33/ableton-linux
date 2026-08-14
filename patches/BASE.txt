@@ -11,7 +11,7 @@ point-version gap with upstream's actively-maintained branch and with ENCORE
 The rebase involved five merge conflicts and uncovered three additional build
 breaks, plus a `build.sh`/`pipefail` tooling issue.
 
-The current Wine series contains 95 files, numbered 0001 through 0097.
+The current Wine series contains 96 files, numbered 0001 through 0098.
 Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
 once numbered 0066 and 0067 now appear after the gesture patches as 0093
 and 0094, because 0066 through 0068 were held for this GPU series.
@@ -269,10 +269,10 @@ Apply them in sequence with the rest of the series.
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0072`: add six pointer settings and middle-button drag navigation. Keep
   normal middle clicks and correct the pointer position after a drag.
-  `SmoothScrolling` defaults to `disabled`: any other value selects XI2 events
-  on our own windows, which makes a button press an implicit XI2 grab and
-  fails the core `XGrabPointer` that `SetCursorPos` needs, so fader and knob
-  drags accumulate raw motion instead of re-anchoring. See
+  `SmoothScrolling` defaults to `precise`. Selecting XI2 events on our own
+  windows makes a button press an implicit XI2 grab, which fails the core
+  `XGrabPointer` that `SetCursorPos` needs; `0098` suspends that selection
+  for the duration of a core drag, so the default is safe. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0073`: report vertical and horizontal wheel movement at the pointer's screen
   position. See
@@ -432,5 +432,23 @@ Apply them in sequence with the rest of the series.
 - `0097`: use the final 100 ms of movement for inertia and middle-drag throw.
   Set the default rate to 4.0 and raise the continuation limits. Stop a second
   touch from speeding up a left- or right-button control drag. Keep one-finger
-  dragging and middle-button navigation unchanged. See
+  dragging unchanged, and invert both middle-button navigation axes so content
+  follows the pointer. Deliver the vertical wheel with the opposite sign while
+  Ctrl is held, so a Ctrl+middle drag towards the top of the screen zooms in;
+  the horizontal wheel is unchanged and the accumulator keeps the pan sign, so
+  a modifier change mid-drag strands no partial notch. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0098`: select XI motion for smooth scrolling only while no ordinary core
+  button is held. A core press replaces the window's XI mask without motion;
+  the X server therefore owns the implicit grab and supplies real core drag
+  motion until the final core release restores XI motion. Already-queued XI
+  motion is discarded across the transition. Native smooth reports outside a
+  drag suppress only their correlated legacy core wheel copies, while physical
+  wheel buttons retain the stock core path. Scroll baselines are invalidated at
+  both drag boundaries. Event tracing records whether the server delivered an
+  accepted core `MotionNotify` before the drag ended. Warp emulation defaults
+  to `auto`: it engages only after observed failed warps, never preemptively,
+  and a button release is reported in the emulated coordinate space only when
+  the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
+  disables every pointer feature at once for baseline comparisons. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
