@@ -7,7 +7,7 @@ stack. This project aims to make this popular Berlin-based DAW and its ecosystem
 of products a first-class Linux citizen, with zero compromises.
 
 It is also absolutely **not affiliated with or endorsed in any way by Ableton
-GmbH** and respects the Ableton terms of service.
+AG** and respects the Ableton terms of service.
 
 [Download the latest installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run)
 
