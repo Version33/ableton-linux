@@ -169,6 +169,18 @@ mkdir -p -- "$ABLETON_STATE_HOME/transactions"
 transaction="$(mktemp -d "$ABLETON_STATE_HOME/transactions/rollback.XXXXXX")"
 ABLETON_TRANSACTION_DIR="$transaction"
 export ABLETON_TRANSACTION_DIR
+# ShellCheck does not follow function names stored in traps.
+# shellcheck disable=SC2329
+cleanup_unstarted_rollback()
+{
+    local rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ] && ! rm -rf -- "$transaction"; then
+        echo "!! failed to remove unstarted rollback transaction: $transaction" >&2
+    fi
+    exit "$rc"
+}
+trap cleanup_unstarted_rollback EXIT
 ableton_txn_init
 
 now="$(date -u +%Y%m%dT%H%M%SZ)"

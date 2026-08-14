@@ -132,6 +132,9 @@ sh ~/Downloads/install-ableton-latest.run uninstall --delete-prefix
 The second command asks for confirmation. Neither command touches your Live
 Sets.
 
+See [all installer commands](INSTALLER.md) for Link controls, repairs, plans,
+and other setup choices.
+
 ## Running different versions of Ableton Live on the same computer
 
 This installer brings Linux compatibility to every edition of Live 11 and 12.

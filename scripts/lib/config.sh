@@ -541,9 +541,9 @@ ableton_timeout_value()
     printf '%s\n' "$value"
 }
 
-ableton_run_bounded_impl()
+ableton_run_bounded()
 {
-    local foreground="$1" seconds="$2" inherited observed expected; shift 2
+    local seconds="$1" inherited observed expected; shift
     seconds="$(ableton_timeout_value "$seconds" timeout 1 86400)" || return 2
     command -v timeout >/dev/null 2>&1 || {
         ableton_config_error "GNU timeout is required to supervise external processes"
@@ -565,52 +565,107 @@ ableton_run_bounded_impl()
                 fi
                 ;;
         esac
-        if [ "$foreground" -eq 1 ]; then
-            # Interactive authentication must stay in the terminal's foreground
-            # process group.  Use this only for commands without descendants that
-            # also need supervising: --foreground deliberately does not time out
-            # those descendants.
-            exec timeout --foreground --signal=TERM --kill-after=5s "${seconds}s" "$@"
-        fi
         exec timeout --signal=TERM --kill-after=5s "${seconds}s" "$@"
     )
-}
-
-ableton_run_bounded()
-{
-    ableton_run_bounded_impl 0 "$@"
-}
-
-ableton_run_foreground_bounded()
-{
-    ableton_run_bounded_impl 1 "$@"
-}
-
-ableton_sudo_authenticate_bounded()
-{
-    local seconds="$1"
-    # Never let sudo fall back to a password prompt while timeout has placed it
-    # in a background process group.  Reuse a valid credential noninteractively;
-    # otherwise perform only sudo's validation phase in the foreground.
-    if ableton_run_bounded "$seconds" sudo -n -v 2>/dev/null; then
-        return 0
-    fi
-    ableton_run_foreground_bounded "$seconds" sudo -v
-}
-
-ableton_sudo_run_authenticated_bounded()
-{
-    local seconds="$1"; shift
-    # Authentication happened in the foreground.  -n makes an expired or
-    # unusable credential fail instead of attempting another detached prompt.
-    ableton_run_bounded "$seconds" sudo -n "$@"
 }
 
 ableton_sudo_run_bounded()
 {
     local seconds="$1"; shift
-    ableton_sudo_authenticate_bounded "$seconds" || return $?
-    ableton_sudo_run_authenticated_bounded "$seconds" "$@"
+    (
+        local probe_err probe_rc=0 password="" read_rc=0 tty_state=""
+        local tty=/dev/tty
+        seconds="$(ableton_timeout_value "$seconds" timeout 1 86400)" || return 2
+        [ "$#" -gt 0 ] || {
+            ableton_config_error "a command is required for sudo"
+            return 2
+        }
+
+        # Root needs no authentication. Keep the command under the same watchdog
+        # used for an authenticated invocation.
+        if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+            ableton_run_bounded "$seconds" "$@"
+            return
+        fi
+        command -v sudo >/dev/null 2>&1 || {
+            ableton_config_error "sudo is required for this system change"
+            return 127
+        }
+
+        umask 077
+        probe_err="$(mktemp "${TMPDIR:-/tmp}/ableton-sudo-stderr.XXXXXX")" || return 1
+
+        # ShellCheck does not follow function names stored in traps.
+        # shellcheck disable=SC2329
+        cleanup_sudo_prompt()
+        {
+            if [ -n "$tty_state" ]; then
+                stty "$tty_state" < "$tty" >/dev/null 2>&1 || true
+                printf '\n' > "$tty" 2>/dev/null || true
+                tty_state=""
+            fi
+            password=""
+            unset password
+            rm -f -- "$probe_err"
+        }
+        trap cleanup_sudo_prompt EXIT
+        trap 'exit 130' INT
+        trap 'exit 129' HUP
+        trap 'exit 143' TERM
+
+        # Try the exact command once without prompting. A cached credential or a
+        # command-specific NOPASSWD rule executes it here. The C locale gives the
+        # password-required diagnostic one stable form; every other failure is a
+        # command or policy result and must not be retried.
+        LC_ALL=C ableton_run_bounded "$seconds" sudo -n -- "$@" 2> "$probe_err" \
+            || probe_rc=$?
+        if [ "$probe_rc" -ne 1 ] \
+           || ! grep -qxF 'sudo: a password is required' "$probe_err"; then
+            [ ! -s "$probe_err" ] || cat -- "$probe_err" >&2
+            return "$probe_rc"
+        fi
+
+        command -v stty >/dev/null 2>&1 || {
+            ableton_config_error "stty is required for hidden sudo password input"
+            return 127
+        }
+        [ -r "$tty" ] && [ -w "$tty" ] || {
+            ableton_config_error "sudo authentication needs an interactive terminal"
+            return 1
+        }
+        tty_state="$(stty -g < "$tty")" || {
+            ableton_config_error "could not read the terminal state for sudo authentication"
+            return 1
+        }
+        printf '[sudo] password (input hidden, %ss timeout): ' "$seconds" > "$tty"
+        if IFS= read -r -s -t "$seconds" password < "$tty"; then
+            :
+        else
+            read_rc=$?
+            stty "$tty_state" < "$tty" >/dev/null 2>&1 || true
+            tty_state=""
+            printf '\n' > "$tty" 2>/dev/null || true
+            password=""
+            unset password
+            if [ "$read_rc" -gt 128 ]; then
+                ableton_config_error "sudo password input timed out after $seconds seconds"
+                return 124
+            fi
+            ableton_config_error "sudo password input was cancelled"
+            return "$read_rc"
+        fi
+        stty "$tty_state" < "$tty" || return 1
+        tty_state=""
+        printf '\n' > "$tty"
+
+        # Feed the password only to this sudo process. The command receives EOF
+        # on standard input and remains under its own full watchdog interval.
+        printf '%s\n' "$password" | ableton_run_bounded "$seconds" sudo -S -p '' -- "$@"
+        probe_rc="${PIPESTATUS[1]}"
+        password=""
+        unset password
+        return "$probe_rc"
+    )
 }
 
 ableton_realpath_m()

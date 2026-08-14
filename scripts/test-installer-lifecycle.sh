@@ -69,6 +69,10 @@ if [ "$prerequisite_failed" -eq 1 ]; then
     echo "!! run ./build.sh first" >&2
     fail "prerequisite build artifacts are valid"
 fi
+# The sudo password-path checks drive a PTY from Python.  Name the missing
+# dependency here; without this the first case fails as a sudo behaviour bug.
+command -v python3 >/dev/null 2>&1 \
+    || fail "python3 is available for the sudo password-path checks"
 
 new_env()
 {
@@ -86,51 +90,172 @@ run_isolated()
         XDG_RUNTIME_DIR="$base/run" TMPDIR="$base/tmp" "$@"
 }
 
-base="$(new_env sudo-tty-foreground)"
+base="$(new_env sudo-password-paths)"
 mkdir -p "$base/fakebin"
-command -v script >/dev/null 2>&1 \
-    || fail "util-linux script is available for the sudo TTY regression check"
 cat > "$base/fakebin/sudo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
     -n)
         shift
-        if [ "${1:-}" = -v ]; then
-            printf 'validate-noninteractive\n' >> "${ABLETON_TEST_SUDO_LOG:?}"
-            exit 1
-        fi
-        printf 'run-noninteractive:%s\n' "$*" >> "${ABLETON_TEST_SUDO_LOG:?}"
+        [ "${1:-}" != -- ] || shift
+        printf 'probe:%s\n' "$*" >> "${ABLETON_TEST_SUDO_LOG:?}"
+        case "${ABLETON_TEST_SUDO_MODE:?}" in
+            password) echo 'sudo: a password is required' >&2; exit 1 ;;
+            nopasswd) exec "$@" ;;
+            denied) exit 7 ;;
+            *) exit 2 ;;
+        esac ;;
+    -S)
+        shift
+        if [ "${1:-}" = -p ]; then shift 2; fi
+        [ "${1:-}" != -- ] || shift
+        IFS= read -r password || exit 1
+        printf 'password-submitted\n' >> "${ABLETON_TEST_SUDO_LOG:?}"
+        [ "$password" = secret ] || exit 1
         exec "$@" ;;
-    -v)
-        pgrp="$(ps -o pgrp= -p "$$" | tr -d '[:space:]')"
-        tpgid="$(ps -o tpgid= -p "$$" | tr -d '[:space:]')"
-        printf 'authenticate-foreground:pgrp=%s:tpgid=%s\n' "$pgrp" "$tpgid" \
-            >> "${ABLETON_TEST_SUDO_LOG:?}"
-        [ -n "$pgrp" ] && [ "$pgrp" = "$tpgid" ] && [ "$tpgid" != -1 ] ;;
     *) exit 2 ;;
 esac
 EOF
-cat > "$base/run-sudo-tty" <<EOF
+cat > "$base/run-sudo" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 . "$here/lib/config.sh"
-ableton_sudo_run_bounded 5 true
+status=0
+case "\${ABLETON_TEST_SUDO_COMMAND:?}" in
+    success) ableton_sudo_run_bounded "\${ABLETON_TEST_SUDO_SECONDS:?}" sh -c \
+        'printf "command-ran\\n" >> "\${ABLETON_TEST_SUDO_LOG:?}"' || status=\$? ;;
+    sleep) ableton_sudo_run_bounded "\${ABLETON_TEST_SUDO_SECONDS:?}" sleep 10 || status=\$? ;;
+    failure) ableton_sudo_run_bounded "\${ABLETON_TEST_SUDO_SECONDS:?}" sh -c 'exit 7' || status=\$? ;;
+esac
+exit "\$status"
 EOF
-chmod +x "$base/fakebin/sudo" "$base/run-sudo-tty"
-printf -v tty_command '%q' "$base/run-sudo-tty"
-if ! env HOME="$base/home" PATH="$base/fakebin:$PATH" \
-    ABLETON_TEST_SUDO_LOG="$base/sudo.log" \
-    script -qec "$tty_command" /dev/null > "$base/out" 2> "$base/err"; then
-    fail "sudo authentication can read from the foreground terminal"
+cat > "$base/pty-check.py" <<'PY'
+import errno
+import os
+import pty
+import select
+import sys
+import termios
+import time
+
+expected = int(os.environ["ABLETON_TEST_EXPECT_STATUS"])
+expect_prompt = os.environ["ABLETON_TEST_EXPECT_PROMPT"] == "1"
+input_text = os.environ.get("ABLETON_TEST_PTY_INPUT", "")
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
+
+output = bytearray()
+prompt = b"[sudo] password (input hidden, "
+sent = False
+hidden = False
+status = None
+deadline = time.monotonic() + 15
+while status is None:
+    if time.monotonic() > deadline:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+        raise SystemExit("PTY check exceeded its deadline")
+    ready, _, _ = select.select([fd], [], [], 0.05)
+    if ready:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            chunk = b""
+        output.extend(chunk)
+    if prompt in output and not sent:
+        time.sleep(0.05)
+        hidden = not bool(termios.tcgetattr(fd)[3] & termios.ECHO)
+        if input_text:
+            os.write(fd, input_text.encode())
+        sent = True
+    waited, raw_status = os.waitpid(pid, os.WNOHANG)
+    if waited == pid:
+        status = os.waitstatus_to_exitcode(raw_status)
+
+echo_restored = bool(termios.tcgetattr(fd)[3] & termios.ECHO)
+sys.stdout.buffer.write(output)
+if status != expected:
+    raise SystemExit(f"expected exit {expected}, got {status}")
+if expect_prompt != (prompt in output):
+    raise SystemExit("sudo prompt presence did not match the expected path")
+if expect_prompt and not hidden:
+    raise SystemExit("terminal echo remained enabled at the password prompt")
+if not echo_restored:
+    raise SystemExit("terminal echo was not restored after sudo returned")
+if input_text and input_text.strip().encode() in output:
+    raise SystemExit("sudo password was echoed to the terminal")
+PY
+chmod +x "$base/fakebin/sudo" "$base/run-sudo"
+
+run_sudo_pty()
+{
+    local mode="$1" command="$2" seconds="$3" input="$4" expected="$5" prompt="$6"
+    : > "$base/sudo.log"
+    env HOME="$base/home" PATH="$base/fakebin:$PATH" \
+        ABLETON_TEST_SUDO_LOG="$base/sudo.log" ABLETON_TEST_SUDO_MODE="$mode" \
+        ABLETON_TEST_SUDO_COMMAND="$command" ABLETON_TEST_SUDO_SECONDS="$seconds" \
+        ABLETON_TEST_PTY_INPUT="$input" ABLETON_TEST_EXPECT_STATUS="$expected" \
+        ABLETON_TEST_EXPECT_PROMPT="$prompt" \
+        python3 "$base/pty-check.py" "$base/run-sudo" > "$base/out" 2> "$base/err"
+}
+
+run_sudo_pty password success 5 $'secret\n' 0 1 \
+    || fail "sudo accepts one hidden password and runs the exact command"
+if ! grep -qxF 'password-submitted' "$base/sudo.log" \
+   || ! grep -qxF 'command-ran' "$base/sudo.log"; then
+    fail "password authentication did not execute the command in the same sudo invocation"
 fi
-grep -qxF 'validate-noninteractive' "$base/sudo.log" \
-    || fail "sudo authentication first reuses a cached credential without prompting"
-grep -q '^authenticate-foreground:pgrp=\([0-9][0-9]*\):tpgid=\1$' "$base/sudo.log" \
-    || fail "sudo password validation stays in the terminal foreground process group"
-grep -qxF 'run-noninteractive:true' "$base/sudo.log" \
-    || fail "the privileged command cannot fall back to a detached password prompt"
-ok "sudo authenticates in the foreground before the bounded noninteractive command"
+ok "sudo accepts a hidden password without relying on a credential timestamp"
+
+run_sudo_pty nopasswd success 5 '' 0 0 \
+    || fail "command-specific NOPASSWD runs without a generic authentication prompt"
+! grep -q '^password-submitted$' "$base/sudo.log" \
+    || fail "the NOPASSWD path submitted a password"
+grep -qxF 'command-ran' "$base/sudo.log" || fail "the NOPASSWD path did not run the command"
+ok "command-specific NOPASSWD runs without prompting"
+
+run_sudo_pty denied failure 5 '' 7 0 \
+    || fail "a policy or command failure returns without an authentication retry"
+[ "$(grep -c '^probe:' "$base/sudo.log")" -eq 1 ] \
+    || fail "a non-authentication failure retried the sudo command"
+ok "sudo policy and command failures are not retried as password failures"
+
+if ! run_sudo_pty password success 1 '' 124 1; then
+    sed -n '1,80p' "$base/out" >&2
+    sed -n '1,80p' "$base/err" >&2
+    fail "sudo password input has a bounded timeout and restores terminal echo"
+fi
+! grep -q '^password-submitted$' "$base/sudo.log" \
+    || fail "a timed-out prompt started the privileged command"
+ok "sudo password input times out without starting the command"
+
+run_sudo_pty password sleep 1 $'secret\n' 124 1 \
+    || fail "the privileged command keeps its own timeout after password input"
+grep -qxF 'password-submitted' "$base/sudo.log" \
+    || fail "the command-timeout path did not complete password input"
+ok "sudo password input and the privileged command have separate bounds"
+
+base="$(new_env realtime-destdir)"
+mkdir -p "$base/fakebin"
+cat > "$base/fakebin/sudo" <<'EOF'
+#!/bin/sh
+: > "${ABLETON_TEST_SUDO_CALLED:?}"
+exit 99
+EOF
+chmod +x "$base/fakebin/sudo"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" DESTDIR="$base/stage" \
+    ABLETON_TEST_SUDO_CALLED="$base/sudo-called" \
+    bash "$here/setup-realtime.sh" > "$base/out" 2> "$base/err" \
+    || fail "realtime staging works without host privileges"
+[ -f "$base/stage/etc/security/limits.d/90-ableton-rt.conf" ] \
+    && [ -f "$base/stage/etc/sysctl.d/90-ableton-rt.conf" ] \
+    || fail "realtime staging did not write both drop-ins"
+[ ! -e "$base/sudo-called" ] || fail "realtime staging requested sudo"
+ok "realtime staging changes only DESTDIR and never requests sudo"
 
 base="$(new_env help)"
 run_isolated "$base" bash "$here/installer.sh" --help > "$base/out"
@@ -155,6 +280,50 @@ grep -qF 'Max preferences moved aside' "$base/out" \
 [ ! -e "$base/state" ] \
     || fail "public Live 11 repair created persistent state solely to lock"
 ok "public Live 11 repair honors the selected prefix without Wine or PipeWire"
+
+base="$(new_env maintenance-architecture)"
+mkdir -p "$base/fakebin"
+cat > "$base/fakebin/uname" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+    -m) echo aarch64 ;;
+    *) exec /usr/bin/uname "$@" ;;
+esac
+EOF
+chmod +x "$base/fakebin/uname"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/installer.sh" link status >"$base/status.out" 2>"$base/status.err" \
+    || fail "read-only Link status inherits an install-only architecture refusal"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/installer.sh" prefix repair-live11 --dry-run \
+    >"$base/repair.out" 2>"$base/repair.err" \
+    || fail "Live 11 repair plan inherits an install-only architecture refusal"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/installer.sh" link enable --dry-run \
+    >"$base/enable.out" 2>"$base/enable.err"; then
+    fail "Link installation accepts an incompatible architecture"
+fi
+grep -qF 'this command requires x86_64' "$base/enable.err" \
+    || fail "architecture refusal does not identify the failing requirement"
+ok "maintenance commands remain available off x86_64 while install commands refuse"
+
+base="$(new_env link-status-read-only)"
+mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+printf 'none\n' > "$base/state/ableton-wine/link-firewall"
+cat > "$base/data/ableton-wine/ableton-linkctl" <<'EOF'
+#!/bin/sh
+: > "${ABLETON_TEST_LINKCTL_RAN:?}"
+EOF
+chmod +x "$base/data/ableton-wine/ableton-linkctl"
+run_isolated "$base" env ABLETON_TEST_LINKCTL_RAN="$base/linkctl-ran" \
+    bash "$here/installer.sh" link status >"$base/out" 2>"$base/err" \
+    || fail "Link status failed while ignoring a modified controller"
+[ ! -e "$base/linkctl-ran" ] \
+    || fail "read-only Link status executed the installed controller"
+grep -qF 'state: not installed' "$base/out" \
+    || fail "Link status did not report missing daemon state directly"
+ok "Link status reads state without executing an installed controller"
 
 base="$(new_env xdg-parent-symlinks)"
 mkdir -p -- "$base/real-config" "$base/real-state"
@@ -223,6 +392,58 @@ run_isolated "$base" bash "$here/installer.sh" --prefix --uninstall --dry-run \
 grep -q 'delete validated prefix' "$base/legacy.out" \
     || fail "legacy uninstall prefix alias depends on argument order"
 ok "immutable options reject duplicates and legacy parsing is order-independent"
+
+base="$(new_env early-transaction-cleanup)"
+mkdir -p "$base/config/pipeasio/config.ini"
+if run_isolated "$base" bash "$here/installer.sh" link disable \
+    >"$base/out" 2>"$base/err"; then
+    fail "unsafe pre-transaction configuration is accepted"
+fi
+if find "$base/state/ableton-wine/transactions" -mindepth 1 -maxdepth 1 \
+    -name 'installer.*' -print -quit 2>/dev/null | grep -q .; then
+    fail "a failure before transaction handlers are installed leaks its directory"
+fi
+grep -qF 'current PipeASIO configuration is unsafe' "$base/err" \
+    || fail "early transaction refusal does not name the unsafe configuration"
+ok "failures during initial snapshots retire the unstarted transaction"
+
+base="$(new_env link-snapshot-cleanup)"
+mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine" \
+    "$base/fakebin" "$base/txn"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+printf 'none\n' > "$base/state/ableton-wine/link-firewall"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkctl"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkd"
+cat > "$base/fakebin/cp" <<'EOF'
+#!/bin/sh
+for argument do
+    case "$argument" in
+        */.link-snapshot.*/firewall|*/.link-enable.*/firewall) exit 9 ;;
+    esac
+done
+exec /usr/bin/cp "$@"
+EOF
+chmod +x "$base/data/ableton-wine/ableton-linkctl" \
+    "$base/data/ableton-wine/ableton-linkd" "$base/fakebin/cp"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" snapshot "$base/txn" \
+    >"$base/snapshot.out" 2>"$base/snapshot.err"; then
+    fail "Link transaction snapshot succeeds after a copy failure"
+fi
+[ ! -e "$base/txn/link" ] \
+    || fail "failed Link transaction snapshot publishes incomplete rollback state"
+! find "$base/txn" -mindepth 1 -maxdepth 1 -name '.link-snapshot.*' \
+    -print -quit | grep -q . \
+    || fail "failed Link transaction snapshot leaks its staging directory"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" enable --mode=session \
+    >"$base/enable.out" 2>"$base/enable.err"; then
+    fail "Link enable succeeds after its recovery snapshot copy fails"
+fi
+! find "$base/state/ableton-wine" -mindepth 1 -maxdepth 1 \
+    -name '.link-enable.*' -print -quit | grep -q . \
+    || fail "failed Link enable leaks an unstarted recovery snapshot"
+ok "failed Link snapshots never publish or retain incomplete recovery state"
 
 base="$(new_env runtime-plan)"
 run_isolated "$base" bash "$here/installer.sh" --runtime-only --runtime-root "$base/runtime" --dry-run >"$base/out" 2>"$base/err"
@@ -560,6 +781,7 @@ ok "uninstall stops an exact-owned detached Link daemon before removing it"
 
 base="$(new_env link-firewall-rollback)"
 mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine" "$base/fakebin"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
 printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkctl"
 printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkd"
 chmod +x "$base/data/ableton-wine/ableton-linkctl" "$base/data/ableton-wine/ableton-linkd"
@@ -574,7 +796,9 @@ EOF
 cat > "$base/fakebin/ufw" <<'EOF'
 #!/bin/sh
 case "$1" in
-    status) [ ! -e "${ABLETON_TEST_UFW:?}" ] || echo '20808/udp ALLOW Anywhere' ;;
+    status)
+        [ "${ABLETON_TEST_UFW_STATUS_FAIL:-0}" -ne 1 ] || exit 9
+        [ ! -e "${ABLETON_TEST_UFW:?}" ] || echo '20808/udp ALLOW Anywhere' ;;
     allow) : > "${ABLETON_TEST_UFW:?}" ;;
     delete) rm -f -- "${ABLETON_TEST_UFW:?}" ;;
     *) exit 2 ;;
@@ -585,20 +809,38 @@ cat > "$base/fakebin/sudo" <<'EOF'
 case "${1:-}" in
     -n)
         shift
-        [ "${1:-}" != -v ] || exit 0 ;;
-    -v) exit 0 ;;
+        [ "${1:-}" != -- ] || shift ;;
+    -S)
+        shift
+        if [ "${1:-}" = -p ]; then shift 2; fi
+        [ "${1:-}" != -- ] || shift
+        IFS= read -r password || exit 1 ;;
 esac
 exec "$@"
 EOF
 cat > "$base/fakebin/systemctl" <<'EOF'
 #!/bin/sh
 case "$*" in
-    *daemon-reload*) exit 1 ;;
+    *daemon-reload*) exit "${ABLETON_TEST_SYSTEMCTL_RELOAD_STATUS:-1}" ;;
     *show*) exit 0 ;;
     *) exit 0 ;;
 esac
 EOF
 chmod +x "$base/fakebin/grep" "$base/fakebin/ufw" "$base/fakebin/sudo" "$base/fakebin/systemctl"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TEST_UFW="$base/ufw-rule" \
+    ABLETON_TEST_UFW_STATUS_FAIL=1 bash "$here/setup-link.sh" enable --mode=session \
+    >"$base/query.out" 2>"$base/query.err"; then
+    fail "Link enable treats a failed privileged ufw query as an absent rule"
+fi
+[ ! -e "$base/ufw-rule" ] || fail "failed ufw inspection changed the firewall"
+[ "$(cat "$base/state/ableton-wine/link-firewall")" = none ] \
+    || fail "failed ufw inspection changed the ownership record"
+if ! grep -qF 'could not inspect the active ufw rules' "$base/query.err"; then
+    sed -n '1,100p' "$base/query.err" >&2
+    fail "failed ufw inspection does not explain the refusal"
+fi
+ok "Link enable refuses when it cannot inspect the active ufw rules"
+
 if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TEST_UFW="$base/ufw-rule" \
     bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err"; then
     fail "Link enable succeeds after its systemd registration fails"
@@ -607,6 +849,21 @@ fi
 [ "$(cat "$base/state/ableton-wine/link-firewall")" = none ] \
     || fail "failed Link enable does not restore the prior firewall record"
 ok "Link enable failure restores firewall ownership and host state"
+
+printf 'ufw-added\n' > "$base/state/ableton-wine/link-firewall"
+rm -f -- "$base/ufw-rule"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_UFW="$base/ufw-rule" ABLETON_TEST_SYSTEMCTL_RELOAD_STATUS=0 \
+    bash "$here/setup-link.sh" enable --mode=session \
+    >"$base/reconcile.out" 2>"$base/reconcile.err" \
+    || fail "Link enable does not repair a missing recorded ufw rule"
+[ -e "$base/ufw-rule" ] \
+    || fail "Link enable trusts stale ufw ownership without restoring the rule"
+[ "$(cat "$base/state/ableton-wine/link-firewall")" = ufw-added ] \
+    || fail "Link enable loses ownership while repairing its ufw rule"
+grep -qF 'restoring the recorded ufw allowance' "$base/reconcile.out" \
+    || fail "Link enable does not report stale firewall reconciliation"
+ok "Link enable verifies and repairs its recorded firewall rule"
 
 for legacy_args in '' ' --linger 0'; do
     case "$legacy_args" in
@@ -727,6 +984,155 @@ grep -q 'kept unrecognised or modified legacy file' "$base/err" \
     || fail "legacy ownership refusal is not reported"
 [ -f "$base/config/ableton-wine/config" ] \
     || fail "partial legacy uninstall discards the configuration needed to retry"
+grep -q 'run uninstall' "$base/err" \
+    || fail "legacy ownership rejection does not say how to finish the uninstall"
 ok "legacy uninstall retains unrecognised canonical files"
+
+# Uninstall used to restore the MIME defaults after deleting its own desktop
+# entries.  xdg-mime reports no default once the entry file is gone, so the
+# check that clears the line never matched, and the line stayed behind naming a
+# file that no longer existed.
+base="$(new_env mime-restore)"
+mkdir -p "$base/data/applications" "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+# This entry advertises the type, so its default resolves without a list entry.
+cat > "$base/data/applications/foreign-auz.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Foreign AUZ
+Exec=/usr/bin/true %f
+MimeType=application/x-wine-extension-auz;
+EOF
+# This one advertises nothing, so only an explicit list entry can select it.
+printf '[Desktop Entry]\nType=Application\nName=Third Party\nExec=/usr/bin/true %%f\n' \
+    > "$base/data/applications/third-party.desktop"
+run_isolated "$base" update-desktop-database "$base/data/applications" >/dev/null 2>&1 || true
+# xdg-mime writes nothing and still exits 0 when its config directory is absent.
+mkdir -p "$base/config"
+run_isolated "$base" xdg-mime default third-party.desktop x-scheme-handler/ableton \
+    || fail "test fixture could not set an explicit pre-install default"
+grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "test fixture did not record an explicit pre-install default"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || { sed -n '1,40p' "$base/install.err" >&2; fail "integration install failed before MIME restoration"; }
+grep -qxF "x-scheme-handler/ableton=$ABLETON_PROTOCOL_DESKTOP_ID" "$base/config/mimeapps.list" \
+    || fail "integration did not take over the scheme handler it registers"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "uninstall failed after integration"; }
+if grep -Eq "=($ABLETON_PROTOCOL_DESKTOP_ID|$ABLETON_AUZ_DESKTOP_ID|ableton-live\.desktop|max9\.desktop|wine-protocol-c74max\.desktop)\$" \
+    "$base/config/mimeapps.list"; then
+    fail "uninstall leaves a MIME default naming an entry it removed"
+fi
+grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "uninstall does not restore an explicit pre-install default"
+! grep -q '^application/x-wine-extension-auz=' "$base/config/mimeapps.list" \
+    || fail "uninstall writes out a default the user never set explicitly"
+ok "uninstall clears its own MIME defaults and restores exactly what it found"
+
+# The installer keeps a Live desktop entry it did not write.  It must not then
+# hand that entry the file types it registers.
+base="$(new_env foreign-live-entry)"
+mkdir -p "$base/data/applications" "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true %%f\n' \
+    > "$base/data/applications/ableton-live.desktop"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "integration install failed with a foreign Live entry"; }
+grep -qxF 'Name=Foreign Live' "$base/data/applications/ableton-live.desktop" \
+    || fail "integration replaced a foreign Live desktop entry"
+if grep -Eq '^application/x-ableton-live-(set|clip|pack)=ableton-live\.desktop$' \
+    "$base/config/mimeapps.list" 2>/dev/null; then
+    fail "integration gave the Live file types to a desktop entry it did not write"
+fi
+ok "a preserved foreign Live entry does not receive the file associations"
+
+# Session Link policy writes the unit for later but never runs it, so it must
+# not need a user manager that answers.  Only always-on policy does.
+base="$(new_env link-no-user-manager)"
+mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine" "$base/fakebin"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkctl"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkd"
+chmod +x "$base/data/ableton-wine/ableton-linkctl" "$base/data/ableton-wine/ableton-linkd"
+cat > "$base/fakebin/systemctl" <<'EOF'
+#!/bin/sh
+echo 'Failed to connect to user scope bus via local transport: Connection refused' >&2
+exit 1
+EOF
+# Keep every firewall out of this check: no ufw.conf match and no firewalld
+# means no rule to add and nothing to raise privileges for.
+cat > "$base/fakebin/grep" <<'EOF'
+#!/bin/sh
+for argument do
+    [ "$argument" != /etc/ufw/ufw.conf ] || exit 1
+done
+exec /usr/bin/grep "$@"
+EOF
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/firewall-cmd"
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/sudo"
+chmod +x "$base/fakebin/systemctl" "$base/fakebin/grep" \
+    "$base/fakebin/firewall-cmd" "$base/fakebin/sudo"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "session Link enable needs a reachable user manager"; }
+[ -f "$base/config/systemd/user/ableton-linkd.service" ] \
+    || fail "session Link enable skipped the unit it writes for a later session"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/always.out" 2>"$base/always.err"; then
+    fail "always-on Link enable succeeded with no systemd user manager"
+fi
+ok "session Link policy does not depend on a reachable systemd user manager"
+
+# setup-link.sh sources the ownership helper, so a Link-only install has to ship
+# it: TROUBLESHOOTING tells people to run the installed copy.
+base="$(new_env link-assets-runnable)"
+run_isolated "$base" bash "$here/install.sh" --link-assets-only \
+    >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "link-only install failed"; }
+run_isolated "$base" bash "$base/data/ableton-wine/setup-link.sh" status \
+    >"$base/status.out" 2>"$base/status.err" \
+    || { sed -n '1,20p' "$base/status.err" >&2; fail "the installed setup-link.sh cannot run"; }
+grep -q '^policy:' "$base/status.out" || fail "installed Link status reported no policy"
+ok "a link-only install ships every library its setup-link.sh needs"
+
+# Status only reads.  It has to answer while a lifecycle command holds the
+# lock, which is exactly when someone asks.
+base="$(new_env link-status-under-lock)"
+mkdir -p "$base/state/ableton-wine"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+run_isolated "$base" bash -c '
+    exec {held}< "$HOME"
+    flock -n "$held" || exit 9
+    bash "$1" status' locked "$here/setup-link.sh" >"$base/out" 2>"$base/err" \
+    || { sed -n '1,20p' "$base/err" >&2; fail "Link status fails while the installation lock is held"; }
+grep -q '^policy:' "$base/out" || fail "locked Link status reported no policy"
+ok "Link status answers while the installation lock is held"
+
+# A missing prefix or runtime names itself.  Both used to arrive as an audio
+# failure, because the PipeWire gate ran first.
+base="$(new_env precondition-order)"
+if run_isolated "$base" bash "$here/installer.sh" update >"$base/out" 2>"$base/err"; then
+    fail "update without a prefix succeeded"
+fi
+grep -q 'update needs an existing prefix' "$base/err" \
+    || fail "update without a prefix reports something other than the missing prefix"
+! grep -qi pipewire "$base/err" \
+    || fail "update without a prefix leads with an audio failure"
+mkdir -p "$base/prefix"
+printf 'WINE REGISTRY Version 2\n' > "$base/prefix/system.reg"
+if run_isolated "$base" env ABLETON_WINEPREFIX="$base/prefix" \
+    bash "$here/installer.sh" prefix update >"$base/prefix.out" 2>"$base/prefix.err"; then
+    fail "prefix update without a runtime succeeded"
+fi
+grep -q 'no runtime at' "$base/prefix.err" \
+    || fail "prefix update without a runtime does not name the missing runtime"
+! grep -q 'Reinstall from a complete installer kit' "$base/prefix.err" \
+    || fail "prefix update blames the installer kit for a runtime that was never installed"
+ok "missing prefixes and runtimes are named before the PipeWire check runs"
 
 printf 'PASS: %s installer lifecycle checks\n' "$pass"

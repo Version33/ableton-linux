@@ -377,11 +377,14 @@ uninstall_adoption_cleanup()
     trap - EXIT
     if [ "$uninstall_adoption_active" -eq 1 ] && [ "$rc" -ne 0 ]; then
         ableton_txn_rollback_files "$uninstall_adoption_transaction" || restore_rc=1
+        if [ "$restore_rc" -eq 0 ]; then
+            rm -f -- "$uninstall_adoption_transaction/active" || restore_rc=1
+        fi
+        if [ "$restore_rc" -eq 0 ]; then
+            rm -rf -- "$uninstall_adoption_transaction" || restore_rc=1
+        fi
         if [ "$restore_rc" -ne 0 ]; then
-            echo "!! legacy ownership-marker restoration is incomplete; inspect $uninstall_adoption_transaction" >&2
-        else
-            rm -f -- "$uninstall_adoption_transaction/active" 2>/dev/null || true
-            rm -rf -- "$uninstall_adoption_transaction" 2>/dev/null || true
+            echo "!! legacy ownership-marker restoration or transaction cleanup is incomplete; inspect $uninstall_adoption_transaction" >&2
         fi
     fi
     exit "$rc"
@@ -391,9 +394,9 @@ if [ "$legacy_runtime_adoption" -eq 1 ] || [ "$legacy_prefix_adoption" -eq 1 ]; 
     uninstall_adoption_transaction="$(mktemp -d "$ABLETON_STATE_HOME/transactions/uninstall-adopt.XXXXXX")"
     ABLETON_TRANSACTION_DIR="$uninstall_adoption_transaction"
     export ABLETON_TRANSACTION_DIR
-    ableton_txn_init
     uninstall_adoption_active=1
     trap uninstall_adoption_cleanup EXIT
+    ableton_txn_init
     if [ "$legacy_runtime_adoption" -eq 1 ]; then
         ableton_adopt_runtime_marker "$safe_runtime" "$ABLETON_RUNTIME_NAME"
     fi
@@ -448,6 +451,9 @@ fi
 
 echo "== stop project-owned services and processes =="
 uninstall_partial=0
+# A MIME failure must not reach the gate that guards the runtime removal, so
+# this folds it into uninstall_partial only at the final gate.
+mime_partial=0
 "$here/setup-link.sh" disable
 ableton_prefix_busy && ableton_stop_prefix
 
@@ -588,7 +594,12 @@ remove_legacy_files()
             rm -f -- "$target"
             echo "removed legacy project file $target"
         else
+            # Wine and other packages install files under these names, and this
+            # branch has no digest to tell one of those from a file of ours that
+            # the user changed.  Stop rather than guess.
             echo "kept unrecognised or modified legacy file $target" >&2
+            echo "   this project did not install it, or you changed it. Move or delete" >&2
+            echo "   it, then run uninstall again to finish." >&2
             uninstall_partial=1
         fi
     }
@@ -640,6 +651,159 @@ remove_legacy_panel_files()
     done
 }
 
+# The explicit "[Default Applications]" line for a type, empty when the file has
+# no such line.  Group aware, so an "[Added Associations]" entry never supplies
+# the default.  A line before the first group header is malformed, but xdg-mime
+# still honours it, so read that too: the clear below has to reach whatever the
+# query can see.
+mime_explicit_default()
+{
+    local file="$1" type="$2"
+    [ -f "$file" ] || return 0
+    awk -v t="$type" '
+        /^\[/ { section = $0; next }
+        section != "" && section != "[Default Applications]" { next }
+        {
+            eq = index($0, "=")
+            if (eq > 0 && substr($0, 1, eq - 1) == t) { print substr($0, eq + 1); exit }
+        }
+    ' "$file"
+}
+
+# Drop one type's default.  Group aware for the same reason as the reader: an
+# "[Added Associations]" line is the user's own list of applications that may
+# open the file, and this project never wrote it.
+mime_clear_default()
+{
+    local file="$1" type="$2" tmp
+    [ -f "$file" ] || return 0
+    tmp="$(mktemp "$(dirname "$file")/.mimeapps.XXXXXX")" || return 1
+    if ! awk -v t="$type" '
+        /^\[/ { section = $0; print; next }
+        section == "" || section == "[Default Applications]" {
+            eq = index($0, "=")
+            if (eq > 0 && substr($0, 1, eq - 1) == t) { next }
+        }
+        { print }
+    ' "$file" > "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    # Write back through the existing inode so the file keeps its permissions.
+    # The redirection truncates the list first, so keep the rewritten copy when
+    # the write fails: it is then the only complete version left.
+    if ! cat -- "$tmp" > "$file"; then
+        echo "!! $file is now incomplete; restore it from $tmp" >&2
+        return 1
+    fi
+    # A temporary file that outlives the rewrite must not turn a completed clear
+    # into a reported failure.
+    rm -f -- "$tmp" || true
+    return 0
+}
+
+mime_id_is_managed()
+{
+    [ -n "$1" ] || return 1
+    case "$1" in
+        ableton-live.desktop|"$ABLETON_PROTOCOL_DESKTOP_ID"|"$ABLETON_AUZ_DESKTOP_ID"|\
+        wine-protocol-ableton.desktop|wine-extension-auz.desktop|max9.desktop|\
+        wine-protocol-c74max.desktop) return 0 ;;
+    esac
+    return 1
+}
+
+# Restoration takes two passes: one needs our desktop entries present, the other
+# needs them gone.
+#
+# This is the first.  Delete an entry and xdg-mime reports no default for a line
+# that still names it, which is how stale lines survived.  Clear here, and verify
+# by re-reading mimeapps.list, because a query still resolves the live entries.
+clear_mime_defaults()
+{
+    local type prior explicit current mimeapps
+    [ -r "$restore_mime" ] && command -v xdg-mime >/dev/null 2>&1 || return 0
+    mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    echo "== restore MIME defaults =="
+    while IFS=$'\t' read -r type prior; do
+        [ -n "$type" ] || continue
+        if ! current="$(xdg-mime query default "$type" 2>/dev/null)"; then
+            echo "!! could not inspect the MIME default for $type" >&2
+            mime_partial=1
+            continue
+        fi
+        if ! explicit="$(mime_explicit_default "$mimeapps" "$type")"; then
+            echo "!! could not read the MIME defaults list for $type" >&2
+            mime_partial=1
+            continue
+        fi
+        mime_id_is_managed "$explicit" || mime_id_is_managed "$current" || continue
+        if mime_id_is_managed "$explicit" \
+           && ! mime_clear_default "$mimeapps" "$type"; then
+            echo "!! could not clear the MIME default for $type" >&2
+            mime_partial=1
+            continue
+        fi
+        if ! explicit="$(mime_explicit_default "$mimeapps" "$type")"; then
+            echo "!! could not verify the MIME default for $type" >&2
+            mime_partial=1
+            continue
+        fi
+        if mime_id_is_managed "$explicit"; then
+            echo "!! the managed MIME default for $type is still active" >&2
+            mime_partial=1
+        fi
+    done < "$restore_mime"
+    return 0
+}
+
+# The second pass runs after the entries are gone and update-desktop-database
+# has rebuilt its cache, so a query now reports what the type resolves to
+# without this project.  Write the recorded handler back only when the type does
+# not already resolve to it.  A default the install found implicit must not come
+# back as an explicit line the user never had.
+reconcile_mime_defaults()
+{
+    local type prior current explicit mimeapps
+    [ -r "$restore_mime" ] && command -v xdg-mime >/dev/null 2>&1 || return 0
+    mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
+    while IFS=$'\t' read -r type prior; do
+        [ -n "$type" ] || continue
+        if ! current="$(xdg-mime query default "$type" 2>/dev/null)"; then
+            echo "!! could not inspect the MIME default for $type" >&2
+            mime_partial=1
+            continue
+        fi
+        # A prior that is itself a managed id names a file this run deleted, so
+        # writing it back would recreate the dangling default the first pass
+        # cleared.  Leaving it out is safe: a surviving entry still resolves.
+        if [ -z "$prior" ] || mime_id_is_managed "$prior"; then
+            if mime_id_is_managed "$current"; then
+                # Our own entries are out of the desktop database by now, so one
+                # of these names can only be a file this run deliberately left
+                # alone.  Where it points is the user's business, and the first
+                # pass already proved no explicit line of ours survives.
+                echo "$type still opens with $current, which this project did not install"
+            fi
+            continue
+        fi
+        [ "$current" != "$prior" ] || continue
+        if ! xdg-mime default "$prior" "$type"; then
+            echo "!! could not restore the MIME default for $type" >&2
+            mime_partial=1
+            continue
+        fi
+        if ! explicit="$(mime_explicit_default "$mimeapps" "$type")" \
+           || [ "$explicit" != "$prior" ]; then
+            echo "!! could not restore the MIME default for $type" >&2
+            mime_partial=1
+        fi
+    done < "$restore_mime"
+    return 0
+}
+
+restore_mime="$ABLETON_STATE_HOME/mime-prestate.tsv"
+clear_mime_defaults
 echo "== remove owned runtime and integration =="
 remove_legacy_panel_files
 if [ -r "$manifest" ]; then
@@ -689,46 +853,9 @@ for candidate in "${managed_runtimes[@]}"; do
     done < <(find "$runtime_parent" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
 done
 
-restore_mime="$ABLETON_STATE_HOME/mime-prestate.tsv"
-if [ -r "$restore_mime" ] && command -v xdg-mime >/dev/null 2>&1; then
-    echo "== restore MIME defaults =="
-    while IFS=$'\t' read -r type prior; do
-        if ! current="$(xdg-mime query default "$type" 2>/dev/null)"; then
-            echo "!! could not inspect the MIME default for $type" >&2
-            uninstall_partial=1
-            continue
-        fi
-        case "$current" in ableton-live.desktop|"$ABLETON_PROTOCOL_DESKTOP_ID"|"$ABLETON_AUZ_DESKTOP_ID"|wine-protocol-ableton.desktop|wine-extension-auz.desktop|max9.desktop|wine-protocol-c74max.desktop)
-            if [ -n "$prior" ]; then
-                if ! xdg-mime default "$prior" "$type" \
-                   || [ "$(xdg-mime query default "$type" 2>/dev/null || true)" != "$prior" ]; then
-                    echo "!! could not restore the MIME default for $type" >&2
-                    uninstall_partial=1
-                fi
-            else
-                mimeapps="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
-                if [ -f "$mimeapps" ] \
-                   && ! sed -i "\\#^${type//\//\\/}=#d" "$mimeapps"; then
-                    echo "!! could not clear the MIME default for $type" >&2
-                    uninstall_partial=1
-                elif ! current="$(xdg-mime query default "$type" 2>/dev/null)"; then
-                    echo "!! could not verify the MIME default for $type" >&2
-                    uninstall_partial=1
-                elif case "$current" in
-                            ableton-live.desktop|"$ABLETON_PROTOCOL_DESKTOP_ID"|\
-                            "$ABLETON_AUZ_DESKTOP_ID"|wine-protocol-ableton.desktop|\
-                            wine-extension-auz.desktop|max9.desktop|wine-protocol-c74max.desktop) true ;;
-                            *) false ;;
-                     esac; then
-                    echo "!! the managed MIME default for $type is still active" >&2
-                    uninstall_partial=1
-                fi
-            fi ;;
-        esac
-    done < "$restore_mime"
-fi
 update-mime-database "${XDG_DATA_HOME:-$HOME/.local/share}/mime" >/dev/null 2>&1 || true
 update-desktop-database "${XDG_DATA_HOME:-$HOME/.local/share}/applications" >/dev/null 2>&1 || true
+reconcile_mime_defaults
 
 if [ "$delete_prefix" -eq 1 ] && [ -e "$safe_prefix" ]; then
     if ! ableton_prefix_marker_valid "$safe_prefix" "$safe_prefix"; then
@@ -740,10 +867,13 @@ if [ "$delete_prefix" -eq 1 ] && [ -e "$safe_prefix" ]; then
     else
         echo "removed $safe_prefix"
     fi
-else
+elif [ -e "$safe_prefix" ] || [ -L "$safe_prefix" ]; then
     echo "kept Wine prefix $safe_prefix"
+else
+    echo "no Wine prefix to remove at $safe_prefix"
 fi
 
+if [ "$mime_partial" -eq 1 ]; then uninstall_partial=1; fi
 if [ "$uninstall_partial" -eq 1 ]; then
     echo "!! uninstall left modified managed files in place; ownership state was retained" >&2
     exit 1

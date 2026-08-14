@@ -11,7 +11,7 @@ Ctrl-C, then download
 and run:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 An update that stops at `== [1/5] initialise prefix ==` has the same fix.
@@ -45,7 +45,7 @@ env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 Live can still use PipeASIO without the settings window. Run the latest update:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 If a desktop package is missing, the update prints the exact install command
@@ -120,7 +120,7 @@ and run the update. It keeps your Live installation, your license, and
 your projects:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 Start Live, open **Settings > Display & Input**, and turn on **Enable GPU
@@ -276,7 +276,7 @@ and run the update. It keeps your Live installation, your license, and
 your projects:
 
 ```bash
-sh ~/Downloads/install-ableton-latest.run --update
+sh ~/Downloads/install-ableton-latest.run update
 ```
 
 Until you can update, drag Live's window once after leaving fullscreen to

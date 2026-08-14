@@ -4,6 +4,36 @@
 
 - Link setup now accepts the `sudo` password without showing it before it adds
   a UFW or firewalld rule.
+- Uninstall clears the file types and links it registered. It removed its own
+  menu entries first, which hid the settings it then tried to clear, so they
+  stayed behind pointing at entries that were gone.
+- Uninstall puts back a file type you assigned yourself. It leaves one you never
+  assigned alone, and keeps the other applications you chose for that type.
+- Uninstall says what to do about a file it does not recognise.
+- Ableton Link starts on computers that run no systemd user service. Only the
+  always-on setting needs one.
+- A failed install no longer reports that it could not undo itself when it did.
+- A failed install writes the reason its recovery failed into `rollback.log`,
+  next to the failure record. The message names both files.
+- `installer link enable` now installs every file that
+  `~/.local/share/ableton-wine/setup-link.sh` needs to run.
+- `installer link status` answers while an install, update, or uninstall runs.
+- Stopping the Link daemon waits for the lock the launcher uses, so starting
+  Live during an install cannot leave a daemon behind. Found by Lucas
+  Gillingham.
+- Link setup names the check it is about to run before it asks for your `sudo`
+  password. The two-minute bound applies to each step, and the message says so.
+  Found by Lucas Gillingham.
+- `installer update` and `installer prefix update` name the missing prefix or
+  runtime instead of reporting an audio problem.
+- The installer keeps a Live menu entry it did not create, and now leaves that
+  entry's file types alone. It does the same for a Max link entry.
+- Real-time setup checks `ABLETON_RT_GROUP` before it uses it, and rejects a
+  group that grants more than audio access.
+- Real-time setup stops when you run it as root and another account can change
+  its helper files. Run it as your own user. It asks for `sudo` when it needs it.
+- The installer checks every file it copies into your menus before it changes
+  anything.
 
 ## 2026.08.14.2
 
