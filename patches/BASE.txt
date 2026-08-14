@@ -269,10 +269,10 @@ Apply them in sequence with the rest of the series.
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0072`: add six pointer settings and middle-button drag navigation. Keep
   normal middle clicks and correct the pointer position after a drag.
-  `SmoothScrolling` defaults to `disabled`: any other value selects XI2 events
-  on our own windows, which makes a button press an implicit XI2 grab and
-  fails the core `XGrabPointer` that `SetCursorPos` needs, so fader and knob
-  drags accumulate raw motion instead of re-anchoring. See
+  `SmoothScrolling` defaults to `precise`. Selecting XI2 events on our own
+  windows makes a button press an implicit XI2 grab, which fails the core
+  `XGrabPointer` that `SetCursorPos` needs; `0098` suspends that selection
+  for the duration of a core drag, so the default is safe. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0073`: report vertical and horizontal wheel movement at the pointer's screen
   position. See

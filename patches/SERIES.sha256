@@ -67,7 +67,7 @@ b65877e816921195b1b0f45b901dc512b0c1111b9ea3e034e73aaa57362596b2  0067-wined3d-s
 4b4ca42a11539df9482e7160141be08c10e8f4b1d1c46e1ce3fa60caa0fb993a  0069-win32u-keep-selected-captioned-monitor-sized-window-resizable.patch
 e97acef9969ada9041f66c80d58dcb9b94fa3bcbba62b7fa99beba33ae9bbedd  0070-win32u-break-alt-f10-menu-arming-on-consumed-keys.patch
 f45f017f21733461ddcc11ab443526ad999d43d3a220e191ce05e973a790148c  0071-wined3d-count-and-report-sustained-present-size-fall.patch
-2987dcaf498f8e7258dfc2e068b4e87b5bdea6ff752286d95730f8f7f5086495  0072-winex11-registry-pointer-settings-and-middle-button-dra.patch
+f94996e6fa27bba4ad0db107438a9f45176ac77ac41b2f773f117a3e027e03b0  0072-winex11-registry-pointer-settings-and-middle-button-dra.patch
 73bd659652f4e9a493ed0eb70807107905101da12c61ac32f771ce6e9948b141  0073-win32u-server-keep-horizontal-wheel-coordinates-in-screen.patch
 55fcbef84ff3ec6c03907626af252f1bbbe40c851642cac3dbfd1729d4231350  0074-winex11-server-report-a-touchpad-pinch-as-Ctrl-tagged-whe.patch
 8520b205e8b38440ed942c1b88ee4f48c6dd6e38f93c758104d85b4dcca931ec  0075-kernel32-add-UnregisterApplicationRecoveryCallback.patch

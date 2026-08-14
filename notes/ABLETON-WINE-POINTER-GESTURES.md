@@ -6,7 +6,7 @@ Wine uses 120 units for one wheel step.
 
 By default, Live provides:
 
-- whole-notch vertical and horizontal scrolling;
+- fine vertical and horizontal scrolling;
 - pinch zoom;
 - middle-button drag navigation that moves content with the pointer;
 - Ctrl held during a middle-button drag zooms instead of panning, and a drag
@@ -20,21 +20,20 @@ By default, Live provides:
 middle-button movement after release. Turning either one off leaves direct
 scrolling and direct middle-button navigation unchanged.
 
-`SmoothScrolling` defaults to `disabled`. Any other value selects XI2 motion
-and button events on our own windows. That selection stops core event delivery
-for the device on those windows, and a button press then creates an implicit
-XI2 device grab. `X11DRV_SetCursorPos` and `grab_clipping_window` both take a
-core `XGrabPointer`, which fails against that grab, so while a button is held
-every warp is refused and cursor clipping is never established. Live drags a
-fader by re-anchoring the pointer with `SetCursorPos`, so each refused
-re-anchor leaves it accumulating raw physical motion and the control crosses
-its whole range from a small movement.
+`SmoothScrolling` defaults to `precise`. Selecting XI2 motion and button
+events on our own windows stops core event delivery for the device on those
+windows, and a button press then creates an implicit XI2 device grab.
+`X11DRV_SetCursorPos` and `grab_clipping_window` both take a core
+`XGrabPointer`, which fails against that grab, so while a button is held every
+warp is refused and cursor clipping is never established. Live drags a fader by
+re-anchoring the pointer with `SetCursorPos`, so each refused re-anchor left it
+accumulating raw physical motion and the control crossed its whole range from a
+small movement.
 
 The XI2 selection is dropped for the duration of a core drag, so a button press
 leaves the X server holding its stock grab and the core `XGrabPointer`
-succeeds. `precise` and `notched` no longer reintroduce the refused-warp
-behaviour. The default stays `disabled` until check 11 below has run against
-`precise` on each desktop.
+succeeds. `precise` and `notched` therefore no longer refuse warps, and
+fractional scrolling is the default again.
 
 The XWayland correction for faders and knobs defaults to `auto`: it engages
 only after Wine observes failed pointer warps, never preemptively, so desktops
@@ -48,7 +47,7 @@ open.
 
 | Setting | Launch variable | Default | Choices |
 | --- | --- | --- | --- |
-| `SmoothScrolling` | `WINE_X11_SMOOTH_SCROLLING` | `disabled` | `disabled`, `precise`, `notched` |
+| `SmoothScrolling` | `WINE_X11_SMOOTH_SCROLLING` | `precise` | `disabled`, `precise`, `notched` |
 | `TouchpadInertia` | `WINE_X11_TOUCHPAD_INERTIA` | `enabled` | `disabled`, `auto`, `enabled` |
 | `PinchZoom` | `WINE_X11_PINCH_ZOOM` | `legacy-wheel` | `disabled`, `legacy-wheel` |
 | `MiddleDrag` | `WINE_X11_MIDDLE_DRAG` | `navigate` | `disabled`, `navigate`, `navigate-notched` |
@@ -183,15 +182,13 @@ with Live's Master fader low.
     GNOME/XWayland and Xorg. On XWayland, compare `WarpEmulation=disabled`,
     `auto` and `enabled` with the pointer shown and hidden. No setting may
     double the control's movement.
-11. COSMIC/XWayland, from a fresh Live launch, with no window resize first, and
-    with `SmoothScrolling=precise`, which is what selects the XI scroll motion
-    this check suspends: drag one fader. Sensitivity must match the pointer and
-    the fader must keep its value on release. With `WINEDEBUG=+cursor,+event`,
-    the log must show
+11. COSMIC/XWayland, from a fresh Live launch, with no window resize first:
+    drag one fader. Sensitivity must match the pointer and the fader must keep
+    its value on release. With `WINEDEBUG=+cursor,+event`, the log must show
     `X server delivered core MotionNotify while XI scroll motion is suspended`
-    during the drag, proving the server owned the drag. At the default
-    `SmoothScrolling=disabled` that line is absent because no XI scroll motion
-    was selected; the check does not apply. Repeat with
+    during the drag, proving the server owned the drag. Setting
+    `SmoothScrolling=disabled` removes that line, because no XI scroll motion
+    is selected for the drag to suspend. Repeat with
     `WINE_X11_POINTER_FEATURES=disabled`; behaviour must be identical and
     equally free of acceleration or snap-back. Then repeat checks 1-5 for
     two-finger scroll, pinch, middle-drag pan and inertia outside drags.

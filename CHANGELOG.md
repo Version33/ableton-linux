@@ -64,11 +64,11 @@
   navigation. Middle-button dragging moves the content with the pointer on
   both axes. Holding Ctrl during that drag zooms instead, with a drag towards
   the top of the screen zooming in. A plain middle click remains a click.
-- Scrolling sends whole wheel notches by default.
-  `WINE_X11_SMOOTH_SCROLLING=precise` restores fractional scrolling; the
-  held-button repair below keeps it from making faders and knobs cross their
-  whole range on XWayland. The default stays off until the desktop checks have
-  run against `precise`. Found by Lucas Gillingham.
+- Scrolling sends fractional movement by default. Selecting the XI2 events it
+  needs once made faders and knobs cross their whole range from a small
+  movement on XWayland; the held-button repair below stops that, so the
+  setting no longer has to be off. `WINE_X11_SMOOTH_SCROLLING=disabled`
+  restores whole wheel notches. Found by Lucas Gillingham.
 - Fixed left- and right-button control drags speeding up when a second touch
   starts scrolling. Normal one-finger dragging and middle-button navigation
   remain unchanged.
