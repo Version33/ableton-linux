@@ -377,11 +377,14 @@ uninstall_adoption_cleanup()
     trap - EXIT
     if [ "$uninstall_adoption_active" -eq 1 ] && [ "$rc" -ne 0 ]; then
         ableton_txn_rollback_files "$uninstall_adoption_transaction" || restore_rc=1
+        if [ "$restore_rc" -eq 0 ]; then
+            rm -f -- "$uninstall_adoption_transaction/active" || restore_rc=1
+        fi
+        if [ "$restore_rc" -eq 0 ]; then
+            rm -rf -- "$uninstall_adoption_transaction" || restore_rc=1
+        fi
         if [ "$restore_rc" -ne 0 ]; then
-            echo "!! legacy ownership-marker restoration is incomplete; inspect $uninstall_adoption_transaction" >&2
-        else
-            rm -f -- "$uninstall_adoption_transaction/active" 2>/dev/null || true
-            rm -rf -- "$uninstall_adoption_transaction" 2>/dev/null || true
+            echo "!! legacy ownership-marker restoration or transaction cleanup is incomplete; inspect $uninstall_adoption_transaction" >&2
         fi
     fi
     exit "$rc"
@@ -391,9 +394,9 @@ if [ "$legacy_runtime_adoption" -eq 1 ] || [ "$legacy_prefix_adoption" -eq 1 ]; 
     uninstall_adoption_transaction="$(mktemp -d "$ABLETON_STATE_HOME/transactions/uninstall-adopt.XXXXXX")"
     ABLETON_TRANSACTION_DIR="$uninstall_adoption_transaction"
     export ABLETON_TRANSACTION_DIR
-    ableton_txn_init
     uninstall_adoption_active=1
     trap uninstall_adoption_cleanup EXIT
+    ableton_txn_init
     if [ "$legacy_runtime_adoption" -eq 1 ]; then
         ableton_adopt_runtime_marker "$safe_runtime" "$ABLETON_RUNTIME_NAME"
     fi

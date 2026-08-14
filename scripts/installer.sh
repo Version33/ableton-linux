@@ -373,8 +373,16 @@ validate_payload_major
 
 host_preflight()
 {
-    [ "$(uname -m)" = x86_64 ] || { echo "!! installer requires x86_64" >&2; return 1; }
-    command -v timeout >/dev/null || { echo "!! GNU timeout is required" >&2; return 1; }
+    case "$command_name:$subcommand" in
+        install:|update:|runtime:install|prefix:create|prefix:update|link:enable)
+            [ "$(uname -m)" = x86_64 ] \
+                || { echo "!! this command requires x86_64" >&2; return 1; } ;;
+    esac
+    case "$command_name:$subcommand" in
+        prefix:repair-live11) ;;
+        *) command -v timeout >/dev/null \
+            || { echo "!! GNU timeout is required" >&2; return 1; } ;;
+    esac
     case "$command_name" in
         install|update|runtime)
             command -v tar >/dev/null || { echo "!! tar is required" >&2; return 1; }
@@ -412,6 +420,13 @@ fi
 install_args=()
 [ "$assume_yes" -eq 0 ] || install_args+=(--yes)
 [ "$dry_run" -eq 0 ] || install_args+=(--dry-run)
+components=()
+if [ "$command_name" = install ] || [ "$command_name" = update ]; then
+    components=(--runtime-only --integration-only)
+    if [ "$desired_link" != off ] || [ -n "${ABLETON_PR182_CUSTOM_LINKD:-}" ]; then
+        components+=(--link-assets-only)
+    fi
+fi
 
 case "$command_name:$subcommand" in
     uninstall:)
@@ -424,7 +439,6 @@ case "$command_name:$subcommand" in
     link:status)
         exec "$here/setup-link.sh" status ;;
     runtime:install)
-        "$here/install.sh" --runtime-only --validate
         if [ "$dry_run" -eq 1 ]; then "$here/install.sh" --runtime-only --dry-run; exit; fi ;;
     prefix:create)
         [ ! -f "$ABLETON_WINEPREFIX/system.reg" ] || { echo "!! prefix already exists; use prefix update" >&2; exit 2; }
@@ -447,7 +461,6 @@ case "$command_name:$subcommand" in
         # move for this mode.  It deliberately needs neither Wine nor PipeWire.
         exec "$here/setup-prefix.sh" --post-first-run ;;
     link:enable)
-        "$here/install.sh" --link-assets-only --validate
         if [ "$dry_run" -eq 1 ]; then
             "$here/install.sh" --link-assets-only --dry-run
             "$here/setup-link.sh" plan-enable "--mode=$desired_link"
@@ -461,9 +474,6 @@ case "$command_name:$subcommand" in
         # check runs before the slow runtime payload extraction.
         [ "$command_name" != update ] || [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
             echo "!! update needs an existing prefix at $ABLETON_WINEPREFIX; run install first" >&2; exit 2; }
-        components=(--runtime-only --integration-only)
-        [ "$desired_link" = off ] || components+=(--link-assets-only)
-        "$here/install.sh" "${components[@]}" --validate
         prefix_validate=()
         [ "$command_name" != update ] || prefix_validate+=(--refresh)
         ABLETON_RUNTIME_PENDING=1 "$here/setup-prefix.sh" "${prefix_validate[@]}" --validate
@@ -495,6 +505,18 @@ else
     mkdir -p -- "$ABLETON_STATE_HOME/transactions"
     transaction="$(mktemp -d "$ABLETON_STATE_HOME/transactions/installer.XXXXXX")"
 fi
+# ShellCheck does not follow function names stored in traps.
+# shellcheck disable=SC2329
+cleanup_unstarted_transaction()
+{
+    local rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ] && ! rm -rf -- "$transaction"; then
+        echo "!! failed to remove unstarted installer transaction: $transaction" >&2
+    fi
+    exit "$rc"
+}
+trap cleanup_unstarted_transaction EXIT
 ABLETON_TRANSACTION_DIR="$transaction"
 export ABLETON_TRANSACTION_DIR
 config_backup="$transaction/config.before"
@@ -673,10 +695,6 @@ case "$command_name:$subcommand" in
         fi
         "$here/setup-link.sh" disable ;;
     install:|update:)
-        components=(--runtime-only --integration-only)
-        if [ "$desired_link" != off ] || [ -n "${ABLETON_PR182_CUSTOM_LINKD:-}" ]; then
-            components+=(--link-assets-only)
-        fi
         "$here/install.sh" "${components[@]}" --transaction-dir "$transaction" "${install_args[@]}"
         if [ "$command_name" = update ]; then
             ABLETON_PREFIX_MANAGED=1 "$here/setup-prefix.sh" --refresh --transaction-dir "$transaction"
@@ -943,7 +961,12 @@ if [ "$cleanup_status" -ne 0 ]; then
     echo "!! installation committed, but rollback-snapshot cleanup was incomplete: $transaction/COMMITTED_CLEANUP_FAILURE" >&2
     exit 1
 fi
-rm -rf -- "$transaction"
+if ! rm -rf -- "$transaction"; then
+    printf 'command=%s %s\nstatus=committed-cleanup-incomplete\nstep=retiring transaction directory\n' \
+        "$command_name" "$subcommand" > "$transaction/COMMITTED_CLEANUP_FAILURE" 2>/dev/null || true
+    echo "!! installation committed, but the transaction directory could not be removed: $transaction" >&2
+    exit 1
+fi
 
 echo "OK: $command_name${subcommand:+ $subcommand} completed"
 printf '  runtime: %s\n  prefix: %s\n  Link: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINK_MODE"

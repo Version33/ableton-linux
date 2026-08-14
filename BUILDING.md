@@ -4,10 +4,7 @@ This page covers the current source build, tests, packaging, and maintainer opti
 
 ## Build
 
-Install Podman, Git, Bash, Python 3, GNU Coreutils, GNU Findutils, GNU grep,
-GNU tar, binutils, `zstd`, and `cabextract`. The test suite also needs `ps` and
-`script`. `make check` needs a host C compiler and maths library. Allow about
-10 GB of free disk space.
+Install Podman, Git, Bash, Python 3, GNU Coreutils, GNU Findutils, GNU grep, GNU tar, binutils, `zstd`, and `cabextract`. `make check` also needs a host C compiler and maths library. Allow about 10 GB of free disk space.
 Then run:
 
 ```bash

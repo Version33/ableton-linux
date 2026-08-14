@@ -338,6 +338,19 @@ else
     own_transaction=1
 fi
 export ABLETON_TRANSACTION_DIR
+# ShellCheck does not follow function names stored in traps.
+# shellcheck disable=SC2329
+cleanup_unstarted_component_transaction()
+{
+    local rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ] && [ "$own_transaction" -eq 1 ] \
+       && ! rm -rf -- "$ABLETON_TRANSACTION_DIR"; then
+        echo "!! failed to remove unstarted component transaction: $ABLETON_TRANSACTION_DIR" >&2
+    fi
+    exit "$rc"
+}
+trap cleanup_unstarted_component_transaction EXIT
 ableton_txn_init
 ableton_validate_install_state_journals
 stage=""
@@ -676,7 +689,7 @@ promote_runtime()
         echo "!! promoted runtime lost its ownership marker" >&2; return 1; }
     ABLETON_RUNTIME_INSTALLED=1
     export ABLETON_RUNTIME_INSTALLED
-    "$safe/bin/wine" --version
+    ableton_run_bounded 30 "$safe/bin/wine" --version
 }
 
 sed_escape()

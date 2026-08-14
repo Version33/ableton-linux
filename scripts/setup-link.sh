@@ -41,7 +41,7 @@ case "$action" in enable|disable|status|snapshot|preflight-rollback|preflight-co
     *) echo "usage: setup-link.sh enable [--mode=session|always] | disable | status" >&2; exit 2 ;;
 esac
 case "$action" in
-    enable|disable|snapshot|preflight-rollback|preflight-commit|rollback|commit)
+    enable|disable|status|snapshot|preflight-rollback|preflight-commit|rollback|commit)
         ableton_install_lock_acquire
         ableton_validate_install_state_journals ;;
 esac
@@ -51,21 +51,75 @@ unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 unit_file="$unit_dir/ableton-linkd.service"
 data_unit="$ABLETON_DATA_HOME/ableton-linkd.service"
 linkctl="$ABLETON_DATA_HOME/ableton-linkctl"
+link_pid_file="${XDG_RUNTIME_DIR:-$ABLETON_STATE_HOME/run}/ableton-wine/linkd.pid"
 legacy_hook=/etc/NetworkManager/dispatcher.d/50-link-multicast
 link_residual=0
 declare -A link_deowned=()
 
 owned_link_pids()
 {
-    local want proc pid exe
+    local want proc pid exe recorded="" seen=" "
     want="$(readlink -f "$ABLETON_LINKD" 2>/dev/null || true)"
     [ -n "$want" ] || return 0
+    recorded="$(sed -n '1p' "$link_pid_file" 2>/dev/null || true)"
+    case "$recorded" in
+        ''|*[!0-9]*) ;;
+        *)
+            exe="$(readlink -f "/proc/$recorded/exe" 2>/dev/null || true)"
+            if kill -0 "$recorded" 2>/dev/null && [ "$exe" = "$want" ]; then
+                printf '%s\n' "$recorded"
+                seen=" $recorded "
+            fi ;;
+    esac
+    # Exact-executable discovery is safe only for a project-owned binary. An
+    # external configured daemon is managed solely through its exact PID file.
+    link_binary_is_owned || return 0
     for proc in /proc/[0-9]*; do
         pid="${proc#/proc/}"
+        case "$seen" in *" $pid "*) continue ;; esac
         exe="$(readlink -f "$proc/exe" 2>/dev/null || true)"
         [ "$exe" = "$want" ] && printf '%s\n' "$pid"
     done
     return 0
+}
+
+stop_owned_detached_link_daemons()
+{
+    local pid exe want running=0 failed=0
+    local -a pids=()
+    mapfile -t pids < <(owned_link_pids)
+    want="$(readlink -f "$ABLETON_LINKD" 2>/dev/null || true)"
+    for pid in "${pids[@]}"; do
+        exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        [ -n "$want" ] && [ "$exe" = "$want" ] || continue
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for _ in {1..50}; do
+        running=0
+        for pid in "${pids[@]}"; do
+            kill -0 "$pid" 2>/dev/null && { running=1; break; }
+        done
+        [ "$running" -eq 1 ] || break
+        sleep 0.1
+    done
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null || continue
+        # Revalidate immediately before escalation so PID reuse cannot direct
+        # SIGKILL at another process.
+        exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        [ -n "$want" ] && [ "$exe" = "$want" ] \
+            && kill -KILL "$pid" 2>/dev/null || true
+    done
+    [ "${#pids[@]}" -eq 0 ] || sleep 0.1
+    for pid in "${pids[@]}"; do
+        exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        [ -z "$want" ] || [ "$exe" != "$want" ] || failed=1
+    done
+    [ "$failed" -eq 0 ] || {
+        echo "!! could not stop every project-owned detached Link daemon" >&2
+        return 1
+    }
+    rm -f -- "$link_pid_file"
 }
 
 legacy_unit_is_owned()
@@ -146,7 +200,11 @@ stop_owned_service()
 {
     loaded_unit_is_owned || return 0
     if command -v systemctl >/dev/null 2>&1; then
-        ableton_run_bounded 20 systemctl --user disable --now ableton-linkd.service >/dev/null 2>&1 || true
+        ableton_run_bounded 20 systemctl --user disable --now \
+            ableton-linkd.service >/dev/null 2>&1 || {
+            echo "!! could not stop the project-owned Link service" >&2
+            return 1
+        }
     fi
 }
 
@@ -189,6 +247,32 @@ write_link_firewall_state()
     fi
 }
 
+# Return 0 when the rule exists, 1 when a successful query proves it absent,
+# and 2 when the firewall state could not be read.
+ufw_link_rule_state()
+{
+    local output
+    output="$(ableton_sudo_run_bounded 120 ufw status)" || return 2
+    printf '%s\n' "$output" \
+        | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'
+}
+
+firewalld_link_rule_state()
+{
+    local output
+    output="$(ableton_sudo_run_bounded 120 \
+        firewall-cmd --permanent --list-ports)" || return 2
+    printf '%s\n' "$output" | tr ' ' '\n' | grep -qxF 20808/udp
+}
+
+firewalld_offline_link_rule_state()
+{
+    local output
+    output="$(ableton_sudo_run_bounded 120 \
+        firewall-offline-cmd --list-ports)" || return 2
+    printf '%s\n' "$output" | tr ' ' '\n' | grep -qxF 20808/udp
+}
+
 remove_owned_firewall()
 {
     validate_link_firewall_state || {
@@ -196,20 +280,39 @@ remove_owned_firewall()
         return 1
     }
     [ ! -e "$state_file" ] && [ ! -L "$state_file" ] && return 0
-    local state rc=0
+    local state rc=0 rule_state=0
     state="$(sed -n '1p' "$state_file")"
+    # Record the ownership file before changing the matching system rule. If a
+    # later command fails, the outer transaction can still restore both.
+    ableton_txn_snapshot "$state_file" || return 1
     case "$state" in
         ufw-added)
             echo "-- removing the project-owned ufw allowance for UDP 20808"
-            ableton_sudo_run_bounded 120 ufw delete allow 20808/udp || rc=$? ;;
+            ufw_link_rule_state || rule_state=$?
+            if [ "$rule_state" -eq 0 ]; then
+                ableton_sudo_run_bounded 120 ufw delete allow 20808/udp || rc=$?
+            elif [ "$rule_state" -ne 1 ]; then
+                rc=1
+            fi ;;
         firewalld-added)
             echo "-- removing the project-owned firewalld allowance for UDP 20808"
             if command -v firewall-cmd >/dev/null 2>&1 \
                && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
-                ableton_sudo_run_bounded 120 firewall-cmd --permanent --remove-port=20808/udp || rc=$?
-                [ "$rc" -ne 0 ] || ableton_sudo_run_bounded 120 firewall-cmd --reload || rc=$?
+                firewalld_link_rule_state || rule_state=$?
+                if [ "$rule_state" -eq 0 ]; then
+                    ableton_sudo_run_bounded 120 firewall-cmd --permanent --remove-port=20808/udp || rc=$?
+                    [ "$rc" -ne 0 ] || ableton_sudo_run_bounded 120 firewall-cmd --reload || rc=$?
+                elif [ "$rule_state" -ne 1 ]; then
+                    rc=1
+                fi
             elif command -v firewall-offline-cmd >/dev/null 2>&1; then
-                ableton_sudo_run_bounded 120 firewall-offline-cmd --remove-port=20808/udp || rc=$?
+                firewalld_offline_link_rule_state || rule_state=$?
+                if [ "$rule_state" -eq 0 ]; then
+                    ableton_sudo_run_bounded 120 \
+                        firewall-offline-cmd --remove-port=20808/udp || rc=$?
+                elif [ "$rule_state" -ne 1 ]; then
+                    rc=1
+                fi
             else
                 rc=127
             fi ;;
@@ -217,7 +320,6 @@ remove_owned_firewall()
         *) echo "!! unrecognised Link firewall ownership record: $state_file" >&2; return 1 ;;
     esac
     [ "$rc" -eq 0 ] || { echo "!! failed to remove the recorded Link firewall rule" >&2; return "$rc"; }
-    ableton_txn_snapshot "$state_file" || return 1
     ableton_txn_expect "$state_file" absent || return 1
     rm -f -- "$state_file"
 }
@@ -258,15 +360,15 @@ snapshot_legacy_network()
 {
     local destination="$1" route_line=""
     if legacy_hook_is_owned; then
-        cp -a -- "$legacy_hook" "$destination.hook"
+        cp -a -- "$legacy_hook" "$destination.hook" || return 1
     else
-        : > "$destination.hook.absent"
+        : > "$destination.hook.absent" || return 1
     fi
     route_line="$(ip -4 route show 224.0.0.0/4 2>/dev/null | head -n 1 || true)"
     if [ -n "$route_line" ]; then
-        printf '%s\n' "$route_line" > "$destination.route"
+        printf '%s\n' "$route_line" > "$destination.route" || return 1
     else
-        : > "$destination.route.absent"
+        : > "$destination.route.absent" || return 1
     fi
 }
 
@@ -292,14 +394,25 @@ restore_legacy_network()
 
 remove_owned_legacy_hook()
 {
+    local route_line=""
     [ -e "$legacy_hook" ] || return 0
     if ! legacy_hook_is_owned; then
         echo "!! keeping unrecognised legacy-hook path $legacy_hook" >&2
         return 0
     fi
+    command -v ip >/dev/null 2>&1 || {
+        echo "!! cannot inspect the project-owned legacy multicast route because ip is missing" >&2
+        return 127
+    }
+    route_line="$(ip -4 route show 224.0.0.0/4 2>/dev/null | head -n 1)" || {
+        echo "!! could not inspect the project-owned legacy multicast route" >&2
+        return 1
+    }
     echo "-- removing the project-owned legacy multicast hook"
+    if [ -n "$route_line" ]; then
+        ableton_sudo_run_bounded 120 ip route del 224.0.0.0/4 >/dev/null
+    fi
     ableton_sudo_run_bounded 120 rm -f -- "$legacy_hook"
-    ableton_sudo_run_bounded 120 ip route del 224.0.0.0/4 >/dev/null 2>&1 || true
 }
 
 manifest_digest_for()
@@ -452,9 +565,7 @@ disable_link()
         return 1
     }
     stop_owned_service
-    if [ -x "$here/ableton-linkctl" ]; then "$here/ableton-linkctl" stop
-    elif [ -x "$linkctl" ]; then "$linkctl" stop
-    fi
+    stop_owned_detached_link_daemons
     remove_owned_legacy_hook
     remove_owned_firewall
     if unit_is_owned; then rm -f -- "$unit_file"; fi
@@ -526,6 +637,54 @@ EOF
     ableton_run_bounded 20 systemctl --user daemon-reload
 }
 
+ensure_recorded_firewall()
+{
+    local state="$1" rule_state=0
+    case "$state" in
+        ufw-added)
+            command -v ufw >/dev/null 2>&1 || {
+                echo "!! cannot verify the recorded ufw rule because ufw is missing" >&2
+                return 127
+            }
+            ufw_link_rule_state || rule_state=$?
+            if [ "$rule_state" -eq 1 ]; then
+                echo "   restoring the recorded ufw allowance for UDP 20808"
+                ableton_sudo_run_bounded 120 ufw allow 20808/udp
+            elif [ "$rule_state" -ne 0 ]; then
+                echo "!! could not verify the recorded ufw rule" >&2
+                return 1
+            fi ;;
+        firewalld-added)
+            if command -v firewall-cmd >/dev/null 2>&1 \
+               && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
+                firewalld_link_rule_state || rule_state=$?
+                if [ "$rule_state" -eq 1 ]; then
+                    echo "   restoring the recorded firewalld allowance for UDP 20808"
+                    ableton_sudo_run_bounded 120 \
+                        firewall-cmd --permanent --add-port=20808/udp || return $?
+                    ableton_sudo_run_bounded 120 firewall-cmd --reload
+                elif [ "$rule_state" -ne 0 ]; then
+                    echo "!! could not verify the recorded firewalld rule" >&2
+                    return 1
+                fi
+            elif command -v firewall-offline-cmd >/dev/null 2>&1; then
+                firewalld_offline_link_rule_state || rule_state=$?
+                if [ "$rule_state" -eq 1 ]; then
+                    echo "   restoring the recorded offline firewalld allowance for UDP 20808"
+                    ableton_sudo_run_bounded 120 \
+                        firewall-offline-cmd --add-port=20808/udp
+                elif [ "$rule_state" -ne 0 ]; then
+                    echo "!! could not verify the recorded offline firewalld rule" >&2
+                    return 1
+                fi
+            else
+                echo "!! cannot verify the recorded firewalld rule because firewalld is missing" >&2
+                return 127
+            fi ;;
+        *) return 2 ;;
+    esac
+}
+
 configure_firewall()
 {
     validate_link_firewall_state || {
@@ -535,38 +694,46 @@ configure_firewall()
     ableton_mark_state_home
     if [ -r "$state_file" ]; then
         case "$(sed -n '1p' "$state_file")" in
-            ufw-added|firewalld-added) return 0 ;;
+            ufw-added) ensure_recorded_firewall ufw-added; return $? ;;
+            firewalld-added) ensure_recorded_firewall firewalld-added; return $? ;;
             none) : ;;
             *) echo "!! unrecognised Link firewall ownership record: $state_file" >&2; return 1 ;;
         esac
     fi
     if command -v ufw >/dev/null 2>&1 && grep -qsi '^ENABLED=yes' /etc/ufw/ufw.conf; then
-        if ableton_run_bounded 20 ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'; then
+        local rule_state=0
+        ufw_link_rule_state || rule_state=$?
+        if [ "$rule_state" -eq 0 ]; then
             write_link_firewall_state none
             echo "   ufw already allows UDP 20808; leaving the foreign/pre-existing rule alone"
-        else
+        elif [ "$rule_state" -eq 1 ]; then
             echo "   ufw is active: adding UDP 20808 (sudo, bounded to two minutes)"
-            ableton_sudo_authenticate_bounded 120 || return $?
             write_link_firewall_state ufw-added
-            # Authentication does not mutate the firewall.  Persist ownership
-            # after it succeeds but before ufw can make a partial change, so the
-            # caller's recovery can remove only this attempted rule.
-            ableton_sudo_run_authenticated_bounded 120 ufw allow 20808/udp || return $?
+            # Persist ownership before ufw can make a partial change. The
+            # caller's recovery can then remove only this attempted rule.
+            ableton_sudo_run_bounded 120 ufw allow 20808/udp || return $?
+        else
+            echo "!! could not inspect the active ufw rules" >&2
+            return 1
         fi
     elif command -v firewall-cmd >/dev/null 2>&1 \
          && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
-        if ableton_run_bounded 20 firewall-cmd --permanent --query-port=20808/udp >/dev/null 2>&1; then
+        local rule_state=0
+        firewalld_link_rule_state || rule_state=$?
+        if [ "$rule_state" -eq 0 ]; then
             write_link_firewall_state none
             echo "   firewalld already allows UDP 20808; leaving the foreign/pre-existing rule alone"
-        else
+        elif [ "$rule_state" -eq 1 ]; then
             echo "   firewalld is active: adding UDP 20808 (sudo, bounded to two minutes)"
-            ableton_sudo_authenticate_bounded 120 || return $?
             write_link_firewall_state firewalld-added
-            ableton_sudo_run_authenticated_bounded 120 \
+            ableton_sudo_run_bounded 120 \
                 firewall-cmd --permanent --add-port=20808/udp || return $?
             # Ownership is already recorded before reload. If reload fails, the
             # caller's rollback can still remove the persistent rule.
             ableton_sudo_run_bounded 120 firewall-cmd --reload || return $?
+        else
+            echo "!! could not inspect the active firewalld rules" >&2
+            return 1
         fi
     else
         write_link_firewall_state none
@@ -576,22 +743,36 @@ configure_firewall()
 
 restore_firewall_record()
 {
-    local prior="$1" rc=0
+    local prior="$1" rc=0 rule_state=0
     ableton_mark_state_home
     case "$prior" in
         ufw-added)
-            if ! ableton_run_bounded 20 ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'; then
+            ufw_link_rule_state || rule_state=$?
+            if [ "$rule_state" -eq 1 ]; then
                 ableton_sudo_run_bounded 120 ufw allow 20808/udp || rc=$?
+            elif [ "$rule_state" -ne 0 ]; then
+                rc=1
             fi ;;
         firewalld-added)
             if command -v firewall-cmd >/dev/null 2>&1 \
                && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
-                if ! ableton_run_bounded 20 firewall-cmd --permanent --query-port=20808/udp >/dev/null 2>&1; then
+                rule_state=0
+                firewalld_link_rule_state || rule_state=$?
+                if [ "$rule_state" -eq 1 ]; then
                     ableton_sudo_run_bounded 120 firewall-cmd --permanent --add-port=20808/udp || rc=$?
                     [ "$rc" -ne 0 ] || ableton_sudo_run_bounded 120 firewall-cmd --reload || rc=$?
+                elif [ "$rule_state" -ne 0 ]; then
+                    rc=1
                 fi
             elif command -v firewall-offline-cmd >/dev/null 2>&1; then
-                ableton_sudo_run_bounded 120 firewall-offline-cmd --add-port=20808/udp || rc=$?
+                rule_state=0
+                firewalld_offline_link_rule_state || rule_state=$?
+                if [ "$rule_state" -eq 1 ]; then
+                    ableton_sudo_run_bounded 120 \
+                        firewall-offline-cmd --add-port=20808/udp || rc=$?
+                elif [ "$rule_state" -ne 0 ]; then
+                    rc=1
+                fi
             else
                 rc=127
             fi ;;
@@ -602,9 +783,96 @@ restore_firewall_record()
     write_link_firewall_state "$prior"
 }
 
+populate_link_transaction_snapshot()
+{
+    local snap="$1" pids asset label manifest
+    printf '%s\n' "$ABLETON_LINK_MODE" > "$snap/policy" || return 1
+    if [ -f "$state_file" ] && [ ! -L "$state_file" ]; then
+        cp -a -- "$state_file" "$snap/firewall" || return 1
+    else
+        : > "$snap/firewall.absent" || return 1
+    fi
+    snapshot_legacy_network "$snap/legacy" || return 1
+    if [ -f "$unit_file" ] && [ ! -L "$unit_file" ]; then
+        cp -a -- "$unit_file" "$snap/unit" || return 1
+    else
+        [ ! -e "$unit_file" ] && [ ! -L "$unit_file" ] || {
+            echo "!! unsafe or foreign Link unit cannot be snapshotted: $unit_file" >&2
+            return 1
+        }
+        : > "$snap/unit.absent" || return 1
+    fi
+    label=0
+    for asset in "$ABLETON_DATA_HOME/ableton-linkd" "$data_unit" "$linkctl" "$ABLETON_DATA_HOME/setup-link.sh"; do
+        printf '%s\n' "$asset" > "$snap/asset-$label.path" || return 1
+        if [ -f "$asset" ] || [ -L "$asset" ]; then
+            cp -a -- "$asset" "$snap/asset-$label.file" || return 1
+        else
+            [ ! -e "$asset" ] || {
+                echo "!! unsafe Link asset cannot be snapshotted: $asset" >&2
+                return 1
+            }
+            : > "$snap/asset-$label.absent" || return 1
+        fi
+        label=$((label + 1))
+    done
+    manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
+    if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then
+        cp -a -- "$manifest" "$snap/manifest" || return 1
+    else
+        [ ! -e "$manifest" ] && [ ! -L "$manifest" ] || {
+            echo "!! unsafe Link ownership snapshot" >&2
+            return 1
+        }
+        : > "$snap/manifest.absent" || return 1
+    fi
+    if [ -e "$ABLETON_STATE_HOME/install-prestate.tsv" ]; then
+        cp -a -- "$ABLETON_STATE_HOME/install-prestate.tsv" \
+            "$snap/prestate.tsv" || return 1
+    else
+        : > "$snap/prestate.absent" || return 1
+    fi
+    if [ -d "$ABLETON_STATE_HOME/install-prestate" ] \
+       && [ ! -L "$ABLETON_STATE_HOME/install-prestate" ]; then
+        cp -a -- "$ABLETON_STATE_HOME/install-prestate" \
+            "$snap/prestate-dir" || return 1
+    elif [ -e "$ABLETON_STATE_HOME/install-prestate" ] \
+         || [ -L "$ABLETON_STATE_HOME/install-prestate" ]; then
+        echo "!! unsafe Link pre-install snapshot directory" >&2
+        return 1
+    else
+        : > "$snap/prestate-dir.absent" || return 1
+    fi
+    if unit_is_owned && command -v systemctl >/dev/null 2>&1; then
+        if ableton_run_bounded 20 systemctl --user is-enabled --quiet \
+            ableton-linkd.service 2>/dev/null; then
+            : > "$snap/enabled" || return 1
+        else
+            : > "$snap/enabled.absent" || return 1
+        fi
+        if loaded_unit_is_owned \
+           && ableton_run_bounded 20 systemctl --user is-active --quiet \
+                ableton-linkd.service 2>/dev/null; then
+            : > "$snap/active" || return 1
+        else
+            : > "$snap/active.absent" || return 1
+        fi
+    else
+        : > "$snap/enabled.absent" || return 1
+        : > "$snap/active.absent" || return 1
+    fi
+    pids="$(owned_link_pids | head -n 1)" || return 1
+    if [ -z "$pids" ]; then
+        : > "$snap/detached-active.absent" || return 1
+    else
+        : > "$snap/detached-active" || return 1
+    fi
+    : > "$snap/ready" || return 1
+}
+
 snapshot_link_transaction()
 {
-    local snap="$transaction_dir/link" pids asset label manifest
+    local snap="$transaction_dir/link" build=""
     ableton_txn_init || return 1
     validate_link_firewall_state || {
         echo "!! unsafe Link firewall ownership record: $state_file" >&2
@@ -619,63 +887,22 @@ snapshot_link_transaction()
             validate_link_transaction_snapshot || return 1
             return 0
         fi
-    else
-        mkdir -m 700 -- "$snap" || return 1
+        rmdir -- "$snap" || return 1
     fi
-    printf '%s\n' "$ABLETON_LINK_MODE" > "$snap/policy"
-    if [ -f "$state_file" ] && [ ! -L "$state_file" ]; then cp -a -- "$state_file" "$snap/firewall"
-    else : > "$snap/firewall.absent"; fi
-    snapshot_legacy_network "$snap/legacy"
-    if [ -f "$unit_file" ] && [ ! -L "$unit_file" ]; then cp -a -- "$unit_file" "$snap/unit"
-    else
-        [ ! -e "$unit_file" ] && [ ! -L "$unit_file" ] || {
-            echo "!! unsafe or foreign Link unit cannot be snapshotted: $unit_file" >&2
-            return 1
+    build="$(mktemp -d "$transaction_dir/.link-snapshot.XXXXXX")" || return 1
+    if ! populate_link_transaction_snapshot "$build"; then
+        rm -rf -- "$build" || {
+            echo "!! failed to remove incomplete Link transaction snapshot: $build" >&2
         }
-        : > "$snap/unit.absent"
+        return 1
     fi
-    label=0
-    for asset in "$ABLETON_DATA_HOME/ableton-linkd" "$data_unit" "$linkctl" "$ABLETON_DATA_HOME/setup-link.sh"; do
-        printf '%s\n' "$asset" > "$snap/asset-$label.path"
-        if [ -f "$asset" ] || [ -L "$asset" ]; then
-            cp -a -- "$asset" "$snap/asset-$label.file"
-        else
-            [ ! -e "$asset" ] || { echo "!! unsafe Link asset cannot be snapshotted: $asset" >&2; return 1; }
-            : > "$snap/asset-$label.absent"
-        fi
-        label=$((label + 1))
-    done
-    manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
-    if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then cp -a -- "$manifest" "$snap/manifest"
-    else
-        [ ! -e "$manifest" ] && [ ! -L "$manifest" ] \
-            || { echo "!! unsafe Link ownership snapshot" >&2; return 1; }
-        : > "$snap/manifest.absent"
+    if ! mv -T -n -- "$build" "$snap" \
+       || [ -e "$build" ] || [ ! -d "$snap" ] || [ -L "$snap" ]; then
+        [ ! -e "$build" ] || rm -rf -- "$build"
+        echo "!! could not publish the complete Link transaction snapshot" >&2
+        return 1
     fi
-    if [ -e "$ABLETON_STATE_HOME/install-prestate.tsv" ]; then
-        cp -a -- "$ABLETON_STATE_HOME/install-prestate.tsv" "$snap/prestate.tsv"
-    else
-        : > "$snap/prestate.absent"
-    fi
-    if [ -d "$ABLETON_STATE_HOME/install-prestate" ]; then
-        cp -a -- "$ABLETON_STATE_HOME/install-prestate" "$snap/prestate-dir"
-    else
-        : > "$snap/prestate-dir.absent"
-    fi
-    if unit_is_owned && command -v systemctl >/dev/null 2>&1; then
-        ableton_run_bounded 20 systemctl --user is-enabled --quiet ableton-linkd.service 2>/dev/null \
-            && : > "$snap/enabled" || : > "$snap/enabled.absent"
-        loaded_unit_is_owned \
-            && ableton_run_bounded 20 systemctl --user is-active --quiet ableton-linkd.service 2>/dev/null \
-            && : > "$snap/active" || : > "$snap/active.absent"
-    else
-        : > "$snap/enabled.absent"
-        : > "$snap/active.absent"
-    fi
-    pids="$(owned_link_pids | head -n 1)"
-    if [ -z "$pids" ]; then : > "$snap/detached-active.absent"
-    else : > "$snap/detached-active"; fi
-    : > "$snap/ready"
+    validate_link_transaction_snapshot
 }
 
 link_snapshot_pair_valid()
@@ -887,9 +1114,9 @@ rollback_link_transaction()
     preflight_link_transaction || return 1
     [ -e "$snap/ready" ] || return 0
     prior="$(sed -n '1p' "$snap/policy")"
-    stop_owned_service
+    stop_owned_service || return $?
+    stop_owned_detached_link_daemons || rc=$?
     ctl="$here/ableton-linkctl"; [ -x "$ctl" ] || ctl="$linkctl"
-    [ ! -x "$ctl" ] || "$ctl" stop || rc=$?
     restore_firewall_snapshot "$snap/firewall" || rc=$?
     restore_legacy_network "$snap/legacy" || rc=$?
     if [ -e "$snap/unit" ]; then
@@ -964,6 +1191,7 @@ commit_link_transaction()
 
 plan_link()
 {
+    local output=""
     echo "PLAN: Ableton Link"
     if [ "$action" = plan-disable ]; then
         printf '  set persistent policy off: %s\n' "$ABLETON_CONFIG_FILE"
@@ -978,17 +1206,26 @@ plan_link()
     printf '  set persistent policy %s: %s\n' "$mode" "$ABLETON_CONFIG_FILE"
     [ ! -e "$legacy_hook" ] || printf '  remove recognisable legacy hook/route: %s\n' "$legacy_hook"
     if command -v ufw >/dev/null 2>&1 && grep -qsi '^ENABLED=yes' /etc/ufw/ufw.conf; then
-        if ableton_run_bounded 20 ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'; then
-            echo '  keep pre-existing UFW UDP 20808 rule; record no ownership'
+        if output="$(ableton_run_bounded 20 ufw status 2>/dev/null)"; then
+            if printf '%s\n' "$output" \
+                | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'; then
+                echo '  keep pre-existing UFW UDP 20808 rule; record no ownership'
+            else
+                echo '  add UFW UDP 20808 rule; record project ownership'
+            fi
         else
-            echo '  add UFW UDP 20808 rule; record project ownership'
+            echo '  inspect UFW UDP 20808 with sudo; add it only when absent'
         fi
     elif command -v firewall-cmd >/dev/null 2>&1 \
          && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
-        if ableton_run_bounded 20 firewall-cmd --permanent --query-port=20808/udp >/dev/null 2>&1; then
-            echo '  keep pre-existing firewalld UDP 20808 rule; record no ownership'
+        if output="$(ableton_run_bounded 20 firewall-cmd --permanent --list-ports 2>/dev/null)"; then
+            if printf '%s\n' "$output" | tr ' ' '\n' | grep -qxF 20808/udp; then
+                echo '  keep pre-existing firewalld UDP 20808 rule; record no ownership'
+            else
+                echo '  add/reload firewalld UDP 20808 rule; record project ownership'
+            fi
         else
-            echo '  add/reload firewalld UDP 20808 rule; record project ownership'
+            echo '  inspect firewalld UDP 20808 with sudo; add it only when absent'
         fi
     else
         echo '  no active UFW/firewalld mutation'
@@ -1029,6 +1266,39 @@ link_enable_target_safe_for_restore()
         || post="$(sed -n '1p' "$snapshot/$label.post")"
     [ "$current" = absent ] || [ "$current" = "$prior" ] \
         || { [ -n "$post" ] && [ "$current" = "$post" ]; }
+}
+
+populate_link_enable_snapshot()
+{
+    local snapshot="$1"
+    if [ -e "$state_file" ]; then
+        cp -a -- "$state_file" "$snapshot/firewall" || return 1
+    fi
+    snapshot_legacy_network "$snapshot/legacy" || return 1
+    if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
+        cp -a -- "$unit_file" "$snapshot/unit" || return 1
+    fi
+    if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
+        cp -a -- "$ABLETON_CONFIG_FILE" "$snapshot/config" || return 1
+    fi
+}
+
+LINK_ENABLE_UNSTARTED_SNAPSHOT=""
+# ShellCheck does not follow function names stored in traps.
+# shellcheck disable=SC2329
+cleanup_unstarted_link_enable_snapshot()
+{
+    local rc=$?
+    trap - EXIT
+    case "$LINK_ENABLE_UNSTARTED_SNAPSHOT" in
+        "$ABLETON_STATE_HOME"/.link-enable.*)
+            if [ -d "$LINK_ENABLE_UNSTARTED_SNAPSHOT" ] \
+               && [ ! -L "$LINK_ENABLE_UNSTARTED_SNAPSHOT" ] \
+               && ! rm -rf -- "$LINK_ENABLE_UNSTARTED_SNAPSHOT"; then
+                echo "!! failed to remove unstarted Link recovery snapshot: $LINK_ENABLE_UNSTARTED_SNAPSHOT" >&2
+            fi ;;
+    esac
+    exit "$rc"
 }
 
 restore_link_enable_snapshot()
@@ -1105,7 +1375,7 @@ enable_link()
 {
     [ -x "$linkctl" ] || { echo "!! ableton-linkctl is missing at $linkctl; install Link assets first" >&2; return 1; }
     echo "== enable Ableton Link ($mode) =="
-    local snapshot unit_existed=0 config_existed=0 rc=0
+    local snapshot unit_existed=0 config_existed=0 rc=0 stop_rc=0
     validate_link_firewall_state || {
         echo "!! unsafe Link firewall ownership record: $state_file" >&2
         return 1
@@ -1128,14 +1398,24 @@ enable_link()
     fi
     ableton_mark_state_home
     snapshot="$(mktemp -d "$ABLETON_STATE_HOME/.link-enable.XXXXXX")"
-    if [ -e "$state_file" ]; then cp -a -- "$state_file" "$snapshot/firewall"; fi
-    snapshot_legacy_network "$snapshot/legacy"
+    LINK_ENABLE_UNSTARTED_SNAPSHOT="$snapshot"
+    trap cleanup_unstarted_link_enable_snapshot EXIT
+    if ! populate_link_enable_snapshot "$snapshot"; then
+        if ! rm -rf -- "$snapshot"; then
+            echo "!! failed to remove unstarted Link recovery snapshot: $snapshot" >&2
+        fi
+        LINK_ENABLE_UNSTARTED_SNAPSHOT=""
+        trap - EXIT
+        return 1
+    fi
     if [ -e "$unit_file" ] || [ -L "$unit_file" ]; then
-        cp -a -- "$unit_file" "$snapshot/unit"; unit_existed=1
+        unit_existed=1
     fi
     if [ -e "$ABLETON_CONFIG_FILE" ] || [ -L "$ABLETON_CONFIG_FILE" ]; then
-        cp -a -- "$ABLETON_CONFIG_FILE" "$snapshot/config"; config_existed=1
+        config_existed=1
     fi
+    LINK_ENABLE_UNSTARTED_SNAPSHOT=""
+    trap - EXIT
     remove_owned_legacy_hook || rc=$?
     if [ "$rc" -eq 0 ]; then configure_firewall || rc=$?; fi
     if [ "$rc" -eq 0 ]; then
@@ -1162,13 +1442,31 @@ enable_link()
             session)
                 # Registration is harmless, but session policy must never leave the
                 # always-on unit enabled or running.
-                ableton_run_bounded 20 systemctl --user disable --now ableton-linkd.service >/dev/null 2>&1 || true ;;
+                if command -v systemctl >/dev/null 2>&1; then
+                    ableton_run_bounded 20 systemctl --user disable --now \
+                        ableton-linkd.service >/dev/null 2>&1 || rc=$?
+                fi ;;
             always)
-                ableton_run_bounded 20 systemctl --user enable --now ableton-linkd.service || rc=$? ;;
+                if ! command -v systemctl >/dev/null 2>&1; then
+                    echo "!! always-on Link policy requires systemd user services" >&2
+                    rc=127
+                else
+                    ableton_run_bounded 20 systemctl --user enable --now \
+                        ableton-linkd.service || rc=$?
+                fi ;;
         esac
     fi
     if [ "$rc" -ne 0 ]; then
-        stop_owned_service
+        stop_owned_service || stop_rc=$?
+        if [ "$stop_rc" -ne 0 ]; then
+            ABLETON_LINK_ENABLE_RECOVERY_ERROR="Link service could not be stopped"
+            printf 'operation=enable\noperation_exit=%s\nrestoration_complete=no\nrestoration_error=%s\n' \
+                "$rc" "$ABLETON_LINK_ENABLE_RECOVERY_ERROR" \
+                > "$snapshot/FAILURE" 2>/dev/null || true
+            echo "!! Link enable failed and automatic restoration is incomplete: $ABLETON_LINK_ENABLE_RECOVERY_ERROR" >&2
+            echo "!! recovery snapshot kept at $snapshot" >&2
+            return "$rc"
+        fi
         if restore_link_enable_snapshot "$snapshot" "$unit_existed" "$config_existed" 1 "$rc"; then
             echo "!! Link enable failed; the previous Link state was restored" >&2
         else
@@ -1177,8 +1475,11 @@ enable_link()
         fi
         return "$rc"
     fi
-    rm -rf -- "$snapshot"
-    rm -f -- "$ABLETON_DATA_HOME/link-configured"
+    if ! rm -f -- "$ABLETON_DATA_HOME/link-configured" \
+       || ! rm -rf -- "$snapshot"; then
+        echo "!! Link is enabled, but its recovery snapshot could not be retired: $snapshot" >&2
+        return 1
+    fi
     echo "OK: Link policy is $mode"
 }
 
@@ -1186,8 +1487,24 @@ case "$action" in
     enable) enable_link ;;
     disable) disable_link ;;
     status)
+        validate_link_firewall_state || {
+            echo "!! unsafe Link firewall ownership record: $state_file" >&2
+            exit 1
+        }
         printf 'policy: %s\n' "$ABLETON_LINK_MODE"
-        if [ -x "$linkctl" ]; then "$linkctl" status | sed '1d'; else echo 'state: not installed'; fi
+        status_pid=""
+        if [ "$ABLETON_LINK_MODE" = always ] && loaded_unit_is_owned \
+           && ableton_run_bounded 20 systemctl --user is-active --quiet \
+                ableton-linkd.service 2>/dev/null; then
+            echo 'state: running (systemd)'
+        elif status_pid="$(owned_link_pids | head -n 1)" \
+             && [ -n "$status_pid" ]; then
+            printf 'state: running (pid %s)\n' "$status_pid"
+        elif [ -x "$ABLETON_LINKD" ]; then
+            echo 'state: stopped'
+        else
+            echo 'state: not installed'
+        fi
         [ -r "$state_file" ] && printf 'firewall: %s\n' "$(sed -n '1p' "$state_file")" || echo 'firewall: unrecorded'
         ;;
     snapshot) snapshot_link_transaction ;;

@@ -357,6 +357,26 @@ else
 fi
 ABLETON_TRANSACTION_DIR="$transaction_dir/prefix-host"
 export ABLETON_TRANSACTION_DIR
+stage_prefix=""
+# ShellCheck does not follow function names stored in traps.
+# shellcheck disable=SC2329
+cleanup_unstarted_prefix_transaction()
+{
+    local rc=$? restore_ok=1
+    trap - EXIT
+    if [ "$rc" -ne 0 ] && [ -e "$ABLETON_TRANSACTION_DIR/active" ]; then
+        prefix_transaction_rollback "$transaction_dir" || restore_ok=0
+    fi
+    if [ "$rc" -ne 0 ] && [ "$own_prefix_transaction" -eq 1 ] \
+       && [ "$restore_ok" -eq 1 ]; then
+        rm -rf -- "$transaction_dir" || restore_ok=0
+    fi
+    if [ "$restore_ok" -ne 1 ]; then
+        echo "!! prefix setup failed before staging and its transaction needs recovery: $transaction_dir" >&2
+    fi
+    exit "$rc"
+}
+trap cleanup_unstarted_prefix_transaction EXIT
 [ -e "$ABLETON_TRANSACTION_DIR" ] || mkdir -- "$ABLETON_TRANSACTION_DIR"
 ableton_txn_init
 ableton_validate_install_state_journals

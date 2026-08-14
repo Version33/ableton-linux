@@ -473,6 +473,8 @@ if ! run_runtime_installer_fixture "$base" >"$base/out" 2>"$base/err"; then
     sed -n '1,120p' "$base/err" >&2
     fail "runtime update failed while replacing rollback metadata"
 fi
+[ "$(grep -c '^== validate runtime payload:' "$base/out")" -eq 1 ] \
+    || fail "runtime install validates and extracts its payload more than once"
 saved_runtime="$(find_saved_runtime "$base")" \
     || fail "runtime update did not retain a saved runtime"
 saved_meta="$saved_runtime/.ableton-linux-rollback"
@@ -2893,6 +2895,8 @@ run_isolated "$base" env PATH="$base/fakebin:$PATH" \
     bash "$base/kit/scripts/installer.sh" plan runtime install \
     --runtime-root "$base/runtime" --yes >"$base/out" 2>"$base/err" \
     || fail "public runtime plan failed"
+[ "$(grep -c '^== validate runtime payload:' "$base/out")" -eq 1 ] \
+    || fail "public runtime plan validates and extracts its payload more than once"
 if find "$base/tmp" -mindepth 1 -maxdepth 1 \
     \( -name 'ableton-install-plan.*' -o -name 'ableton-runtime-validate.*' \) \
     -print -quit | grep -q .; then

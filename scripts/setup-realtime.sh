@@ -30,6 +30,15 @@
 #            DESTDIR=path           stage the drop-ins under path only; no live
 #                                   host changes (packaging/testing)
 set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+for config_lib in "$here/lib/config.sh" "$here/config.sh" \
+                  "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
+    if [ -r "$config_lib" ]; then . "$config_lib"; break; fi
+done
+declare -F ableton_sudo_run_bounded >/dev/null 2>&1 || {
+    echo "!! setup-realtime.sh cannot find its sudo helper" >&2
+    exit 1
+}
 
 case "${1:-}" in
     "") ;;
@@ -43,32 +52,35 @@ SYSCTL="$DESTDIR/etc/sysctl.d/90-ableton-rt.conf"
 # Installed by versions of this script before 2026-08; removed in step 3.
 OLD_GOV_UNIT=/etc/systemd/system/ableton-cpufreq-performance.service
 
-sudo=()
-if [ "$(id -u)" -ne 0 ]; then
-    command -v sudo >/dev/null 2>&1 || { echo "!! setup-realtime.sh needs root and sudo is not installed — rerun as root" >&2; exit 1; }
-    sudo true 2>/dev/null || { echo "!! setup-realtime.sh needs root: sudo authentication failed (rerun via sudo or as root)" >&2; exit 1; }
-    sudo=(sudo)
-fi
+as_root()
+{
+    if [ -n "$DESTDIR" ] || [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        ableton_run_bounded 120 "$@"
+    else
+        ableton_sudo_run_bounded 120 "$@"
+    fi
+}
 
 install_dropin() {  # $1 = destination path; file content on stdin
-    local tmp
+    local tmp rc=0
     tmp="$(mktemp)"
-    cat > "$tmp"
-    "${sudo[@]}" install -D -m 644 "$tmp" "$1"
+    cat > "$tmp" || rc=$?
+    [ "$rc" -ne 0 ] || as_root install -D -m 644 "$tmp" "$1" || rc=$?
     rm -f "$tmp"
+    return "$rc"
 }
 
 echo "== [1/5] RT privileges: $RT_GROUP group + PAM limits =="
 if [ -n "$DESTDIR" ]; then
     echo "   staged mode (DESTDIR=$DESTDIR) — skipping groupadd/usermod"
 else
-    getent group "$RT_GROUP" >/dev/null || "${sudo[@]}" groupadd -r "$RT_GROUP"
+    getent group "$RT_GROUP" >/dev/null || as_root groupadd -r "$RT_GROUP"
     # Under sudo $USER is root; the invoking user is in SUDO_USER.
     rt_user="${SUDO_USER:-${USER:-$(id -un)}}"
     if id -nG "$rt_user" | grep -qw "$RT_GROUP"; then
         echo "   $rt_user is already in the $RT_GROUP group"
     else
-        "${sudo[@]}" usermod -aG "$RT_GROUP" "$rt_user"
+        as_root usermod -aG "$RT_GROUP" "$rt_user"
         echo "   added $rt_user to the $RT_GROUP group (takes effect on re-login)"
     fi
 fi
@@ -86,7 +98,7 @@ vm.swappiness = 10
 EOF
 echo "   wrote $SYSCTL"
 if [ -z "$DESTDIR" ]; then
-    "${sudo[@]}" sysctl --system >/dev/null
+    as_root sysctl --system >/dev/null
     echo "   applied to the running kernel (sysctl --system)"
 fi
 
@@ -101,9 +113,9 @@ if [ -n "$DESTDIR" ]; then
     echo "   staged mode — nothing to stage (the launcher holds the profile per session)"
 else
     if [ -f "$OLD_GOV_UNIT" ]; then
-        "${sudo[@]}" systemctl disable "$(basename "$OLD_GOV_UNIT")" >/dev/null 2>&1 || true
-        "${sudo[@]}" rm -f "$OLD_GOV_UNIT"
-        "${sudo[@]}" systemctl daemon-reload
+        as_root systemctl disable "$(basename "$OLD_GOV_UNIT")" >/dev/null
+        as_root rm -f "$OLD_GOV_UNIT"
+        as_root systemctl daemon-reload
         echo "   removed the boot-time performance-governor unit an earlier version installed"
         echo "   (the governor keeps today's setting until reboot; from now on your"
         echo "    desktop's power settings own it outside Live sessions)"
@@ -137,7 +149,7 @@ EOF
 fi
 if [ -z "$DESTDIR" ]; then
     if systemctl cat rtirq.service >/dev/null 2>&1; then
-        if "${sudo[@]}" systemctl enable rtirq.service >/dev/null 2>&1; then
+        if as_root systemctl enable rtirq.service >/dev/null 2>&1; then
             echo "   rtirq.service enabled"
         else
             echo "-- rtirq.service is installed but could not be enabled — enable it by hand"
