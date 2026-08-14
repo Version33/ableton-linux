@@ -45,12 +45,10 @@ case "$action" in
         ableton_install_lock_acquire
         ableton_validate_install_state_journals ;;
     status)
-        # A read-only query never takes the exclusive lock: status has to answer
-        # during an install, which is when someone asks.  It validates the
-        # ownership manifest it reads, and stops there.  An install writes the
-        # pre-install journals backup first and index second, so an unlocked
-        # reader can catch that pair mid-write and fail for no reason; the
-        # manifest itself arrives by rename and always reads whole.
+        # status reads the manifest, so check it.  Taking the install lock would
+        # fail status during the install someone is asking about.  Skip the
+        # prestate journals: status never reads them, and an install writes them
+        # in two steps, so an unlocked read can catch them half written.
         ableton_validate_ownership_manifest ;;
 esac
 

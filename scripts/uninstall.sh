@@ -713,13 +713,12 @@ mime_id_is_managed()
     return 1
 }
 
-# Restoration takes two passes.  Neither position can do the whole job.
+# Restoration takes two passes: one needs our desktop entries present, the other
+# needs them gone.
 #
-# This pass runs while the project's own desktop entries still exist.  Delete
-# them first and xdg-mime reports no default for a line that still names one, so
-# a query alone cannot see the stale entry.  Read the mimeapps.list line as
-# well, then verify by re-reading that file: a query here still resolves our own
-# entries through mimeinfo.cache.
+# This is the first.  Delete an entry and xdg-mime reports no default for a line
+# that still names it, which is how stale lines survived.  Clear here, and verify
+# by re-reading mimeapps.list, because a query still resolves the live entries.
 clear_mime_defaults()
 {
     local type prior explicit current mimeapps
