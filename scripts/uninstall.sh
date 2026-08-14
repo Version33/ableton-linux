@@ -689,16 +689,14 @@ mime_clear_default()
         rm -f -- "$tmp"
         return 1
     fi
-    # Write back through the existing inode so the file keeps its permissions.
-    # The redirection truncates the list first, so keep the rewritten copy when
-    # the write fails: it is then the only complete version left.
-    if ! cat -- "$tmp" > "$file"; then
-        echo "!! $file is now incomplete; restore it from $tmp" >&2
+    # Copy the original mode so mv is fully atomic and mode-preserving.  The old
+    # sed -i also renamed into place; cat > "$file" truncates first, so a kill
+    # mid-write leaves the user's list empty.  Surviving a symlinked
+    # mimeapps.list is a bonus, not the main reason.
+    if ! chmod --reference="$file" "$tmp" || ! mv -f -- "$tmp" "$file"; then
+        echo "!! could not restore mimeapps.list from $tmp" >&2
         return 1
     fi
-    # A temporary file that outlives the rewrite must not turn a completed clear
-    # into a reported failure.
-    rm -f -- "$tmp" || true
     return 0
 }
 

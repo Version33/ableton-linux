@@ -602,8 +602,7 @@ disable_link()
     remove_owned_firewall
     if unit_is_owned; then
         rm -f -- "$unit_file"
-        # install_unit created this directory, so clear it when nothing else
-        # was placed there. Its parents belong to the user.
+        # Clear the directory if nothing else is using it.
         rmdir --ignore-fail-on-non-empty -- "$unit_dir" 2>/dev/null || true
     fi
     if command -v systemctl >/dev/null 2>&1; then
