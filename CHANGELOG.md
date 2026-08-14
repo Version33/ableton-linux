@@ -62,7 +62,8 @@
 
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
   navigation. Middle-button dragging moves the content with the pointer on
-  both axes. A plain middle click remains a click.
+  both axes. Holding Ctrl during that drag zooms instead, with a drag towards
+  the top of the screen zooming in. A plain middle click remains a click.
 - Scrolling sends whole wheel notches by default.
   `WINE_X11_SMOOTH_SCROLLING=precise` restores fractional scrolling; the
   held-button repair below keeps it from making faders and knobs cross their

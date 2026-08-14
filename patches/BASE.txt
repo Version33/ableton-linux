@@ -433,7 +433,10 @@ Apply them in sequence with the rest of the series.
   Set the default rate to 4.0 and raise the continuation limits. Stop a second
   touch from speeding up a left- or right-button control drag. Keep one-finger
   dragging unchanged, and invert both middle-button navigation axes so content
-  follows the pointer. See
+  follows the pointer. Deliver the vertical wheel with the opposite sign while
+  Ctrl is held, so a Ctrl+middle drag towards the top of the screen zooms in;
+  the horizontal wheel is unchanged and the accumulator keeps the pan sign, so
+  a modifier change mid-drag strands no partial notch. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0098`: select XI motion for smooth scrolling only while no ordinary core
   button is held. A core press replaces the window's XI mask without motion;

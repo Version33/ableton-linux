@@ -13,8 +13,13 @@ each axis to 4,800 units, the total to 7,200 units and each run to 384
 updates. Keep the timer, cancellation and missed-frame rules.
 
 Invert both middle-drag navigation axes so dragged content follows the
-pointer. Ignore pointer motion from a smooth-scroll report during an
-ordinary held-button drag. Keep ordinary drag and physical wheel handling.
+pointer. Deliver the vertical wheel with the opposite sign while Ctrl is
+held: an application reads Ctrl+wheel as a zoom, whose direction convention
+is the reverse of the pan, so a drag towards the top of the screen zooms in.
+The accumulator keeps the pan sign throughout, so releasing or pressing Ctrl
+mid-drag cannot strand a partial notch. The horizontal wheel is unchanged.
+Ignore pointer motion from a smooth-scroll report during an ordinary
+held-button drag. Keep ordinary drag and physical wheel handling.
 ---
  dlls/winex11.drv/mouse.c       | 159 +++++++++++++++++----------------
  dlls/winex11.drv/x11drv.h      |   1 +
@@ -60,7 +65,7 @@ index 729ec0b..ca2c580 100644
      if (!drag->moved)
      {
          if (abs( pt.x - drag->origin.x ) <= drag->slop_x &&
-@@ -1697,8 +1684,15 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
+@@ -1697,8 +1684,20 @@ static BOOL middle_drag_motion( XMotionEvent *event, POINT pt, UINT time )
          drag->moved = TRUE;
      }
  
@@ -75,6 +80,11 @@ index 729ec0b..ca2c580 100644
 +
 +    delta_y = middle_drag_delta( &drag->accum_y, notched );  /* dragging down scrolls up */
 +    delta_x = middle_drag_delta( &drag->accum_x, notched );  /* dragging right scrolls left */
++    /* An application reads Ctrl+wheel as a zoom, whose direction convention is
++     * the reverse of the pan: a drag towards the top of the screen zooms in.
++     * Read the physical Ctrl rather than the X modifier state, so a gesture's
++     * synthetic Ctrl hold cannot reverse a drag the user did not modify. */
++    if (NtUserGetAsyncKeyState( VK_CONTROL ) & 0x8000) delta_y = -delta_y;
  
      if (delta_y)
      {

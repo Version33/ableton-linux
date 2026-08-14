@@ -689,6 +689,14 @@ static void check_direct_packet_bounds(const char *stack, const char *safety,
                        "delta_y=middle_drag_delta(&drag->accum_y,notched);");
     ok &= require_text("middle-drag horizontal movement is bounded before delivery", final,
                        "delta_x=middle_drag_delta(&drag->accum_x,notched);");
+    ok &= require_text("Ctrl inverts the vertical middle-drag sign", final,
+                       "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_y=-delta_y;");
+    ok &= require_text_between("Ctrl inverts only after the vertical bound", final,
+                               "delta_y=middle_drag_delta(&drag->accum_y,notched);",
+                               "if(delta_y)",
+                               "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_y=-delta_y;");
+    ok &= forbid_text("Ctrl does not touch the horizontal sign", final,
+                      "if(NtUserGetAsyncKeyState(VK_CONTROL)&0x8000)delta_x=-delta_x;");
     ok &= require_text_between("pinch reports are limited to one notch", stack,
                                "staticBOOLX11DRV_GesturePinchEvent(",
                                "pthread_mutex_lock(&pinch_mutex);",

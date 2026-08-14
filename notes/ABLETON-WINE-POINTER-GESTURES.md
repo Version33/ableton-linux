@@ -9,6 +9,8 @@ By default, Live provides:
 - whole-notch vertical and horizontal scrolling;
 - pinch zoom;
 - middle-button drag navigation that moves content with the pointer;
+- Ctrl held during a middle-button drag zooms instead of panning, and a drag
+  towards the top of the screen zooms in;
 - scrolling inertia after a quick release;
 - continued movement after releasing a moving middle-button drag; and
 - normal mouse-wheel clicks while another button is held, except during
