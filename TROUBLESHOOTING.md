@@ -12,6 +12,41 @@ sh ~/Downloads/install-ableton-latest.run update
 This project is in active, rapid development and a newer version may
 have already fixed your issue.
 
+## Contents
+
+- [Installation and updates](#installation-and-updates)
+  - [The installer does not finish after Live installs](#the-installer-does-not-finish-after-live-installs)
+  - [The installer says PipeWire is too old](#the-installer-says-pipewire-is-too-old)
+- [Live versions and launching](#live-versions-and-launching)
+  - [The launcher finds more than one Live installation](#the-launcher-finds-more-than-one-live-installation)
+  - [Live 11: Max for Live fails after the first launch](#live-11-max-for-live-fails-after-the-first-launch)
+  - [Live 11: media files can crash Live](#live-11-media-files-can-crash-live)
+- [Sound and PipeASIO](#sound-and-pipeasio)
+  - [Live has no sound](#live-has-no-sound)
+  - [I can't change any audio settings in Live](#i-cant-change-any-audio-settings-in-live)
+  - [High audio latency with Live](#high-audio-latency-with-live)
+  - [Audio crackling and distortion issues](#audio-crackling-and-distortion-issues)
+  - [Audio cuts out for a few seconds, or plays at the wrong speed](#audio-cuts-out-for-a-few-seconds-or-plays-at-the-wrong-speed)
+- [Performance, visuals and the Live interface](#performance-visuals-and-the-live-interface)
+  - [Live is using lots of CPU, even on small Sets](#live-is-using-lots-of-cpu-even-on-small-sets)
+  - [Live is the wrong size, or looks blurry](#live-is-the-wrong-size-or-looks-blurry)
+- [Plugins and Max 4 Live devices](#plugins-and-max-4-live-devices)
+  - [A plugin's installer won't start](#a-plugins-installer-wont-start)
+  - [My plugin won't activate, or its copy protection fails](#my-plugin-wont-activate-or-its-copy-protection-fails)
+  - [A plugin I installed doesn't appear in Live](#a-plugin-i-installed-doesnt-appear-in-live)
+  - [A plugin window keeps resizing itself, or looks smeared](#a-plugin-window-keeps-resizing-itself-or-looks-smeared)
+  - [A plugin loads into a Live channel fine, and can play sound, but fails to open its window](#a-plugin-loads-into-a-live-channel-fine-and-can-play-sound-but-fails-to-open-its-window)
+  - [My Linux VST or CLAP plugins don't appear in Live](#my-linux-vst-or-clap-plugins-dont-appear-in-live)
+- [Inputs (mouse and keyboard) and devices (MIDI and controllers)](#inputs-mouse-and-keyboard-and-devices-midi-and-controllers)
+  - [Live ignores or does something unexpected when you use a keyboard shortcut](#live-ignores-or-does-something-unexpected-when-you-use-a-keyboard-shortcut)
+  - [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse)
+  - [My MIDI controller doesn't show up in Live](#my-midi-controller-doesnt-show-up-in-live)
+  - [Push 2 does not connect](#push-2-does-not-connect)
+  - [My Push 3 or Move doesn't work](#my-push-3-or-move-doesnt-work)
+- [Ableton Link](#ableton-link)
+  - [Ableton Link does not find peers](#ableton-link-does-not-find-peers)
+- [Report a problem](#report-a-problem)
+
 ## Installation and updates
 
 ### The installer does not finish after Live installs
@@ -305,26 +340,34 @@ env PIPEASIO_PREFERRED_BUFFERSIZE=512 ableton-live
 
 #### Check that your processor is running at full speed
 
-A processor that slows itself down to save power will not keep up with a small
-buffer, and this is one of the most common causes we see. The launcher moves
-your computer to its performance power profile whenever Live is open, but it
-needs the `powerprofilesctl` command to do it. The
+Many versions of Linux use aggressive power saving techniques - including CPU throttling
+- to save energy use. But a processor that slows itself down to save power will struggle
+to play audio properly, and when this happens, Live's audio starts to distort and crackle.
+
+By default, the launcher switches your Linux computer to its performance power profile 
+whenever Live is open, but it needs the `powerprofilesctl` command to do it. The
 [high audio latency](#high-audio-latency-with-live) entry above sets that up,
 and turns on real-time audio mode while you are there.
 
-#### Give Live the machine
+In most distros, you can manually set the power mode in your settings.
+
+#### Give Live as much of your system's resources as possible
 
 Everything else running on your computer competes with Live for the same
-processor time. Close other audio applications, web browsers, and anything
-syncing files in the background, then try again. If the crackling only starts
-once a set gets busy, freeze or resample your heaviest tracks as you would on
+processor time. 
+
+To see if this is affecting your Live audio output, close other audio 
+applications, web browsers, and anything
+syncing files in the background, then close and re-open Live. 
+If the crackling only starts once a set gets busy, freeze or resample 
+your heaviest tracks as you would on
 any other system.
 
 #### If you use two separate audio devices
 
-Using one device for input and another for output is supported, and it should
-sound no different to using one. If you are hearing audio artifacts when using
-two different devices for input and outpuit, then this is a bug and we would like
+In rare cases, sometimes splitting your audio inputs and outputs on different devices
+can cause crackling. If you are hearing audio artifacts when using
+two different devices for input and output, then this is a bug and we would like
 to hear from you.
 
 Run the audio report and attach it when you
@@ -337,7 +380,9 @@ devices, your buffer, and the errors PipeWire logged:
 
 It helps to name your devices, so that PipeASIO cannot pick up a stale system
 default and drag a third clock into the graph. Run `wpctl status` to see what
-yours are called, then add them to `~/.config/pipeasio/config.ini`:
+yours are called, then add them to `~/.config/pipeasio/config.ini`. 
+
+Here's an example:
 
 ```ini
 [pipeasio]
@@ -564,14 +609,11 @@ If the plugin is in the right folder and still does not appear,
 [open an issue](https://github.com/shibco/ableton-linux/issues) and tell us the
 plugin, its format, and where its installer put it.
 
-### A plugin window keeps resizing itself, or looks smeared
+### A plugin window keeps resizing itself, is smaller than its window frame, or has visible corruption
 
-The plugin's window grows or jumps each time you open it, or pieces of the old
-picture stay on screen when it redraws. Pianoteq is the plugin we have
-confirmed this on.
-
-Right-click the plugin's title bar in Live's device rack, turn off
-**Auto-Scale Plugin Window**, then close the plugin and open it again.
+If you're having issues with a plugin's window, a common fix is to right-click the plugin's 
+title bar in Live's device rack, turn off **Auto-Scale Plugin Window**, 
+then close the plugin and open it again.
 
 Only some plugins are affected, so leave the setting alone for the rest.
 
@@ -580,13 +622,15 @@ For technical details about this, please see the
 
 ### A plugin loads into a Live channel fine, and can play sound, but fails to open its window
 
-To diagnose this, start by confirming the issue in the log:
+To diagnose this, start by running the affected plugin in Live, and then in a separate terminal window,
+run this command:
 
 ```bash
 grep -i "Failed to realize\|glActiveTexture" ~/.local/state/ableton-wine/logs/live.log
 ```
 
-If after running that command, you receive output, this is a known issue. To mitigate it, run:
+If after running that command, you receive output, this is a known issue. To mitigate it, run this command
+in a terminal window:
 
 ```bash
 WINEPREFIX=~/.wine-ableton ~/.local/opt/wine-d2d1-nspa-11.13/bin/wine reg add 'HKCU\Software\Wine\X11 Driver' /v UseEGL /d N /f
@@ -605,7 +649,7 @@ graphics card, driver version, and whether your session is X11 or Wayland.
 
 ### My Linux VST or CLAP plugins don't appear in Live
 
-Live runs as a Windows program here, so it only loads Windows plugins. Your
+Live runs as a Windows program, so it only loads Windows plugins. Your
 Linux-native VST and CLAP plugins will not show up in Live's browser, and no
 setting will change that yet. We are working on implementing support for 
 Linux native plugins.
