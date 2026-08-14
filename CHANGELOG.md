@@ -40,7 +40,8 @@
 ### Pointer input
 
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
-  navigation. A plain middle click remains a click.
+  navigation. Middle-button dragging moves the content with the pointer on
+  both axes. A plain middle click remains a click.
 - Fixed left- and right-button control drags speeding up when a second touch
   starts scrolling. Normal one-finger dragging and middle-button navigation
   remain unchanged.
