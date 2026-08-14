@@ -541,17 +541,17 @@ ableton_timeout_value()
     printf '%s\n' "$value"
 }
 
-ableton_run_bounded()
+ableton_run_bounded_impl()
 {
-    local seconds="$1" inherited observed expected; shift
+    local foreground="$1" seconds="$2" inherited observed expected; shift 2
     seconds="$(ableton_timeout_value "$seconds" timeout 1 86400)" || return 2
     command -v timeout >/dev/null 2>&1 || {
         ableton_config_error "GNU timeout is required to supervise external processes"
         return 127
     }
-    # The parent keeps the lifecycle lock.  External commands—especially Wine
-    # helpers that may daemonize—must not inherit its open descriptor and keep
-    # later lifecycle commands locked out after this process exits.
+    # The parent keeps the lifecycle lock. Close its descriptor before external
+    # commands start. Wine helpers can start background processes that would
+    # keep later lifecycle commands locked after this process exits.
     (
         inherited="${ABLETON_INSTALL_LOCK_FD:-}"
         case "$inherited" in
@@ -565,8 +565,52 @@ ableton_run_bounded()
                 fi
                 ;;
         esac
+        if [ "$foreground" -eq 1 ]; then
+            # Interactive authentication must stay in the terminal's foreground
+            # process group.  Use this only for commands without descendants that
+            # also need supervising: --foreground deliberately does not time out
+            # those descendants.
+            exec timeout --foreground --signal=TERM --kill-after=5s "${seconds}s" "$@"
+        fi
         exec timeout --signal=TERM --kill-after=5s "${seconds}s" "$@"
     )
+}
+
+ableton_run_bounded()
+{
+    ableton_run_bounded_impl 0 "$@"
+}
+
+ableton_run_foreground_bounded()
+{
+    ableton_run_bounded_impl 1 "$@"
+}
+
+ableton_sudo_authenticate_bounded()
+{
+    local seconds="$1"
+    # Never let sudo fall back to a password prompt while timeout has placed it
+    # in a background process group.  Reuse a valid credential noninteractively;
+    # otherwise perform only sudo's validation phase in the foreground.
+    if ableton_run_bounded "$seconds" sudo -n -v 2>/dev/null; then
+        return 0
+    fi
+    ableton_run_foreground_bounded "$seconds" sudo -v
+}
+
+ableton_sudo_run_authenticated_bounded()
+{
+    local seconds="$1"; shift
+    # Authentication happened in the foreground.  -n makes an expired or
+    # unusable credential fail instead of attempting another detached prompt.
+    ableton_run_bounded "$seconds" sudo -n "$@"
+}
+
+ableton_sudo_run_bounded()
+{
+    local seconds="$1"; shift
+    ableton_sudo_authenticate_bounded "$seconds" || return $?
+    ableton_sudo_run_authenticated_bounded "$seconds" "$@"
 }
 
 ableton_realpath_m()

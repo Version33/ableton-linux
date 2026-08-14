@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Link setup now accepts the `sudo` password without showing it before it adds
+  a UFW or firewalld rule.
+
 ## 2026.08.14.2
 
 - Registering the audio driver no longer reports failure after it succeeded.
