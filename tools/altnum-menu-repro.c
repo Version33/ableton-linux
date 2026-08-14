@@ -1,5 +1,5 @@
-/* Repro for the Alt+number menu-bar activation divergence (Mike Verdone,
- * 2026-08-06). A window whose wndproc swallows WM_SYSKEYDOWN/WM_SYSCHAR for
+/* Repro for the Alt+number menu-bar activation divergence. 
+ * A window whose wndproc swallows WM_SYSKEYDOWN/WM_SYSCHAR for
  * Alt+4 -- the way Live handles its "Move Focus to the Device View"
  * shortcut -- then watches what DefWindowProc does when Alt is released.
  *

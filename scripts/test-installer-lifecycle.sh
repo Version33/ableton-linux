@@ -86,6 +86,52 @@ run_isolated()
         XDG_RUNTIME_DIR="$base/run" TMPDIR="$base/tmp" "$@"
 }
 
+base="$(new_env sudo-tty-foreground)"
+mkdir -p "$base/fakebin"
+command -v script >/dev/null 2>&1 \
+    || fail "util-linux script is available for the sudo TTY regression check"
+cat > "$base/fakebin/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+    -n)
+        shift
+        if [ "${1:-}" = -v ]; then
+            printf 'validate-noninteractive\n' >> "${ABLETON_TEST_SUDO_LOG:?}"
+            exit 1
+        fi
+        printf 'run-noninteractive:%s\n' "$*" >> "${ABLETON_TEST_SUDO_LOG:?}"
+        exec "$@" ;;
+    -v)
+        pgrp="$(ps -o pgrp= -p "$$" | tr -d '[:space:]')"
+        tpgid="$(ps -o tpgid= -p "$$" | tr -d '[:space:]')"
+        printf 'authenticate-foreground:pgrp=%s:tpgid=%s\n' "$pgrp" "$tpgid" \
+            >> "${ABLETON_TEST_SUDO_LOG:?}"
+        [ -n "$pgrp" ] && [ "$pgrp" = "$tpgid" ] && [ "$tpgid" != -1 ] ;;
+    *) exit 2 ;;
+esac
+EOF
+cat > "$base/run-sudo-tty" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/config.sh"
+ableton_sudo_run_bounded 5 true
+EOF
+chmod +x "$base/fakebin/sudo" "$base/run-sudo-tty"
+printf -v tty_command '%q' "$base/run-sudo-tty"
+if ! env HOME="$base/home" PATH="$base/fakebin:$PATH" \
+    ABLETON_TEST_SUDO_LOG="$base/sudo.log" \
+    script -qec "$tty_command" /dev/null > "$base/out" 2> "$base/err"; then
+    fail "sudo authentication can read from the foreground terminal"
+fi
+grep -qxF 'validate-noninteractive' "$base/sudo.log" \
+    || fail "sudo authentication first reuses a cached credential without prompting"
+grep -q '^authenticate-foreground:pgrp=\([0-9][0-9]*\):tpgid=\1$' "$base/sudo.log" \
+    || fail "sudo password validation stays in the terminal foreground process group"
+grep -qxF 'run-noninteractive:true' "$base/sudo.log" \
+    || fail "the privileged command cannot fall back to a detached password prompt"
+ok "sudo authenticates in the foreground before the bounded noninteractive command"
+
 base="$(new_env help)"
 run_isolated "$base" bash "$here/installer.sh" --help > "$base/out"
 grep -q 'runtime install' "$base/out" || fail "help exposes subcommands"
@@ -536,6 +582,12 @@ esac
 EOF
 cat > "$base/fakebin/sudo" <<'EOF'
 #!/bin/sh
+case "${1:-}" in
+    -n)
+        shift
+        [ "${1:-}" != -v ] || exit 0 ;;
+    -v) exit 0 ;;
+esac
 exec "$@"
 EOF
 cat > "$base/fakebin/systemctl" <<'EOF'

@@ -6,9 +6,11 @@ Wine uses 120 units for one wheel step.
 
 By default, Live provides:
 
-- smooth vertical and horizontal scrolling;
+- fine vertical and horizontal scrolling;
 - pinch zoom;
 - middle-button drag navigation that moves content with the pointer;
+- Ctrl held during a middle-button drag zooms instead of panning, and a drag
+  towards the top of the screen zooms in;
 - scrolling inertia after a quick release;
 - continued movement after releasing a moving middle-button drag; and
 - normal mouse-wheel clicks while another button is held, except during
@@ -17,6 +19,21 @@ By default, Live provides:
 `TouchpadInertia` affects scrolling after release. `MiddleDragThrow` affects
 middle-button movement after release. Turning either one off leaves direct
 scrolling and direct middle-button navigation unchanged.
+
+`SmoothScrolling` defaults to `precise`. Selecting XI2 motion and button
+events on our own windows stops core event delivery for the device on those
+windows, and a button press then creates an implicit XI2 device grab.
+`X11DRV_SetCursorPos` and `grab_clipping_window` both take a core
+`XGrabPointer`, which fails against that grab, so while a button is held every
+warp is refused and cursor clipping is never established. Live drags a fader by
+re-anchoring the pointer with `SetCursorPos`, so each refused re-anchor left it
+accumulating raw physical motion and the control crossed its whole range from a
+small movement.
+
+The XI2 selection is dropped for the duration of a core drag, so a button press
+leaves the X server holding its stock grab and the core `XGrabPointer`
+succeeds. `precise` and `notched` therefore no longer refuse warps, and
+fractional scrolling is the default again.
 
 The XWayland correction for faders and knobs defaults to `auto`: it engages
 only after Wine observes failed pointer warps, never preemptively, so desktops
@@ -55,7 +72,7 @@ or `0` and every pointer feature above turns off regardless of any other
 source, restoring stock pointer behaviour for baseline comparisons. Wine
 reports the switch in the normal launch log.
 
-## Primary solution to issues associated with inerta work
+## Primary solution to issues associated with inertia work
 
 Pressing any ordinary mouse button suspends every optimisation in this series
 for the whole drag, on every desktop, from the moment Live loads. While a
@@ -169,7 +186,9 @@ with Live's Master fader low.
     drag one fader. Sensitivity must match the pointer and the fader must keep
     its value on release. With `WINEDEBUG=+cursor,+event`, the log must show
     `X server delivered core MotionNotify while XI scroll motion is suspended`
-    during the drag, proving the server owned the drag. Repeat with
+    during the drag, proving the server owned the drag. Setting
+    `SmoothScrolling=disabled` removes that line, because no XI scroll motion
+    is selected for the drag to suspend. Repeat with
     `WINE_X11_POINTER_FEATURES=disabled`; behaviour must be identical and
     equally free of acceleration or snap-back. Then repeat checks 1-5 for
     two-finger scroll, pinch, middle-drag pan and inertia outside drags.

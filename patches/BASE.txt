@@ -268,7 +268,11 @@ Apply them in sequence with the rest of the series.
   swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0072`: add six pointer settings and middle-button drag navigation. Keep
-  normal middle clicks and correct the pointer position after a drag. See
+  normal middle clicks and correct the pointer position after a drag.
+  `SmoothScrolling` defaults to `precise`. Selecting XI2 events on our own
+  windows makes a button press an implicit XI2 grab, which fails the core
+  `XGrabPointer` that `SetCursorPos` needs; `0098` suspends that selection
+  for the duration of a core drag, so the default is safe. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0073`: report vertical and horizontal wheel movement at the pointer's screen
   position. See
@@ -429,7 +433,10 @@ Apply them in sequence with the rest of the series.
   Set the default rate to 4.0 and raise the continuation limits. Stop a second
   touch from speeding up a left- or right-button control drag. Keep one-finger
   dragging unchanged, and invert both middle-button navigation axes so content
-  follows the pointer. See
+  follows the pointer. Deliver the vertical wheel with the opposite sign while
+  Ctrl is held, so a Ctrl+middle drag towards the top of the screen zooms in;
+  the horizontal wheel is unchanged and the accumulator keeps the pan sign, so
+  a modifier change mid-drag strands no partial notch. See
   `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0098`: select XI motion for smooth scrolling only while no ordinary core
   button is held. A core press replaces the window's XI mask without motion;

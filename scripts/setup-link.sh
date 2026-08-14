@@ -201,15 +201,15 @@ remove_owned_firewall()
     case "$state" in
         ufw-added)
             echo "-- removing the project-owned ufw allowance for UDP 20808"
-            ableton_run_bounded 120 sudo ufw delete allow 20808/udp || rc=$? ;;
+            ableton_sudo_run_bounded 120 ufw delete allow 20808/udp || rc=$? ;;
         firewalld-added)
             echo "-- removing the project-owned firewalld allowance for UDP 20808"
             if command -v firewall-cmd >/dev/null 2>&1 \
                && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
-                ableton_run_bounded 120 sudo firewall-cmd --permanent --remove-port=20808/udp || rc=$?
-                [ "$rc" -ne 0 ] || ableton_run_bounded 120 sudo firewall-cmd --reload || rc=$?
+                ableton_sudo_run_bounded 120 firewall-cmd --permanent --remove-port=20808/udp || rc=$?
+                [ "$rc" -ne 0 ] || ableton_sudo_run_bounded 120 firewall-cmd --reload || rc=$?
             elif command -v firewall-offline-cmd >/dev/null 2>&1; then
-                ableton_run_bounded 120 sudo firewall-offline-cmd --remove-port=20808/udp || rc=$?
+                ableton_sudo_run_bounded 120 firewall-offline-cmd --remove-port=20808/udp || rc=$?
             else
                 rc=127
             fi ;;
@@ -279,14 +279,14 @@ restore_legacy_network()
         return 1
     fi
     mode="$(stat -c '%a' "$snapshot.hook")"
-    ableton_run_bounded 120 sudo install -m "$mode" -- "$snapshot.hook" "$legacy_hook"
+    ableton_sudo_run_bounded 120 install -m "$mode" -- "$snapshot.hook" "$legacy_hook"
     route_line="$(sed -n '1p' "$snapshot.route" 2>/dev/null || true)"
     if [ -n "$route_line" ]; then
         local -a route_args=()
         read -r -a route_args <<< "$route_line"
         [ "${route_args[0]:-}" = 224.0.0.0/4 ] || {
             echo "!! refusing malformed legacy route snapshot" >&2; return 1; }
-        ableton_run_bounded 120 sudo ip route replace "${route_args[@]}"
+        ableton_sudo_run_bounded 120 ip route replace "${route_args[@]}"
     fi
 }
 
@@ -298,8 +298,8 @@ remove_owned_legacy_hook()
         return 0
     fi
     echo "-- removing the project-owned legacy multicast hook"
-    ableton_run_bounded 120 sudo rm -f -- "$legacy_hook"
-    ableton_run_bounded 120 sudo ip route del 224.0.0.0/4 >/dev/null 2>&1 || true
+    ableton_sudo_run_bounded 120 rm -f -- "$legacy_hook"
+    ableton_sudo_run_bounded 120 ip route del 224.0.0.0/4 >/dev/null 2>&1 || true
 }
 
 manifest_digest_for()
@@ -546,11 +546,12 @@ configure_firewall()
             echo "   ufw already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         else
             echo "   ufw is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            ableton_sudo_authenticate_bounded 120 || return $?
             write_link_firewall_state ufw-added
-            # Persist ownership before touching the firewall.  If sudo or ufw
-            # fails after making a partial change, the caller's recovery still
-            # has enough authority to remove only this attempted rule.
-            ableton_run_bounded 120 sudo ufw allow 20808/udp || return $?
+            # Authentication does not mutate the firewall.  Persist ownership
+            # after it succeeds but before ufw can make a partial change, so the
+            # caller's recovery can remove only this attempted rule.
+            ableton_sudo_run_authenticated_bounded 120 ufw allow 20808/udp || return $?
         fi
     elif command -v firewall-cmd >/dev/null 2>&1 \
          && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
@@ -559,11 +560,13 @@ configure_firewall()
             echo "   firewalld already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         else
             echo "   firewalld is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            ableton_sudo_authenticate_bounded 120 || return $?
             write_link_firewall_state firewalld-added
-            ableton_run_bounded 120 sudo firewall-cmd --permanent --add-port=20808/udp || return $?
+            ableton_sudo_run_authenticated_bounded 120 \
+                firewall-cmd --permanent --add-port=20808/udp || return $?
             # Ownership is already recorded before reload. If reload fails, the
             # caller's rollback can still remove the persistent rule.
-            ableton_run_bounded 120 sudo firewall-cmd --reload || return $?
+            ableton_sudo_run_bounded 120 firewall-cmd --reload || return $?
         fi
     else
         write_link_firewall_state none
@@ -578,17 +581,17 @@ restore_firewall_record()
     case "$prior" in
         ufw-added)
             if ! ableton_run_bounded 20 ufw status 2>/dev/null | grep -Eq '(^|[[:space:]])20808/udp([[:space:]]|$)'; then
-                ableton_run_bounded 120 sudo ufw allow 20808/udp || rc=$?
+                ableton_sudo_run_bounded 120 ufw allow 20808/udp || rc=$?
             fi ;;
         firewalld-added)
             if command -v firewall-cmd >/dev/null 2>&1 \
                && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
                 if ! ableton_run_bounded 20 firewall-cmd --permanent --query-port=20808/udp >/dev/null 2>&1; then
-                    ableton_run_bounded 120 sudo firewall-cmd --permanent --add-port=20808/udp || rc=$?
-                    [ "$rc" -ne 0 ] || ableton_run_bounded 120 sudo firewall-cmd --reload || rc=$?
+                    ableton_sudo_run_bounded 120 firewall-cmd --permanent --add-port=20808/udp || rc=$?
+                    [ "$rc" -ne 0 ] || ableton_sudo_run_bounded 120 firewall-cmd --reload || rc=$?
                 fi
             elif command -v firewall-offline-cmd >/dev/null 2>&1; then
-                ableton_run_bounded 120 sudo firewall-offline-cmd --add-port=20808/udp || rc=$?
+                ableton_sudo_run_bounded 120 firewall-offline-cmd --add-port=20808/udp || rc=$?
             else
                 rc=127
             fi ;;
