@@ -2,7 +2,7 @@
 # Host realtime profile for Ableton Live under Wine: the user-space half of the
 # distribution-canon pro-audio setup (Arch Wiki professional-audio guide,
 # linuxaudio.org system-configuration wiki). Idempotent; safe to re-run.
-# Needs root (uses sudo when not root; run it via sudo or as root).
+# Run it as your own user; it asks for sudo when it needs it.
 #
 # Writes exactly these drop-ins, nothing else:
 #   /etc/security/limits.d/90-ableton-rt.conf   rtprio 95, memlock unlimited,
@@ -31,9 +31,31 @@
 #                                   host changes (packaging/testing)
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+root_safe_lib() {  # $1 = candidate library; true when root may source it
+    # The installed copy of this script lives under the user's data directory,
+    # so a root run whose HOME survived sudo would source a file its owner can
+    # rewrite. Only trust a candidate that root owns in a directory root owns,
+    # with no group or world write bit on either.
+    local candidate="$1" target owner mode
+    for target in "$(dirname "$candidate")" "$candidate"; do
+        owner="$(stat -c '%u' -- "$target" 2>/dev/null)" || return 1
+        mode="$(stat -c '%a' -- "$target" 2>/dev/null)" || return 1
+        [ "$owner" = "0" ] || return 1
+        (( (8#$mode & 0022) == 0 )) || return 1
+    done
+    return 0
+}
 for config_lib in "$here/lib/config.sh" "$here/config.sh" \
                   "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
-    if [ -r "$config_lib" ]; then . "$config_lib"; break; fi
+    if [ -r "$config_lib" ]; then
+        if [ "${EUID:-$(id -u)}" -eq 0 ] && ! root_safe_lib "$config_lib"; then
+            echo "!! You started setup-realtime.sh as root, and another account can write" >&2
+            echo "   $config_lib." >&2
+            echo "   Run it as your ordinary user. It asks for sudo when it needs it." >&2
+            exit 2
+        fi
+        . "$config_lib"; break
+    fi
 done
 declare -F ableton_sudo_run_bounded >/dev/null 2>&1 || {
     echo "!! setup-realtime.sh cannot find its sudo helper" >&2
@@ -52,6 +74,29 @@ SYSCTL="$DESTDIR/etc/sysctl.d/90-ableton-rt.conf"
 # Installed by versions of this script before 2026-08; removed in step 3.
 OLD_GOV_UNIT=/etc/systemd/system/ableton-cpufreq-performance.service
 
+validate_rt_group() {  # $1 = group name bound for usermod and the PAM limits file
+    # This group gets rtprio 95 and unlimited memlock, and step 1 adds the
+    # invoking user to it. Reject a name that carries other authority, and a
+    # name that could not be one well-formed group line.
+    # LC_ALL=C keeps the character test byte-exact: under a UTF-8 collation the
+    # [a-z] range also matches accented letters, which no group name uses.
+    local LC_ALL=C name="$1" reject=""
+    case "$name" in
+        root|wheel|sudo|admin|adm|docker|disk|shadow|staff|operator)
+            reject="that group carries host privileges beyond audio" ;;
+    esac
+    if [ -z "$reject" ] && [ "${#name}" -gt 32 ]; then
+        reject="a group name is at most 32 characters"
+    fi
+    if [ -z "$reject" ] && ! [[ "$name" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        reject="a group name uses lowercase letters, digits, underscore and hyphen, and starts with a letter or underscore"
+    fi
+    [ -n "$reject" ] || return 0
+    echo "!! ABLETON_RT_GROUP=$name is rejected: $reject." >&2
+    echo "   Unset it to use the default group (audio), or name a group kept for audio work." >&2
+    return 2
+}
+
 as_root()
 {
     if [ -n "$DESTDIR" ] || [ "${EUID:-$(id -u)}" -eq 0 ]; then
@@ -69,6 +114,16 @@ install_dropin() {  # $1 = destination path; file content on stdin
     rm -f "$tmp"
     return "$rc"
 }
+
+validate_rt_group "$RT_GROUP" || exit 2
+
+if [ -n "$DESTDIR" ]; then
+    echo "Staged run: nothing on this computer changes. It writes these two files:"
+else
+    echo "This run adds you to the $RT_GROUP group and writes these two files:"
+fi
+echo "   $LIMITS"
+echo "   $SYSCTL"
 
 echo "== [1/5] RT privileges: $RT_GROUP group + PAM limits =="
 if [ -n "$DESTDIR" ]; then

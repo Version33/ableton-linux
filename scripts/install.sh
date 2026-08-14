@@ -500,7 +500,9 @@ validate_integration_sources()
         return 1
     }
     for required in ableton-live.desktop.in ableton-linux-protocol.desktop.in \
-                    ableton-linux-auz.desktop.in x-wine-extension-auz.xml; do
+                    ableton-linux-auz.desktop.in x-wine-extension-auz.xml \
+                    icons/application-ableton-live.xml max9.desktop.in \
+                    wine-protocol-c74max.desktop.in; do
         [ -f "$root/desktop/$required" ] || {
             echo "!! installer kit is missing desktop/$required" >&2; return 1; }
     done
@@ -582,7 +584,7 @@ if [ "$dry_run" -eq 1 ]; then
             printf '  use external Link binary without taking ownership: %s\n' "$ABLETON_LINKD"
         fi
         printf '  write Link controller/setup/unit assets: %s/{ableton-linkctl,setup-link.sh,ableton-linkd.service}\n' "$data"
-        printf '  write Link support libraries: %s/lib/{config.sh,lifecycle.sh}\n' "$data"
+        printf '  write Link support libraries: %s/lib/{config.sh,lifecycle.sh,manifest.sh}\n' "$data"
     fi
     if [ "$want_integration" -eq 1 ] || [ "$want_link" -eq 1 ]; then
         printf '  write component version: %s/VERSION\n' "$data"
@@ -722,9 +724,20 @@ record_mime_prestate()
     fi
 }
 
+# Wine and other packages use some of these desktop entry names.  The installer
+# leaves an entry that does not run its own launcher, and never makes that entry
+# the default for the types it registers.
+desktop_entry_is_foreign()
+{
+    local target="$1" owner="$2"
+    [ -e "$target" ] || return 1
+    ! grep -qF "$owner" "$target"
+}
+
 install_integration()
 {
     local tool source target tmp newest="" exe live_name="Ableton Live" live_icon=live-suite live_wmclass="" edition d i
+    local live_desktop_foreign=0 max_desktop_foreign=0 max_protocol_foreign=0 foreign=0
     local probe_source="" mime_stage="" mimeapps_file="${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list"
     local max_unix="$ABLETON_WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
     local -a handler_ids=("$ABLETON_PROTOCOL_DESKTOP_ID" "$ABLETON_AUZ_DESKTOP_ID")
@@ -779,8 +792,10 @@ install_integration()
         -e "s#@WMCLASS@#$(sed_escape "$live_wmclass")#g" \
         "$root/desktop/ableton-live.desktop.in" > "$tmp"
     [ -n "$live_wmclass" ] || sed -i '/^StartupWMClass=/d' "$tmp"
-    if [ -e "$apps/ableton-live.desktop" ] && ! grep -qF "$bin/ableton-live" "$apps/ableton-live.desktop"; then
+    if desktop_entry_is_foreign "$apps/ableton-live.desktop" "$bin/ableton-live"; then
+        live_desktop_foreign=1
         echo "   preserving foreign $apps/ableton-live.desktop"
+        echo "   the Live file types stay with their current application"
     else
         ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop"
     fi
@@ -824,6 +839,15 @@ install_integration()
     ableton_install_file 644 "$root/desktop/x-wine-extension-auz.xml" "$mime_root/packages/x-wine-extension-auz.xml"
     ableton_install_file 644 "$root/desktop/icons/application-ableton-live.xml" "$mime_root/packages/application-ableton-live.xml"
 
+    # The loop below writes the Max entries, but this stages their defaults,
+    # so settle their ownership first.
+    if desktop_entry_is_foreign "$apps/max9.desktop" "$bin/max9"; then
+        max_desktop_foreign=1
+    fi
+    if desktop_entry_is_foreign "$apps/wine-protocol-c74max.desktop" "$bin/max9"; then
+        max_protocol_foreign=1
+    fi
+
     record_mime_prestate
     if command -v xdg-mime >/dev/null 2>&1; then
         if [ -e "$mimeapps_file" ] || [ -L "$mimeapps_file" ]; then
@@ -836,18 +860,21 @@ install_integration()
                 "$ABLETON_PROTOCOL_DESKTOP_ID" x-scheme-handler/ableton \
            || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
                 "$ABLETON_AUZ_DESKTOP_ID" application/x-wine-extension-auz \
-           || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
-                ableton-live.desktop application/x-ableton-live-set \
-                application/x-ableton-live-clip application/x-ableton-live-pack; then
+           || { [ "$live_desktop_foreign" -eq 0 ] \
+                && ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                    ableton-live.desktop application/x-ableton-live-set \
+                    application/x-ableton-live-clip application/x-ableton-live-pack; }; then
             rm -rf -- "$mime_stage"
             echo "!! MIME association staging failed; existing associations were unchanged" >&2
             return 1
         fi
         if [ -f "$max_unix" ] \
-           && { ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
-                    max9.desktop application/x-ableton-live-max-device \
-                || ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
-                    wine-protocol-c74max.desktop x-scheme-handler/c74max; }; then
+           && { { [ "$max_desktop_foreign" -eq 0 ] \
+                  && ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                      max9.desktop application/x-ableton-live-max-device; } \
+                || { [ "$max_protocol_foreign" -eq 0 ] \
+                     && ! env XDG_CONFIG_HOME="$mime_stage" xdg-mime default \
+                         wine-protocol-c74max.desktop x-scheme-handler/c74max; }; }; then
             rm -rf -- "$mime_stage"
             echo "!! MIME association staging failed; existing associations were unchanged" >&2
             return 1
@@ -866,7 +893,14 @@ install_integration()
                 -e "s#@PREFIX@#$(sed_escape "$ABLETON_WINEPREFIX")#g" \
                 "$root/desktop/$d.desktop.in" > "$tmp"
             target="$apps/$d.desktop"
-            if [ "$d" != max9 ] || [ ! -e "$target" ] || grep -qF "$bin/max9" "$target"; then
+            case "$d" in
+                max9) foreign="$max_desktop_foreign" ;;
+                *) foreign="$max_protocol_foreign" ;;
+            esac
+            if [ "$foreign" -eq 1 ]; then
+                echo "   preserving foreign $target"
+                echo "   its associations stay with their current application"
+            else
                 ableton_install_file 644 "$tmp" "$target"
             fi
             rm -f -- "$tmp"
@@ -893,12 +927,18 @@ install_integration()
     }
     pin_mime_default "$ABLETON_PROTOCOL_DESKTOP_ID" x-scheme-handler/ableton
     pin_mime_default "$ABLETON_AUZ_DESKTOP_ID" application/x-wine-extension-auz
-    for d in application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack; do
-        pin_mime_default ableton-live.desktop "$d"
-    done
+    if [ "$live_desktop_foreign" -eq 0 ]; then
+        for d in application/x-ableton-live-set application/x-ableton-live-clip application/x-ableton-live-pack; do
+            pin_mime_default ableton-live.desktop "$d"
+        done
+    fi
     if [ -f "$max_unix" ]; then
-        pin_mime_default max9.desktop application/x-ableton-live-max-device
-        pin_mime_default wine-protocol-c74max.desktop x-scheme-handler/c74max
+        if [ "$max_desktop_foreign" -eq 0 ]; then
+            pin_mime_default max9.desktop application/x-ableton-live-max-device
+        fi
+        if [ "$max_protocol_foreign" -eq 0 ]; then
+            pin_mime_default wine-protocol-c74max.desktop x-scheme-handler/c74max
+        fi
     fi
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -q "$icons" || \
@@ -925,7 +965,9 @@ install_link_assets()
         fi
         "$here/ableton-linkctl" stop || return 1
     fi
-    for tool in config.sh lifecycle.sh; do
+    # setup-link.sh sources manifest.sh and stops without it, so a Link-only
+    # install ships it too.
+    for tool in config.sh lifecycle.sh manifest.sh; do
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
     if [ -n "$legacy_custom" ]; then

@@ -40,8 +40,11 @@ fi
 case "$action" in enable|disable|status|snapshot|preflight-rollback|preflight-commit|rollback|commit|plan-enable|plan-disable) ;;
     *) echo "usage: setup-link.sh enable [--mode=session|always] | disable | status" >&2; exit 2 ;;
 esac
+# status only reads the policy, the PID file, the unit, and the firewall record,
+# and every one of those reads already rejects a missing or malformed file. It
+# needs no lock, and taking one would fail status exactly when someone asks.
 case "$action" in
-    enable|disable|status|snapshot|preflight-rollback|preflight-commit|rollback|commit)
+    enable|disable|snapshot|preflight-rollback|preflight-commit|rollback|commit)
         ableton_install_lock_acquire
         ableton_validate_install_state_journals ;;
 esac
@@ -174,6 +177,15 @@ EOF
     # Adopt only the two exact unit definitions shipped before ownership
     # markers. Keep any unit with another directive or executable unchanged.
     legacy_unit_is_owned
+}
+
+# Finding systemctl proves nothing. The user manager still has to answer, and it
+# does not over SSH without a user bus, or in a container. Session policy never
+# uses the unit, so an unreachable manager is not an error for it.
+systemd_user_available()
+{
+    command -v systemctl >/dev/null 2>&1 || return 1
+    ableton_run_bounded 10 systemctl --user show -p Version --value >/dev/null 2>&1
 }
 
 loaded_unit_is_owned()
@@ -568,7 +580,12 @@ disable_link()
     stop_owned_detached_link_daemons
     remove_owned_legacy_hook
     remove_owned_firewall
-    if unit_is_owned; then rm -f -- "$unit_file"; fi
+    if unit_is_owned; then
+        rm -f -- "$unit_file"
+        # install_unit created this directory, so clear it when nothing else
+        # was placed there. Its parents belong to the user.
+        rmdir --ignore-fail-on-non-empty -- "$unit_dir" 2>/dev/null || true
+    fi
     if command -v systemctl >/dev/null 2>&1; then
         ableton_run_bounded 20 systemctl --user daemon-reload >/dev/null 2>&1 || true
     fi
@@ -633,7 +650,9 @@ EOF
         rm -f -- "$tmp"
         return 1
     fi
-    command -v systemctl >/dev/null 2>&1 || return 0
+    # This writes the unit for a later session either way. With no running user
+    # manager there is nothing to reload, and session policy never needs it.
+    systemd_user_available || return 0
     ableton_run_bounded 20 systemctl --user daemon-reload
 }
 
@@ -1159,7 +1178,9 @@ rollback_link_transaction()
     if [ -d "$snap/prestate-dir" ]; then
         cp -a -- "$snap/prestate-dir" "$ABLETON_STATE_HOME/install-prestate"
     fi
-    if command -v systemctl >/dev/null 2>&1; then
+    # With no reachable user manager there is no unit state to put back, so the
+    # rollback is complete without this block.
+    if systemd_user_available; then
         ableton_run_bounded 20 systemctl --user daemon-reload >/dev/null 2>&1 || rc=$?
         if [ -e "$snap/enabled" ]; then
             ableton_run_bounded 20 systemctl --user enable ableton-linkd.service >/dev/null 2>&1 || rc=$?
@@ -1169,6 +1190,11 @@ rollback_link_transaction()
         if [ -e "$snap/active" ]; then
             ableton_run_bounded 20 systemctl --user start ableton-linkd.service >/dev/null 2>&1 || rc=$?
         fi
+    elif [ -e "$snap/enabled" ] || [ -e "$snap/active" ]; then
+        # The snapshot recorded live unit state, so a reachable manager put it
+        # there. Reporting success now would hide an unfinished rollback.
+        echo "!! no systemd user manager is reachable to restore the Link unit state" >&2
+        rc=1
     fi
     if [ -e "$snap/detached-active" ] && [ "$prior" = session ] && [ -x "$ctl" ]; then
         ABLETON_LINK_MODE=session "$ctl" start || rc=$?
@@ -1441,14 +1467,22 @@ enable_link()
         case "$mode" in
             session)
                 # Registration is harmless, but session policy must never leave the
-                # always-on unit enabled or running.
-                if command -v systemctl >/dev/null 2>&1; then
+                # always-on unit enabled or running where it could actually run.
+                # A manager that answers and then fails is still an error.
+                if systemd_user_available; then
                     ableton_run_bounded 20 systemctl --user disable --now \
                         ableton-linkd.service >/dev/null 2>&1 || rc=$?
+                elif [ -L "$unit_dir/default.target.wants/ableton-linkd.service" ]; then
+                    # systemd keeps the enablement on disk, so it outlives the
+                    # current bus. This link survives to the next login, and the
+                    # daemon would start there.
+                    echo "!! the always-on Link unit is still enabled, and no systemd user manager is reachable to turn it off" >&2
+                    echo "   Run 'systemctl --user disable --now ableton-linkd.service' in a desktop session, then enable Link again." >&2
+                    rc=1
                 fi ;;
             always)
-                if ! command -v systemctl >/dev/null 2>&1; then
-                    echo "!! always-on Link policy requires systemd user services" >&2
+                if ! systemd_user_available; then
+                    echo "!! always-on Link policy needs a running systemd user manager" >&2
                     rc=127
                 else
                     ableton_run_bounded 20 systemctl --user enable --now \

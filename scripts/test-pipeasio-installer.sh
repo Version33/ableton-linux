@@ -1980,12 +1980,12 @@ fi
     && [ -r "$base/xdg/state/ableton-wine/.ableton-linux-state" ] \
     || fail "MIME default restoration failure discarded retry state"
 
-base="$(new_env mime-sed-failure)"
+base="$(new_env mime-clear-failure)"
 make_mime_failure_fixture "$base" ''
 mkdir -p -- "$base/xdg/config"
 printf '[Default Applications]\nx-scheme-handler/ableton=ableton-live.desktop\n' \
     > "$base/xdg/config/mimeapps.list"
-real_sed="$(command -v sed)"
+real_awk="$(command -v awk)"
 cat > "$base/fakebin/xdg-mime" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
@@ -1994,18 +1994,24 @@ case "${1:-}" in
     *) exit 2 ;;
 esac
 EOF
-cat > "$base/fakebin/sed" <<EOF
+# Reading and clearing the defaults list are the only awk programs that name the
+# group, so this breaks that step alone and leaves every other awk call working.
+cat > "$base/fakebin/awk" <<EOF
 #!/bin/sh
-[ "\${1:-}" != -i ] || exit 78
-exec "$real_sed" "\$@"
+for argument do
+    case "\$argument" in
+        *'[Default Applications]'*) exit 78 ;;
+    esac
+done
+exec "$real_awk" "\$@"
 EOF
-chmod 755 "$base/fakebin/xdg-mime" "$base/fakebin/sed"
+chmod 755 "$base/fakebin/xdg-mime" "$base/fakebin/awk"
 if run_direct_uninstall "$base" >"$base/out" 2>"$base/err"; then
-    fail "MIME sed restoration failure reported uninstall success"
+    fail "MIME clear failure reported uninstall success"
 fi
 [ -r "$base/xdg/state/ableton-wine/mime-prestate.tsv" ] \
     && [ -r "$base/xdg/state/ableton-wine/.ableton-linux-state" ] \
-    || fail "MIME sed restoration failure discarded retry state"
+    || fail "MIME clear failure discarded retry state"
 ok "MIME command and mimeapps restoration failures return nonzero with retry state retained"
 
 base="$(new_env mime-post-lock-mutation)"

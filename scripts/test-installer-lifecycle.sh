@@ -980,6 +980,155 @@ grep -q 'kept unrecognised or modified legacy file' "$base/err" \
     || fail "legacy ownership refusal is not reported"
 [ -f "$base/config/ableton-wine/config" ] \
     || fail "partial legacy uninstall discards the configuration needed to retry"
+grep -q 'run uninstall' "$base/err" \
+    || fail "legacy ownership rejection does not say how to finish the uninstall"
 ok "legacy uninstall retains unrecognised canonical files"
+
+# Uninstall used to restore the MIME defaults after deleting its own desktop
+# entries.  xdg-mime reports no default once the entry file is gone, so the
+# check that clears the line never matched, and the line stayed behind naming a
+# file that no longer existed.
+base="$(new_env mime-restore)"
+mkdir -p "$base/data/applications" "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+# This entry advertises the type, so its default resolves without a list entry.
+cat > "$base/data/applications/foreign-auz.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Foreign AUZ
+Exec=/usr/bin/true %f
+MimeType=application/x-wine-extension-auz;
+EOF
+# This one advertises nothing, so only an explicit list entry can select it.
+printf '[Desktop Entry]\nType=Application\nName=Third Party\nExec=/usr/bin/true %%f\n' \
+    > "$base/data/applications/third-party.desktop"
+run_isolated "$base" update-desktop-database "$base/data/applications" >/dev/null 2>&1 || true
+# xdg-mime writes nothing and still exits 0 when its config directory is absent.
+mkdir -p "$base/config"
+run_isolated "$base" xdg-mime default third-party.desktop x-scheme-handler/ableton \
+    || fail "test fixture could not set an explicit pre-install default"
+grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "test fixture did not record an explicit pre-install default"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/install.out" 2>"$base/install.err" \
+    || { sed -n '1,40p' "$base/install.err" >&2; fail "integration install failed before MIME restoration"; }
+grep -qxF "x-scheme-handler/ableton=$ABLETON_PROTOCOL_DESKTOP_ID" "$base/config/mimeapps.list" \
+    || fail "integration did not take over the scheme handler it registers"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "uninstall failed after integration"; }
+if grep -Eq "=($ABLETON_PROTOCOL_DESKTOP_ID|$ABLETON_AUZ_DESKTOP_ID|ableton-live\.desktop|max9\.desktop|wine-protocol-c74max\.desktop)\$" \
+    "$base/config/mimeapps.list"; then
+    fail "uninstall leaves a MIME default naming an entry it removed"
+fi
+grep -qxF 'x-scheme-handler/ableton=third-party.desktop' "$base/config/mimeapps.list" \
+    || fail "uninstall does not restore an explicit pre-install default"
+! grep -q '^application/x-wine-extension-auz=' "$base/config/mimeapps.list" \
+    || fail "uninstall writes out a default the user never set explicitly"
+ok "uninstall clears its own MIME defaults and restores exactly what it found"
+
+# The installer keeps a Live desktop entry it did not write.  It must not then
+# hand that entry the file types it registers.
+base="$(new_env foreign-live-entry)"
+mkdir -p "$base/data/applications" "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+printf '[Desktop Entry]\nType=Application\nName=Foreign Live\nExec=/usr/bin/true %%f\n' \
+    > "$base/data/applications/ableton-live.desktop"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "integration install failed with a foreign Live entry"; }
+grep -qxF 'Name=Foreign Live' "$base/data/applications/ableton-live.desktop" \
+    || fail "integration replaced a foreign Live desktop entry"
+if grep -Eq '^application/x-ableton-live-(set|clip|pack)=ableton-live\.desktop$' \
+    "$base/config/mimeapps.list" 2>/dev/null; then
+    fail "integration gave the Live file types to a desktop entry it did not write"
+fi
+ok "a preserved foreign Live entry does not receive the file associations"
+
+# Session Link policy writes the unit for later but never runs it, so it must
+# not need a user manager that answers.  Only always-on policy does.
+base="$(new_env link-no-user-manager)"
+mkdir -p "$base/data/ableton-wine" "$base/state/ableton-wine" "$base/fakebin"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkctl"
+printf '#!/bin/sh\nexit 0\n' > "$base/data/ableton-wine/ableton-linkd"
+chmod +x "$base/data/ableton-wine/ableton-linkctl" "$base/data/ableton-wine/ableton-linkd"
+cat > "$base/fakebin/systemctl" <<'EOF'
+#!/bin/sh
+echo 'Failed to connect to user scope bus via local transport: Connection refused' >&2
+exit 1
+EOF
+# Keep every firewall out of this check: no ufw.conf match and no firewalld
+# means no rule to add and nothing to raise privileges for.
+cat > "$base/fakebin/grep" <<'EOF'
+#!/bin/sh
+for argument do
+    [ "$argument" != /etc/ufw/ufw.conf ] || exit 1
+done
+exec /usr/bin/grep "$@"
+EOF
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/firewall-cmd"
+printf '#!/bin/sh\nexit 1\n' > "$base/fakebin/sudo"
+chmod +x "$base/fakebin/systemctl" "$base/fakebin/grep" \
+    "$base/fakebin/firewall-cmd" "$base/fakebin/sudo"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" enable --mode=session >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "session Link enable needs a reachable user manager"; }
+[ -f "$base/config/systemd/user/ableton-linkd.service" ] \
+    || fail "session Link enable skipped the unit it writes for a later session"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
+    bash "$here/setup-link.sh" enable --mode=always >"$base/always.out" 2>"$base/always.err"; then
+    fail "always-on Link enable succeeded with no systemd user manager"
+fi
+ok "session Link policy does not depend on a reachable systemd user manager"
+
+# setup-link.sh sources the ownership helper, so a Link-only install has to ship
+# it: TROUBLESHOOTING tells people to run the installed copy.
+base="$(new_env link-assets-runnable)"
+run_isolated "$base" bash "$here/install.sh" --link-assets-only \
+    >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "link-only install failed"; }
+run_isolated "$base" bash "$base/data/ableton-wine/setup-link.sh" status \
+    >"$base/status.out" 2>"$base/status.err" \
+    || { sed -n '1,20p' "$base/status.err" >&2; fail "the installed setup-link.sh cannot run"; }
+grep -q '^policy:' "$base/status.out" || fail "installed Link status reported no policy"
+ok "a link-only install ships every library its setup-link.sh needs"
+
+# Status only reads.  It has to answer while a lifecycle command holds the
+# lock, which is exactly when someone asks.
+base="$(new_env link-status-under-lock)"
+mkdir -p "$base/state/ableton-wine"
+printf 'format=1\nowner=ableton-linux\n' > "$base/state/ableton-wine/.ableton-linux-state"
+run_isolated "$base" bash -c '
+    exec {held}< "$HOME"
+    flock -n "$held" || exit 9
+    bash "$1" status' locked "$here/setup-link.sh" >"$base/out" 2>"$base/err" \
+    || { sed -n '1,20p' "$base/err" >&2; fail "Link status fails while the installation lock is held"; }
+grep -q '^policy:' "$base/out" || fail "locked Link status reported no policy"
+ok "Link status answers while the installation lock is held"
+
+# A missing prefix or runtime names itself.  Both used to arrive as an audio
+# failure, because the PipeWire gate ran first.
+base="$(new_env precondition-order)"
+if run_isolated "$base" bash "$here/installer.sh" update >"$base/out" 2>"$base/err"; then
+    fail "update without a prefix succeeded"
+fi
+grep -q 'update needs an existing prefix' "$base/err" \
+    || fail "update without a prefix reports something other than the missing prefix"
+! grep -qi pipewire "$base/err" \
+    || fail "update without a prefix leads with an audio failure"
+mkdir -p "$base/prefix"
+printf 'WINE REGISTRY Version 2\n' > "$base/prefix/system.reg"
+if run_isolated "$base" env ABLETON_WINEPREFIX="$base/prefix" \
+    bash "$here/installer.sh" prefix update >"$base/prefix.out" 2>"$base/prefix.err"; then
+    fail "prefix update without a runtime succeeded"
+fi
+grep -q 'no runtime at' "$base/prefix.err" \
+    || fail "prefix update without a runtime does not name the missing runtime"
+! grep -q 'Reinstall from a complete installer kit' "$base/prefix.err" \
+    || fail "prefix update blames the installer kit for a runtime that was never installed"
+ok "missing prefixes and runtimes are named before the PipeWire check runs"
 
 printf 'PASS: %s installer lifecycle checks\n' "$pass"

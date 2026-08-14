@@ -81,7 +81,8 @@ case "${1:-}" in
     runtime|prefix|link)
         command_name="$1"; explicit_command=1; shift
         subcommand="${1:-}"
-        [ -n "$subcommand" ] || { usage >&2; exit 2; }
+        [ -n "$subcommand" ] || {
+            echo "!! $command_name needs a subcommand" >&2; usage >&2; exit 2; }
         shift ;;
     help|--help|-h) usage; exit 0 ;;
 esac
@@ -221,7 +222,7 @@ case "$link_mode_option" in ''|session|always) ;; *) echo "!! --mode must be ses
 
 invalid_option()
 {
-    echo "!! $1 is not valid for $command_name${subcommand:+ $subcommand}" >&2
+    echo "!! $1 cannot be used with $command_name${subcommand:+ $subcommand}" >&2
     exit 2
 }
 
@@ -395,6 +396,26 @@ host_preflight()
 }
 host_preflight
 
+# Cheap checks first: none of these needs Wine, PipeWire, or the payload.  A
+# missing prefix or runtime then names itself, in the words of the command the
+# user typed, instead of arriving later as an audio failure.  They also run
+# before the slow payload extraction.
+case "$command_name:$subcommand" in
+    update:)
+        [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
+            echo "!! update needs an existing prefix at $ABLETON_WINEPREFIX; run install first" >&2; exit 2; } ;;
+    prefix:create)
+        [ ! -f "$ABLETON_WINEPREFIX/system.reg" ] || {
+            echo "!! prefix already exists; use prefix update" >&2; exit 2; }
+        [ -x "$ABLETON_WINE_ROOT/bin/wine" ] || {
+            echo "!! no runtime at $ABLETON_WINE_ROOT; run installer runtime install first" >&2; exit 2; } ;;
+    prefix:update)
+        [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
+            echo "!! no prefix at $ABLETON_WINEPREFIX; use prefix create" >&2; exit 2; }
+        [ -x "$ABLETON_WINE_ROOT/bin/wine" ] || {
+            echo "!! no runtime at $ABLETON_WINE_ROOT; run installer runtime install first" >&2; exit 2; } ;;
+esac
+
 # Gate only commands that replace the PipeASIO-bearing runtime or register it.
 # Plans, help, extraction transport, Link operations, and uninstall remain
 # available without a running PipeWire daemon.
@@ -441,15 +462,12 @@ case "$command_name:$subcommand" in
     runtime:install)
         if [ "$dry_run" -eq 1 ]; then "$here/install.sh" --runtime-only --dry-run; exit; fi ;;
     prefix:create)
-        [ ! -f "$ABLETON_WINEPREFIX/system.reg" ] || { echo "!! prefix already exists; use prefix update" >&2; exit 2; }
         "$here/setup-prefix.sh" --validate
         if [ "$dry_run" -eq 1 ]; then
             printf 'PLAN: create prefix %s using runtime %s\n' "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
             exit
         fi ;;
     prefix:update)
-        [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
-            echo "!! no prefix at $ABLETON_WINEPREFIX; use prefix create" >&2; exit 2; }
         "$here/setup-prefix.sh" --refresh --validate
         if [ "$dry_run" -eq 1 ]; then printf 'PLAN: transactionally update prefix %s\n' "$ABLETON_WINEPREFIX"; exit; fi ;;
     prefix:repair-live11)
@@ -469,11 +487,6 @@ case "$command_name:$subcommand" in
     link:disable)
         if [ "$dry_run" -eq 1 ]; then "$here/setup-link.sh" plan-disable; exit; fi ;;
     install:|update:)
-        # installer.sh checks the prefix itself: the message then names the
-        # command the user typed, not the component --refresh flag, and the
-        # check runs before the slow runtime payload extraction.
-        [ "$command_name" != update ] || [ -f "$ABLETON_WINEPREFIX/system.reg" ] || {
-            echo "!! update needs an existing prefix at $ABLETON_WINEPREFIX; run install first" >&2; exit 2; }
         prefix_validate=()
         [ "$command_name" != update ] || prefix_validate+=(--refresh)
         ABLETON_RUNTIME_PENDING=1 "$here/setup-prefix.sh" "${prefix_validate[@]}" --validate
@@ -558,6 +571,8 @@ if [ -r "$ownership_manifest" ] && awk -F '\t' -v b="$ABLETON_BIN_HOME/pipeasio-
     panel_integration_existed=1
 fi
 transaction_complete=0
+rollback_log="$transaction/rollback.log"
+rollback_sink="$rollback_log"
 committed_cleanup_step=""
 link_transaction=0
 live_unpack=""
@@ -574,6 +589,13 @@ cleanup_live_unpack()
     live_unpack=""
 }
 
+# Rollback children write their diagnostics to disk, not the terminal, so a
+# failed restoration leaves its reason behind instead of needing a repeat run.
+rollback_log_step()
+{
+    printf -- '-- %s\n' "$1" >> "$rollback_sink" 2>/dev/null || true
+}
+
 rollback_all()
 {
     local rc=$? restore_error="" restoration_complete=yes failure_record="$transaction/FAILURE"
@@ -581,16 +603,27 @@ rollback_all()
     trap - EXIT
     if [ "$transaction_complete" -ne 1 ]; then
         echo "!! installer transaction failed; restoring the previous component and prefix state" >&2
-        if ! "$here/setup-prefix.sh" --preflight-rollback "$transaction" >/dev/null 2>&1; then
+        # A log the installer cannot open must not stop the restoration: a
+        # child redirected to an unopenable path never runs at all.
+        if ! : 2>/dev/null >> "$rollback_sink"; then
+            echo "!! rollback diagnostics cannot be written to $rollback_log" >&2
+            rollback_sink=/dev/null
+            rollback_log=""
+        fi
+        rollback_log_step "rollback started for $command_name${subcommand:+ $subcommand} (exit $rc)"
+        rollback_log_step "prefix rollback preflight"
+        if ! "$here/setup-prefix.sh" --preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
             restore_error="prefix rollback preflight failed"
             rollback_preflight_ok=0
         fi
-        if ! "$here/install.sh" --preflight-rollback "$transaction" >/dev/null 2>&1; then
+        rollback_log_step "component rollback preflight"
+        if ! "$here/install.sh" --preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
             restore_error="${restore_error}${restore_error:+; }component rollback preflight failed"
             rollback_preflight_ok=0
         fi
+        [ "$link_transaction" -ne 1 ] || rollback_log_step "Link rollback preflight"
         if [ "$link_transaction" -eq 1 ] \
-           && ! "$here/setup-link.sh" preflight-rollback "$transaction" >/dev/null 2>&1; then
+           && ! "$here/setup-link.sh" preflight-rollback "$transaction" >> "$rollback_sink" 2>&1; then
             restore_error="${restore_error}${restore_error:+; }Link rollback preflight failed"
             rollback_preflight_ok=0
         fi
@@ -620,12 +653,14 @@ rollback_all()
                 rollback_preflight_ok=0
             fi
         fi
+        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "prefix rollback"
         if [ "$rollback_preflight_ok" -eq 1 ] \
-           && ! "$here/setup-prefix.sh" --rollback "$transaction" >/dev/null 2>&1; then
+           && ! "$here/setup-prefix.sh" --rollback "$transaction" >> "$rollback_sink" 2>&1; then
             restore_error="prefix rollback failed"
         fi
+        [ "$rollback_preflight_ok" -ne 1 ] || rollback_log_step "component rollback"
         if [ "$rollback_preflight_ok" -eq 1 ] \
-           && ! "$here/install.sh" --rollback "$transaction" >/dev/null 2>&1; then
+           && ! "$here/install.sh" --rollback "$transaction" >> "$rollback_sink" 2>&1; then
             restore_error="${restore_error}${restore_error:+; }component rollback failed"
         fi
         if [ "$rollback_preflight_ok" -eq 1 ] && [ "$config_existed" -eq 1 ]; then
@@ -638,7 +673,8 @@ rollback_all()
             restore_error="${restore_error}${restore_error:+; }installer configuration cleanup failed"
         fi
         if [ "$rollback_preflight_ok" -eq 1 ] && [ "$link_transaction" -eq 1 ]; then
-            if ! "$here/setup-link.sh" rollback "$transaction" >/dev/null 2>&1; then
+            rollback_log_step "Link rollback"
+            if ! "$here/setup-link.sh" rollback "$transaction" >> "$rollback_sink" 2>&1; then
                 restore_error="${restore_error}${restore_error:+; }Link rollback failed"
             fi
         fi
@@ -646,14 +682,14 @@ rollback_all()
             restore_error="${restore_error}${restore_error:+; }temporary Live payload cleanup failed"
         fi
         [ -z "$restore_error" ] || restoration_complete=no
-        printf 'command=%s %s\nexit=%s\nrestoration_complete=%s\nrestoration_error=%s\n' \
-            "$command_name" "$subcommand" "$rc" "$restoration_complete" "$restore_error" \
+        printf 'command=%s %s\nexit=%s\nrestoration_complete=%s\nrestoration_error=%s\nrollback_log=%s\n' \
+            "$command_name" "$subcommand" "$rc" "$restoration_complete" "$restore_error" "$rollback_log" \
             > "$failure_record" || true
         if [ "$restoration_complete" = yes ]; then
             echo "!! rollback complete; failure record: $failure_record" >&2
         else
             echo "!! installer rollback is incomplete: $restore_error" >&2
-            echo "!! inspect $failure_record before retrying" >&2
+            echo "!! inspect $failure_record${rollback_log:+ and $rollback_log} before retrying" >&2
         fi
     elif [ "$rc" -ne 0 ]; then
         printf 'command=%s %s\nstatus=committed-cleanup-incomplete\nstep=%s\nexit=%s\n' \
@@ -969,4 +1005,9 @@ if ! rm -rf -- "$transaction"; then
 fi
 
 echo "OK: $command_name${subcommand:+ $subcommand} completed"
-printf '  runtime: %s\n  prefix: %s\n  Link: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINK_MODE"
+# runtime install writes no configuration, so it reports only what it touched.
+if [ "$command_name:$subcommand" = runtime:install ]; then
+    printf '  runtime: %s\n' "$ABLETON_WINE_ROOT"
+else
+    printf '  runtime: %s\n  prefix: %s\n  Link: %s\n' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" "$ABLETON_LINK_MODE"
+fi

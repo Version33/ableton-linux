@@ -5,4 +5,4 @@ MimeType=application/x-wine-extension-auz;
 Exec=@BIN@/ableton-live %f
 NoDisplay=true
 StartupNotify=true
-Icon=7CC2_Ableton Live 12 Suite.0
+Icon=live-suite
