@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Link setup now accepts the `sudo` password without showing it before it adds
+  a UFW or firewalld rule.
+
+## 2026.08.14.2
+
+- Registering the audio driver no longer reports failure after it succeeded.
+  Windows `reg` ends its lines with a carriage return, which the check did not
+  strip, so the CLSID never matched. Fix by Lucas Gillingham.
+- README and TROUBLESHOOTING match the commands the installer actually takes.
+
+## 2026.08.14.1
+
 ### PipeASIO 1.5
 
 - Updated the audio driver from PipeASIO 1.2.2 to 1.5.0.
@@ -36,12 +48,26 @@
   releases.
 - `ableton-linkd` rejects fractional linger values instead of treating them as
   a request to stay open forever.
+- Closing a file dialog with the titlebar X or Escape now cancels it instead
+  of opening Wine's own dialog (issue 146). Affected Mint 22 and Ubuntu
+  24.04.
+- Live no longer shows two icons in the taskbar. The launcher now takes the
+  name, icon and window class from the version it finds. Entries you wrote
+  yourself are left alone.
+- The desktop entries describe Live in plain words instead of naming the
+  build's internals.
+- Fixed the beta launcher's icon.
 
 ### Pointer input
 
 - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
   navigation. Middle-button dragging moves the content with the pointer on
   both axes. A plain middle click remains a click.
+- Scrolling sends whole wheel notches by default.
+  `WINE_X11_SMOOTH_SCROLLING=precise` restores fractional scrolling; the
+  held-button repair below keeps it from making faders and knobs cross their
+  whole range on XWayland. The default stays off until the desktop checks have
+  run against `precise`. Found by Lucas Gillingham.
 - Fixed left- and right-button control drags speeding up when a second touch
   starts scrolling. Normal one-finger dragging and middle-button navigation
   remain unchanged.
@@ -70,6 +96,8 @@
 - Named pointer values ignore letter case. `off` and `0` work wherever
   `disabled` works. Invalid settings appear in the normal launch log.
 
+### Graphics
+
 - Live's GPU renderer is available on the Intel graphics built into 2015
   through 2019 processors (Wine patch 0066). Wine's device table skipped 24
   of those models, among them the UHD Graphics 630, and reported each as a
@@ -82,8 +110,11 @@
   `env WINE_D3D_FORCE_GPU_RENDERING=1 ableton-live` to try it. Reports sent
   to Ableton then name a different GPU model, and the device name Live
   shows marks the substitution.
+- The launch log now warns when a drawing fault holds Live on the slow copy
+  path, which costs about one core of CPU with nothing on screen to show it
+  (issue 100 follow-up, Wine patch 0071).
 
-## 2026.08.08.1
+### Text
 
 - Experimental ClearType-style subpixel rendering is now available to
   DirectWrite, Direct2D and GDI text. Prefix setup enables it by default and
@@ -97,6 +128,30 @@
   produces a false greyscale verdict.
 - Added a downstream `DesktopUIFont` integration hook for changing Wine's
   semantic desktop UI stock font without globally substituting Tahoma.
+
+### Windows and shortcuts
+
+- A Live window sized to fill the monitor can be resized again (Wine patch
+  0069). `WINE_WIN32_RESIZABLE_CLASS=off` turns the fix off.
+- Live's Alt shortcuts no longer open the menu bar (Wine patch 0070).
+  Alt+letter mnemonics and a bare Alt press are unchanged.
+- Live can hold the GNOME shortcuts that shadow its own while it runs, and
+  give them back on exit. Run `env ABLETON_SHORTCUTS=take ableton-live`. Off
+  by default.
+- An application can maximise its own window while a startup dialog holds it
+  disabled (Wine patch 0077).
+- Windows open at the size they ask for on per-monitor-aware applications
+  (Wine patch 0078). Wine 11.13 sized them at a quarter of the request.
+
+### Plug-ins and Max for Live
+
+- Live starts about 1.9 seconds faster on the measured machine (Wine patch
+  0096). Wine re-read every host font on every launch; the result is now
+  cached in the prefix. `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off.
+- Fixed three missing entry points that ended a plugin or helper process
+  outright (Wine patches 0075, 0076 and 0080).
+- Fixed an application scanning every window on the desktop twice a frame
+  while it drew its interface (Wine patch 0079).
 
 ## 2026.08.04.1
 

@@ -2,7 +2,6 @@
 
 Here are some common ailments we've seen, and how to fix them.
 
-
 ## The installer does not finish after Live installs
 
 If an **Ableton USB Driver** window is in your taskbar, close it. The
