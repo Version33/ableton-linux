@@ -40,13 +40,18 @@ fi
 case "$action" in enable|disable|status|snapshot|preflight-rollback|preflight-commit|rollback|commit|plan-enable|plan-disable) ;;
     *) echo "usage: setup-link.sh enable [--mode=session|always] | disable | status" >&2; exit 2 ;;
 esac
-# status only reads the policy, the PID file, the unit, and the firewall record,
-# and every one of those reads already rejects a missing or malformed file. It
-# needs no lock, and taking one would fail status exactly when someone asks.
 case "$action" in
     enable|disable|snapshot|preflight-rollback|preflight-commit|rollback|commit)
         ableton_install_lock_acquire
         ableton_validate_install_state_journals ;;
+    status)
+        # A read-only query never takes the exclusive lock: status has to answer
+        # during an install, which is when someone asks.  It validates the
+        # ownership manifest it reads, and stops there.  An install writes the
+        # pre-install journals backup first and index second, so an unlocked
+        # reader can catch that pair mid-write and fail for no reason; the
+        # manifest itself arrives by rename and always reads whole.
+        ableton_validate_ownership_manifest ;;
 esac
 
 state_file="$ABLETON_STATE_HOME/link-firewall"
@@ -87,6 +92,23 @@ owned_link_pids()
 }
 
 stop_owned_detached_link_daemons()
+{
+    # ableton-linkctl serialises its own start and stop on this lock, and the
+    # launcher starts the anchor on every run.  Take the same lock, so a
+    # launcher-initiated start cannot spawn a daemon between the enumeration
+    # below and the PID-record removal.  The subshell keeps the descriptor from
+    # leaking past the body's early returns.
+    mkdir -p -- "${link_pid_file%/*}" || return 1
+    (
+        flock -w 10 9 || {
+            echo "!! timed out waiting for the Link lifecycle lock" >&2
+            exit 1
+        }
+        stop_owned_detached_link_daemons_locked
+    ) 9> "${link_pid_file%/*}/linkd.lock"
+}
+
+stop_owned_detached_link_daemons_locked()
 {
     local pid exe want running=0 failed=0
     local -a pids=()
@@ -665,6 +687,7 @@ ensure_recorded_firewall()
                 echo "!! cannot verify the recorded ufw rule because ufw is missing" >&2
                 return 127
             }
+            echo "   verifying the recorded ufw allowance for UDP 20808 (sudo, each step bounded to two minutes)"
             ufw_link_rule_state || rule_state=$?
             if [ "$rule_state" -eq 1 ]; then
                 echo "   restoring the recorded ufw allowance for UDP 20808"
@@ -674,6 +697,7 @@ ensure_recorded_firewall()
                 return 1
             fi ;;
         firewalld-added)
+            echo "   verifying the recorded firewalld allowance for UDP 20808 (sudo, each step bounded to two minutes)"
             if command -v firewall-cmd >/dev/null 2>&1 \
                && ableton_run_bounded 20 firewall-cmd --state >/dev/null 2>&1; then
                 firewalld_link_rule_state || rule_state=$?
@@ -726,7 +750,7 @@ configure_firewall()
             write_link_firewall_state none
             echo "   ufw already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         elif [ "$rule_state" -eq 1 ]; then
-            echo "   ufw is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            echo "   ufw is active: adding UDP 20808 (sudo, each step bounded to two minutes)"
             write_link_firewall_state ufw-added
             # Persist ownership before ufw can make a partial change. The
             # caller's recovery can then remove only this attempted rule.
@@ -743,7 +767,7 @@ configure_firewall()
             write_link_firewall_state none
             echo "   firewalld already allows UDP 20808; leaving the foreign/pre-existing rule alone"
         elif [ "$rule_state" -eq 1 ]; then
-            echo "   firewalld is active: adding UDP 20808 (sudo, bounded to two minutes)"
+            echo "   firewalld is active: adding UDP 20808 (sudo, each step bounded to two minutes)"
             write_link_firewall_state firewalld-added
             ableton_sudo_run_bounded 120 \
                 firewall-cmd --permanent --add-port=20808/udp || return $?

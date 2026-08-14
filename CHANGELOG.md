@@ -18,6 +18,12 @@
 - `installer link enable` now installs every file that
   `~/.local/share/ableton-wine/setup-link.sh` needs to run.
 - `installer link status` answers while an install, update, or uninstall runs.
+- Stopping the Link daemon waits for the lock the launcher uses, so starting
+  Live during an install cannot leave a daemon behind. Found by Lucas
+  Gillingham.
+- Link setup names the check it is about to run before it asks for your `sudo`
+  password. The two-minute bound applies to each step, and the message says so.
+  Found by Lucas Gillingham.
 - `installer update` and `installer prefix update` name the missing prefix or
   runtime instead of reporting an audio problem.
 - The installer keeps a Live menu entry it did not create, and now leaves that
