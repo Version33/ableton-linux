@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.08.14.2
+
+- Registering the audio driver no longer reports failure after it succeeded.
+  Windows `reg` ends its lines with a carriage return, which the check did not
+  strip, so the CLSID never matched. Fix by Lucas Gillingham.
+- README and TROUBLESHOOTING match the commands the installer actually takes.
+
 ## 2026.08.14.1
 
 ### PipeASIO 1.5
