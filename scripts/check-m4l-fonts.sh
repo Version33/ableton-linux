@@ -5,8 +5,7 @@
 # Guards that the vendored Bitstream Vera faces are present and licensed, that
 # setup-prefix.sh and make-installer.sh still install and ship them, and that
 # MaxPlug.dll still terminates its font fallback chain at those families - the
-# assumption the whole fix rests on. See
-# notes/FINDINGS-M4L-CARBON-REGULATOR-DEADLOCK-2026-07-29.md.
+# assumption the whole fix rests on.
 #
 # Offline checks run anywhere, CI included; prefix checks are skipped rather
 # than failed when no prefix is available. Exit 0 all passed, 1 a check failed.
@@ -151,7 +150,7 @@ else
     if [ "${reg:-0}" -ge "${#VERA_FILES[@]}" ]; then
         ok "all ${#VERA_FILES[@]} faces registered in the prefix ($reg entries)"
     else
-        bad "only ${reg:-0}/${#VERA_FILES[@]} Vera faces registered - run scripts/setup-prefix.sh"
+        bad "only ${reg:-0}/${#VERA_FILES[@]} Vera faces registered - run ./scripts/installer.sh prefix update"
     fi
 
     # Wine's font list is built once per wineserver session and then held in

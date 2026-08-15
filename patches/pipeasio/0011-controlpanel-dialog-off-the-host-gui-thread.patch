@@ -1,0 +1,311 @@
+From bf49ca921fd93d4dea3b3414ddbdcaa7bd2af03c Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Wed, 12 Aug 2026 00:55:00 +0200
+Subject: [PATCH] asio: make the settings-panel worker lifetime-safe
+
+Ableton Live services ControlPanel() on its GUI thread. Keep that method
+non-blocking, but make the detached worker safe when the host releases the
+COM object or unloads the driver while the native panel is still open.
+
+Pin the driver module from the worker entry-point address before creating
+the thread, and release the reference only through FreeLibraryAndExitThread.
+Launch the native panel with a clean signal mask and SCHED_OTHER so it cannot
+inherit the production launcher's realtime policy. The worker owns and reaps
+the child, treats an exit during the two-second startup window as failure,
+and checks the child's actual exit status: a quick clean user close succeeds,
+while loader/QPA failures fall back even after the startup window. Missing-panel,
+spawn, abnormal-exit, and reap failures show the documented INI/terminal hint.
+---
+ src/asio.c | 228 +++++++++++++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 208 insertions(+), 20 deletions(-)
+
+diff --git a/src/asio.c b/src/asio.c
+index bc0f4f7..fdb58dd 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -26,15 +26,24 @@
+  * this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+
++#ifndef PIPEASIO_WOW64_PE
++#define _GNU_SOURCE /* posix_spawn's POSIX_SPAWN_SETSID */
++#endif
++
+ #include <stdbool.h>
+ #include <stdio.h>
+ #include <stdarg.h>
+ #include <limits.h>
+ #ifndef PIPEASIO_WOW64_PE
+ #include <unistd.h>
++#include <string.h>
++#include <signal.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
++#include <sys/wait.h>
++#include <time.h>
+ #include <pthread.h>
++#include <spawn.h> /* posix_spawn: launch the host settings panel */
+ #endif
+ #include <stdatomic.h>
+
+@@ -2849,40 +2858,237 @@ fail_held:
+ /* Returns -1000 if no control panel exists, but the return code should be
+  * ignored. Call sendNotification if something changed. */
+
++#ifndef PIPEASIO_WOW64_PE
++/* Locate pipeasio-settings on PATH.  The launcher puts the runtime's own bin
++ * directory, where the panel is installed, at the front of PATH, so a plain
++ * PATH walk resolves it without hard-coding a location.  Returns true with a
++ * full, executable path in out. */
++static bool
++pipeasio_find_settings_panel(char *out, size_t out_size)
++{
++    const char *path = getenv("PATH");
++    if (!path || !*path)
++        return false;
++    for (const char *seg = path; *seg;)
++    {
++        const char  *sep = strchr(seg, ':');
++        size_t       len = sep ? (size_t)(sep - seg) : strlen(seg);
++        static const char leaf[] = "/pipeasio-settings";
++        if (len > 0 && len + sizeof leaf <= out_size)
++        {
++            memcpy(out, seg, len);
++            memcpy(out + len, leaf, sizeof leaf);
++            if (access(out, X_OK) == 0)
++                return true;
++        }
++        if (!sep)
++            break;
++        seg = sep + 1;
++    }
++    return false;
++}
++
++/* Spawn the native panel with a clean signal mask and SCHED_OTHER even when
++ * Wine inherited SCHED_RR from the production launcher.  posix_spawn avoids
++ * pthread_atfork handlers inside Wine's many-threaded process. */
++static bool
++pipeasio_spawn_settings_panel(const char *panel, pid_t *pid)
++{
++    extern char     **environ;
++    char *const       argv[] = { (char *)panel, NULL };
++    posix_spawnattr_t attr;
++    sigset_t          mask;
++    struct sched_param sched = { .sched_priority = 0 };
++    int               rc = posix_spawnattr_init(&attr);
++    if (rc)
++        return false;
++    sigemptyset(&mask);
++    short flags = POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK
++                  | POSIX_SPAWN_SETSCHEDULER | POSIX_SPAWN_SETSCHEDPARAM;
++    if ((rc = posix_spawnattr_setsigmask(&attr, &mask)) != 0
++        || (rc = posix_spawnattr_setschedpolicy(&attr, SCHED_OTHER)) != 0
++        || (rc = posix_spawnattr_setschedparam(&attr, &sched)) != 0
++        || (rc = posix_spawnattr_setflags(&attr, flags)) != 0)
++    {
++        WARN("cannot prepare settings-panel spawn attributes: %s\n", strerror(rc));
++        posix_spawnattr_destroy(&attr);
++        return false;
++    }
++    rc = posix_spawn(pid, panel, NULL, &attr, argv, environ);
++    posix_spawnattr_destroy(&attr);
++    if (rc)
++    {
++        WARN("cannot start settings panel %s: %s\n", panel, strerror(rc));
++        return false;
++    }
++    return true;
++}
++
++static bool
++pipeasio_settings_panel_exit_succeeded(int status)
++{
++    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
++        return true;
++    if (WIFEXITED(status))
++        WARN("settings panel exited with status %d\n", WEXITSTATUS(status));
++    else if (WIFSIGNALED(status))
++        WARN("settings panel was terminated by signal %d\n", WTERMSIG(status));
++    else
++        WARN("settings panel ended with wait status 0x%x\n", status);
++    return false;
++}
++
++/* Reap the child in all cases.  posix_spawn success only means that a child
++ * was created: loader/QPA failures are reported by its exit status.  A clean
++ * exit is success even when the user closes the panel during the two-second
++ * observation window; a nonzero or signalled exit is failure at any time. */
++static bool
++pipeasio_wait_settings_panel(pid_t pid)
++{
++    struct timespec pause = { .tv_sec = 0, .tv_nsec = 100000000 };
++    int             status = 0;
++    for (int attempt = 0; attempt < 20; ++attempt)
++    {
++        pid_t waited;
++        do
++            waited = waitpid(pid, &status, WNOHANG);
++        while (waited < 0 && errno == EINTR);
++        if (waited == pid)
++            return pipeasio_settings_panel_exit_succeeded(status);
++        if (waited < 0)
++        {
++            WARN("cannot reap settings panel: %s\n", strerror(errno));
++            return false;
++        }
++        while (nanosleep(&pause, &pause) < 0 && errno == EINTR)
++            ;
++        pause.tv_sec  = 0;
++        pause.tv_nsec = 100000000;
++    }
++
++    pid_t waited;
++    do
++        waited = waitpid(pid, &status, 0);
++    while (waited < 0 && errno == EINTR);
++    if (waited < 0)
++    {
++        WARN("cannot reap settings panel: %s\n", strerror(errno));
++        return false;
++    }
++    return pipeasio_settings_panel_exit_succeeded(status);
++}
++
++static bool
++pipeasio_launch_settings_panel(const char *panel)
++{
++    pid_t pid;
++    return pipeasio_spawn_settings_panel(panel, &pid) && pipeasio_wait_settings_panel(pid);
++}
++#endif /* !PIPEASIO_WOW64_PE */
++
++struct controlpanel_hint_context
++{
++    HMODULE module;
++    char    message[1536];
++};
++
++/* Open the settings panel off the host's calling thread.  Ableton Live services
++ * ControlPanel() on its GUI thread and does not drain its internal engine->GUI
++ * message queue until the call returns.  A modal MessageBox here blocks that
++ * thread; with the transport playing, Live's queue overflows in about a minute
++ * and the process aborts (EXCEPTION_ACCESS_VIOLATION).  So the work runs on a
++ * detached thread that returns nothing to the host: it launches the native
++ * pipeasio-settings panel when it is installed, and otherwise shows a hint box
++ * telling the user how to run it.  The thread owns the heap-allocated message.
++ * (pipeasio-ableton-controlpanel) */
++static DWORD WINAPI controlpanel_hint_thread(LPVOID param)
++{
++    struct controlpanel_hint_context *context = param;
++#ifndef PIPEASIO_WOW64_PE
++    char  panel[PATH_MAX];
++    if (pipeasio_find_settings_panel(panel, sizeof panel)
++        && pipeasio_launch_settings_panel(panel))
++        goto done;
++#endif
++    MessageBoxA(NULL, context->message, "PipeASIO Settings",
++                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
++done:
++    {
++        HMODULE module = context->module;
++        HeapFree(GetProcessHeap(), 0, context);
++        /* No instruction after this call may come from the possibly-unloaded
++         * driver image. */
++        FreeLibraryAndExitThread(module, 0);
++    }
++}
++
+ DEFINE_THISCALL_WRAPPER(ControlPanel, 4)
+ HIDDEN LONG STDMETHODCALLTYPE
+ ControlPanel(LPPIPEASIO iface)
+ {
+     char           cfg_path[1024];
+-    char           message[1536];
++    struct controlpanel_hint_context *context;
++    HANDLE         hint;
++    HMODULE        module = NULL;
+     IPipeASIOImpl *This = (IPipeASIOImpl *)iface;
+     method_token   token;
+     if (!method_begin(This, false, &token))
+         return -1000;
+
+-    TRACE("iface: %p\n", iface);
++    TRACE("iface: %p (pipeasio-ableton-controlpanel)\n", iface);
+
+-    /* The settings panel (pipeasio-settings) is a native Linux/Qt app and
+-     * cannot run inside the Wine/Proton container the host loads us into:
+-     * the container has no Qt libraries and no clean route back to the host.
+-     * Rather than fork/exec it and silently fail, tell the user to launch it
+-     * from a host terminal, and point at the exact INI it edits. */
++    /* Build the fallback hint now, on the host thread, so the config path is
++     * resolved in the host's environment.  The detached thread launches the
++     * native pipeasio-settings panel when it is on PATH and only shows this
++     * message when it is not installed. */
+     if (!pipeasio_config_path(cfg_path, sizeof cfg_path))
+         lstrcpynA(cfg_path, "$XDG_CONFIG_HOME/pipeasio/config.ini", sizeof cfg_path);
+
+-    snprintf(message, sizeof message,
+-             "Please launch the PipeASIO settings panel from a terminal on your "
+-             "Linux host:\n\n"
+-             "    pipeasio-settings\n\n"
+-             "It is a native Linux app, so it cannot run inside this Wine/Proton "
+-             "container.\n\n"
+-             "Settings are saved to:\n    %s\n\n"
+-             "Changes are applied automatically about a second after you save, "
+-             "while PipeASIO is active. If they don't appear, reselect PipeASIO "
+-             "or restart this application.",
+-             cfg_path);
+-
+-    MessageBoxA(NULL, message, "PipeASIO Settings", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
++    context = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*context));
++    if (context)
++    {
++        snprintf(context->message, sizeof context->message,
++                 "Please launch the PipeASIO settings panel from a terminal on your "
++                 "Linux host:\n\n"
++                 "    pipeasio-settings\n\n"
++                 "It is a native Linux app, so it cannot run inside this Wine/Proton "
++                 "container.\n\n"
++                 "Settings are saved to:\n    %s\n\n"
++                 "Changes are applied automatically about a second after you save, "
++                 "while PipeASIO is active. If they don't appear, reselect PipeASIO "
++                 "or restart this application.",
++                 cfg_path);
++
++        /* The detached worker executes driver code after ControlPanel returns.
++         * Take a dedicated module reference for it; the COM object may be
++         * released while the native panel remains open. */
++        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
++                                (LPCSTR)(uintptr_t)&controlpanel_hint_thread, &module))
++        {
++            HeapFree(GetProcessHeap(), 0, context);
++            set_last_error(This, "could not pin the driver for the settings-panel worker");
++            method_end(&token);
++            return -1000;
++        }
++        context->module = module;
++        hint = CreateThread(NULL, 0, controlpanel_hint_thread, context, 0, NULL);
++        if (hint)
++            CloseHandle(hint);
++        else
++        {
++            FreeLibrary(module);
++            HeapFree(GetProcessHeap(), 0, context);
++            set_last_error(This, "could not start the settings-panel worker");
++            method_end(&token);
++            return -1000;
++        }
++    }
++    else
++    {
++        set_last_error(This, "could not allocate the settings-panel worker");
++        method_end(&token);
++        return -994;
++    }
+     method_end(&token);
+     return 0;
+ }
+
+--
+2.43.0

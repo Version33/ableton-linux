@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ableton Live
+MimeType=application/x-wine-extension-auz;
+Exec=@BIN@/ableton-live %f
+NoDisplay=true
+StartupNotify=true
+Icon=live-suite

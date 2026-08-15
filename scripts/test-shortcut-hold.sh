@@ -168,6 +168,7 @@ legacy="$work/legacy-v1"
 printf '%s|%s|%s\n' \
     'org.gnome.desktop.wm.keybindings' 'switch-to-workspace-up' "['<Control><Alt>Up']" \
     > "$legacy"
+chmod 600 "$legacy"
 values[$up]='[]'
 values[$down]='@as []'
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe' "$legacy"
@@ -175,6 +176,17 @@ check "legacy state is removed after migration" "$(exists "$legacy")" "no"
 check "legacy value is restored before V2 hold" "$(sed -n '2p' "$ableton_shortcuts_state" | cut -d'|' -f3)" "['<Control><Alt>Up']"
 ableton_shortcuts_restore
 check "migrated state restores normally" "${values[$up]}" "['<Control><Alt>Up']"
+
+# Malformed legacy state cannot turn the launcher into an arbitrary GSettings
+# writer. The file is retained for inspection and no unknown key is touched.
+legacy_bad="$work/legacy-v1-bad"
+printf '%s\n' "org.example.foreign|danger|['<Control><Alt>Up']" > "$legacy_bad"
+chmod 600 "$legacy_bad"
+values['org.example.foreign|danger']='SAFE'
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe' "$legacy_bad"
+check "malformed V1 state is retained" "$([ -e "$legacy_bad" ]; echo $?)" "0"
+check "malformed V1 state cannot write another setting" "${values['org.example.foreign|danger']}" "SAFE"
+ableton_shortcuts_restore
 
 # A locked key is skipped rather than creating misleading recovery state.
 writable[$up]=false
@@ -188,5 +200,16 @@ check "no-op hold creates no state" "$(exists "$ableton_shortcuts_state")" "no"
 printf '%s\n' 'FUTURE_SHORTCUT_STATE' > "$ableton_shortcuts_state"
 ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
 check "unknown state is preserved" "$(cat "$ableton_shortcuts_state")" "FUTURE_SHORTCUT_STATE"
+
+# Only the bare first line is a header. A fielded or repeated pseudo-header
+# must never become GSettings restore authority.
+printf '%s\n%s\n%s\n' \
+    ABLETON_SHORTCUT_HOLD_V2 \
+    "org.gnome.desktop.wm.keybindings|switch-to-workspace-up|['<Control><Alt>Up']|[]" \
+    'ABLETON_SHORTCUT_HOLD_V2|junk|junk|junk' > "$ableton_shortcuts_state"
+chmod 600 "$ableton_shortcuts_state"
+ableton_shortcuts_prepare 'Ableton Live 12 Suite.exe'
+check "fielded pseudo-header is rejected and retained" \
+    "$(tail -n 1 "$ableton_shortcuts_state")" 'ABLETON_SHORTCUT_HOLD_V2|junk|junk|junk'
 
 printf 'PASS: %d shortcut hold checks\n' "$pass"

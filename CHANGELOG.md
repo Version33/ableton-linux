@@ -1,38 +1,201 @@
 # Changelog
 
-## Unreleased
+## 2026.08.14.3
+- **ROLLED OUT THE NEW INPUT SYSTEM ABANDONED IN `2026.08.14.1`!!**
+  - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
+    navigation. Middle-button dragging moves the content with the pointer on
+    both axes. Holding Ctrl during that drag zooms instead, with a drag towards
+    the top of the screen zooming in. A plain middle click remains a click.
+  - Scrolling sends fractional movement by default. Selecting the XI2 events it
+    needs once made faders and knobs cross their whole range from a small
+    movement on XWayland; the held-button repair below stops that, so the
+    setting no longer has to be off. `WINE_X11_SMOOTH_SCROLLING=disabled`
+    restores whole wheel notches. Found by Lucas Gillingham.
+  - Fixed left- and right-button control drags speeding up when a second touch
+    starts scrolling. Normal one-finger dragging and middle-button navigation
+    remain unchanged.
+  - Touchpad scrolling and pinch zoom cannot move a control while a mouse button
+    is held. A mouse wheel still works except during middle-button navigation,
+    and pressing a button stops earlier continued movement.
+  - Added scrolling inertia and middle-drag throw. Both are on by default and
+    have separate off switches. Fast releases keep their speed, then movement
+    slows gradually. A short or curved middle-button drag can throw. New input
+    or a window change stops it. Live does not replay missed movement after a
+    pause.
+  - Added a repair for fader jumps after loading a Max for Live device. Testing
+    on the affected Fedora computer remains open.
+  - Fixed faders, sliders and knobs jumping, running ahead of the pointer or
+    snapping back on release during left- and right-button drags. While any
+    ordinary mouse button is held, Wine now leaves the drag entirely to the X
+    server's stock pointer path: no smooth-scroll selection, no XInput2
+    reconstruction, no inertia, no pinch, and no coordinate rewrites, on every
+    desktop and from the moment Live loads.
+  - Added an XWayland repair for faders and knobs that move farther than the
+    pointer. It defaults to `auto`, engaging only after Wine observes failed
+    warps, and a button release is repaired only when the drag's own motion was.
+    Desktop testing remains open.
+  - Added `WINE_X11_POINTER_FEATURES=disabled`, a master switch that turns every
+    pointer feature off for one launch for baseline comparisons.
+  - Named pointer values ignore letter case. `off` and `0` work wherever
+    `disabled` works. Invalid settings appear in the normal launch log. 
+  - Added a mitigation strategy in response to consistent reports of 
+    misbehaving drag inputs on COSMIC. The held-button repair above answers
+    those reports: on COSMIC, as on every other desktop, holding a button hands
+    the whole drag to the X server.
+- **Substantially hardened the new Runtime+Ableton Live installer script:** 
+  - Hardened `sudo` password requests in the rare case that the installer
+    requires admin privileges.
+  - When asking for `sudo` privileges, the installer waits 120 seconds for your
+    password, then stops and tells you that it timed out.
+  - A failed install no longer reports that it could not undo itself when it did.
+  - A failed install will now reliably write the reason its recovery failed into 
+    `rollback.log`, next to the failure record.
+  - The installer checks every file it copies into your menus before it changes
+    anything.
+  - If you have an Ableton Live or Max desktop file from some other Wine project, 
+    the installer now won't make assumptions and 'helpfully' remove it.
+  - For safety reasons, the real-time setup now checks `ABLETON_RT_GROUP` before 
+    it completing setup. It will reject a user group that grants more than audio 
+    access.
+  - `installer update` and `installer prefix update` will now tell you what it is
+    actually missing when it can't find a runtime, prefix or component.
+- Revised the `uninstall` command in the installer script. Uninstall now:
+  - properly clears the file types and links it registered.
+  - recovers old file types that you assigned yourself.
+  - tells you when it encounters a file it does not recognise.
+- The Ableton Link portion of the installer has also been hardened since its
+  redesign:
+  - The Ableton Link service will now start on computers that don't have systemd 
+    user service. You only need systemd if you plan leaving `ableton-linkd` running
+    in the background even when Live isn't running.
+  - `installer link enable` now installs every file that
+    `~/.local/share/ableton-wine/setup-link.sh` needs to run, even if installing
+    separately to Live.
+  - `installer link status` will let you query the state of the Link install process
+    while an install, update, or uninstall runs.
+  - Stopping the Link daemon waits for the lock the launcher uses, so starting
+    Live during an install cannot leave a daemon behind. (Thanks Lucas Gillingham!)
+  - Similar to the `sudo` hardening above, Link setup will now actually tell you
+    why it needs your password for any `sudo` command.
+  - Real-time setup detects attempts to run blindly as root. 
 
-- Link setup records its version marker only when the service step
-  completed, so a host where that step failed retries it on the next
-  update instead of counting itself configured. The version moves to 5.
-- The session power-profile hold now covers launches through ableton://
-  URLs and .auz files. Live is started with `start /w`, so the launcher
-  waits on Live itself and the hold no longer ends right after the
-  handoff.
-- The launchers bound the power-profile probe with a 10-second timeout,
-  so an unresponsive power daemon no longer stalls Live's launch.
-- The uninstaller now names the boot-time CPU speed setting that earlier
-  releases installed, and prints the commands to remove it.
-- The realtime setup script and the troubleshooting guide now warn
-  Pop!_OS and other System76 users off power-profiles-daemon: the
-  package manager removes the System76 power tools to install it.
-- ableton-linkd rejects fractional `--linger` values instead of
-  truncating them toward the never-exit setting.
+## 2026.08.14.2
 
-## 2026.08.08.1
+- Registering the audio driver no longer reports failure after it succeeded.
+  Windows `reg` ends its lines with a carriage return, which the check did not
+  strip, so the CLSID never matched. Fix by Lucas Gillingham.
+- README and TROUBLESHOOTING match the commands the installer actually takes.
 
-- Experimental ClearType-style subpixel rendering is now available to
-  DirectWrite, Direct2D and GDI text. Prefix setup enables it by default and
-  follows the desktop's RGB/BGR order; set `ABLETON_TEXT_SMOOTHING=grayscale`
-  for deliberate greyscale rendering or `preserve` to leave an existing
-  prefix policy untouched. An explicitly disabled `FontSmoothing=0` is never
-  overwritten by the launcher.
-- Added standalone DirectWrite, Direct2D and GDI probes for checking the text
-  path without launching Live. The ClearType texture probe uses an outline
-  size and compares each RGB coverage triple, so symmetric filtering no longer
-  produces a false greyscale verdict.
-- Added a downstream `DesktopUIFont` integration hook for changing Wine's
-  semantic desktop UI stock font without globally substituting Tahoma.
+## 2026.08.14.1
+
+- The original installer was written at a time where the potential of this
+  project was unfathomable. Completed a complete rewrite of the installer:
+  - The installer can update individual parts, restore the previous runtime, and
+    remove files while preserving user changes.
+  - Link setup retries after an incomplete service step.
+  - A failed install or update now restores the saved installer and PipeASIO
+    configuration as well as the previous runtime.
+  - The single-file installer includes audio reporting, real-time setup, and
+    rollback tools.
+  - Official packages now require a completed ThreadSanitizer run. Local builds
+    that skip a recognised ThreadSanitizer startup limitation cannot be released.
+  - Release checks now reject incomplete patch lists and mismatched build,
+    runtime, or installer records.
+  - The session power setting now stays active when Live starts from an
+    `ableton://` URL or an `.auz` file.
+  - An unresponsive power service no longer stalls Live's launch.
+  - The real-time setup removes the boot-time CPU setting used by earlier
+    releases.
+  - `ableton-linkd` rejects fractional linger values instead of treating them as
+    a request to stay open forever.
+  - Closing a file dialog with the titlebar X or Escape now cancels it instead
+    of opening Wine's own dialog (issue 146). Affected Mint 22 and Ubuntu
+    24.04.
+  - Live no longer shows two icons in the taskbar. The launcher now takes the
+    name, icon and window class from the version it finds. Entries you wrote
+    yourself are left alone.
+  - The desktop entries describe Live in plain words instead of naming the
+    build's internals.
+  - Fixed the beta launcher's icon.
+- Completed a substantial upgrade to the Ableton-Linux audio system:
+  - Updated the audio driver from PipeASIO 1.2.2 to 1.5.0.
+  - The installer and audio driver now require PipeWire 1.4.2 or newer.
+  - Enabled the ability to use every buffer size from 32 to 8192 frames.
+  - Live now pauses audio while it changes to the PipeWire buffer size used by 
+    another audio programme, then resumes at the correct speed.
+  - Any sample rate accepted by Live is now retained after the audio engine 
+    restarts.
+  - MIDI timestamps continue across a 49.7-day timer wrap while audio is running.
+  - PipeASIO Settings ships with the runtime and can be accessed from applications
+    (eg in Live's Settings -> Audio, Hardware Config).
+  - PipeASIO real-time scheduling is off by default. Its environment override now
+    accepts `1/0`, `true/false`, `yes/no`, `on/off`, and `enabled/disabled`.
+- Attempted (and aborted) an ambitious and optimised input Wine patch.
+  (see `2026.08.14.3`):
+  - .... :(
+- Completed the first part of a multi-stage performance moonshot:
+  - Unlocked Live's GPU renderer on Intel GPU chipsets built into 2015
+    through 2019 processors (Wine patch 0066). Wine's device table skipped 24
+    of those models, and reported every one of them to Ableton Live as a 2012
+    Ivy Bridge chipset that Live refuses to use.
+  - Graphics cards missing from Wine's device table keep their real identity
+    even when the driver reports no video memory, instead of falling back to
+    that refused 2012 model (Wine patch 0067).
+  - Bypassed Live's GPU deny-list, that specifically contained a GPU chipsets
+    with terrible closed-source Windows drivers (thanks, Microsoft and Intel!!)
+    but have good Linux support. We do this by lying to Live's deny list,
+    reporting a device ID that is not on it. Live reads the ID alone when it
+    decides, so your card keeps its real name and carries the reported one
+    alongside it. For affected machines, this is the first time you can run Live
+    with GPU acceleration, providing a noticable performance boost.
+  - Added `WINE_D3D_FORCE_GPU_RENDERING=1` to enable the above GPU denylist
+    bypass (Wine patch 0068). In crash logs, we tell Ableton's engineering team
+    that the GPU listed in the crash log is substituted, to avoid poisoning
+    Ableton's QA team data set.
+- The launch log now warns when a drawing fault holds Live on the slow copy
+  path, which costs about one core of CPU with nothing on screen to show it
+  (issue 100 follow-up, Wine patch 0071).
+- **Completed an entirely custom and open-source font anti-aliasing renderer for
+  Wine applications**:
+  - Experimental ClearType-style subpixel rendering is now available to
+    DirectWrite, Direct2D and GDI text. Prefix setup enables it by default and
+    follows the desktop's RGB/BGR order; set `ABLETON_TEXT_SMOOTHING=grayscale`
+    for deliberate greyscale rendering or `preserve` to leave an existing
+    prefix policy untouched. An explicitly disabled `FontSmoothing=0` is never
+    overwritten by the launcher.
+  - Added standalone DirectWrite, Direct2D and GDI probes for checking the text
+    path without launching Live. The ClearType texture probe uses an outline
+    size and compares each RGB coverage triple, so symmetric filtering no longer
+    produces a false greyscale verdict.
+  - Added a downstream `DesktopUIFont` integration hook for changing Wine's
+    semantic desktop UI stock font without globally substituting Tahoma.
+    This means that applications (including Live) launched in this runtime
+    will render with your DE's interface font.
+
+- Significantly revised window management, logic and user interface behaviour:  
+  - A Live window sized to fill the monitor can be resized again (Wine patch
+    0069). `WINE_WIN32_RESIZABLE_CLASS=off` turns the fix off.
+  - Completed a full pass over Live's keyboard shortcuts, meaning Live now
+    responds exactly as expected to keyboard shortcuts. (Wine patch 0070).
+    For system shortcuts especially, the runtime now catches those before the DE
+    but will give them back on exit. Run 
+    `env ABLETON_SHORTCUTS=take ableton-live` to enable this feature.
+  - An application can maximise its own window while a startup dialog holds it
+    disabled (Wine patch 0077).
+  - Windows open at the size they ask for on per-monitor-aware applications
+    (Wine patch 0078). Wine 11.13 sized them at a quarter of the request.
+
+- Shaved about two seconds off Live's startup time by focusing on specific
+  Max 4 Live startup optimisations. (Wine patch 0096). In this case, Max 4 Live's
+  startup forces the system to re-read every host font on every launch.  
+  We now cache this in the prefix and re-run when your font directories (eg 
+  `~/.fonts`) change. `env WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off.
+- Fixed three missing entry points that ended a plugin or helper process
+  outright (Wine patches 0075, 0076 and 0080). Patch 0080 implements the four
+  entry points beside it as well, which belong to the same lifecycle and would
+  each have ended the process in turn.
+- Fixed an application scanning every window on the desktop twice a frame
+  while it drew its interface (Wine patch 0079).
 
 ## 2026.08.04.1
 
@@ -134,8 +297,7 @@
 - Live now uses its GPU renderer. Prefix setup removes the legacy
   `-_ForceGdiBackend` line from `Options.txt` (step 5c). This removes the
   Learn View and Splice view flicker in the measured cases and drops idle CPU
-  to 1-2%. Some edge cases remain under investigation. See
-  [the GPU renderer note](notes/ABLETON-WINE-GPU-RENDERER.md).
+  to 1-2%. Some edge cases remain under investigation.
 - Fixed windows fighting an interactive resize below the app minimum
   (Wine patch 0053). winex11 now exports the `WM_GETMINMAXINFO` minimum
   as the X11 `PMinSize` hint, and the window manager stops the drag at
@@ -153,21 +315,19 @@
   pane's area at timer cadence. DirectComposition re-blits now stop while the
   target window's ancestor chain is hidden. Reported by jttdev, reviewed by
   Giang Nguyen.
-- Menu colors now follow the desktop theme correctly (issue 35, Wine patches
-  0049 to 0052). The menu bar takes the darker chrome color and dropdowns take
-  the lighter content color, grayed items lose the engraved bevel,
-  `SetSysColors` invalidates the per-process color cache and repaints the
+- Menu colours now follow the desktop theme correctly (issue 35, Wine patches
+  0049 to 0052). The menu bar takes the darker chrome colour and dropdowns take
+  the lighter content colour, greyed items lose the engraved bevel,
+  `SetSysColors` invalidates the per-process colour cache and repaints the
   non-client area, and the menu bar hides its alt-key mnemonic underlines until
   Alt is held. The theme watcher waits on inotify when `inotify-tools` is
   installed and selects the newest `Preferences.cfg` by modification time. A
-  live theme switch can still take a few seconds to appear. See
-  [the menu color note](notes/ABLETON-WINE-MENU-COLOR-THEMING.md).
+  live theme switch can still take a few seconds to appear.
 - Moved the Wine base from 11.11 to 11.13 (giang17/wine `d2d1-dcomp-11.13` at
   `5c23dd1c`). Wine patches 0046 to 0048 fix the series against 11.13's
   frame-latency, fractional-DPI, and libusb detection changes. The runtime now
   installs to `~/.local/opt/wine-d2d1-nspa-11.13`; the 11.11 directory from
-  earlier releases stays on disk and can be deleted, about 380 MB. See
-  [the base bump note](notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md).
+  earlier releases stays on disk and can be deleted, about 380 MB.
 - The installer now configures Ableton Link during installation. Setup no
   longer adds a multicast route or NetworkManager hook: the Link SDK selects
   its interfaces itself. `sudo` is used to open UDP port 20808 when UFW or
@@ -181,8 +341,7 @@
 - Added a repository Code of Conduct.
 - Fixed a Live crash when closing WebView2 plugin editors (issue 52, Wine
   patch 0045). `RevokeDragDrop` now rejects windows owned by another process,
-  matching `RegisterDragDrop`. Fix by Giang Nguyen. See
-  [the WebView2 close-crash note](notes/ABLETON-WINE-WEBVIEW2-PLUGIN-CLOSE-CRASH.md).
+  matching `RegisterDragDrop`. Fix by Giang Nguyen.
 - `build.sh` now creates `dist/ableton-linkd`. Installer packaging calls the
   same Podman helper when that artifact is absent or not executable. The
   helper builds against the vendored Ableton Link SDK.
@@ -201,8 +360,7 @@
 
 - Added built-in Ableton Link support. `ableton-linkd` is a passive native peer
   that remains in the session while Live restarts. `ableton-linkd --probe 10`
-  reports the peer count and tempo. See
-  [the Link notes](notes/ABLETON-WINE-LINK.md).
+  reports the peer count and tempo.
 - Added `linkprobe.exe` to test Wine multicast on UDP port 20808 without Live.
 - Shipped `setup-link.sh`. It configures the multicast route, adds a UDP 20808
   allowance when UFW or firewalld is installed, installs a NetworkManager hook
@@ -264,14 +422,14 @@
   patch 0038).
 - Kept the close button on Live's title bar while its startup modal is open
   under KDE (issue 31, Wine patch 0037).
-- Added Live-themed and system-themed menu colors, Ableton Sans menu text, and
+- Added Live-themed and system-themed menu colours, Ableton Sans menu text, and
   the `setsyscolors.exe` live refresh helper.
 
 ## 2026.07.18.1
 
 - Added experimental Live 11 setup through `ABLETON_LIVE_VERSION=11`.
 - Corrected GPU identification for Intel Arc B580 device `0xe20b` (issue 11).
-- Stopped DirectComposition re-blits when its d2d1 device failed to initialize,
+- Stopped DirectComposition re-blits when its d2d1 device failed to initialise,
   including the reported NVIDIA setup under NixOS and `steam-run` (issue 16).
 - Added display-scale profiles from 100% to 250% and
   `ABLETON_DPI_MODE=dpi<N>`.
@@ -280,7 +438,7 @@
 - Added `setup-realtime.sh`.
 - Added `-DontCombineAPCs` to reduce an idle Wine thread. Release 2026.07.19.1
   removed it because it broke playback.
-- Synced Win32 menu colors to the desktop light or dark scheme.
+- Synced Win32 menu colours to the desktop light or dark scheme.
 - Changed Learn View to use SwiftShader and added `ABLETON_DCOMP=off`.
   Later releases refined the Learn View fix.
 - Reused Live's bundled VC++ redistributable when it was already valid.
@@ -304,7 +462,7 @@
 ## 2026.07.17.2
 
 - Replaced WineASIO with PipeASIO 1.2.2.
-- Added host light and dark menu-color sync.
+- Added host light and dark menu-colour sync.
 - Added the installer's `--update` mode.
 
 ## 2026.07.17.1

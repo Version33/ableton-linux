@@ -1,83 +1,84 @@
-# Build and configure Ableton Live on Linux
+# Build Ableton Live on Linux
 
-This document covers source builds and configuration overrides for developers
-and advanced users.
+This page covers the current source build, tests, packaging, and maintainer options.
 
-## Requirements
+## Build
 
-The build requires:
-
-- Podman
-- about 10 GB of free disk space
-- `zstd`
-- `cabextract`
-- `binutils`
-
-## Build and install from source
-
-Run:
+Install Podman, Git, Bash, Python 3, GNU Coreutils, GNU Findutils, GNU grep, GNU tar, binutils, `zstd`, and `cabextract`. `make check` also needs a host C compiler and maths library. Allow about 10 GB of free disk space.
+Then run:
 
 ```bash
 ./build.sh
-./scripts/install.sh
-./scripts/setup-prefix.sh
-WINEPREFIX="$HOME/.wine-ableton" \
-  "$HOME/.local/opt/wine-d2d1-nspa-11.13/bin/wine" \
-  "/path/to/Ableton Live 12 Suite Installer.exe"
-ableton-live
 ```
 
-`build.sh` creates the patched Wine runtime and `dist/ableton-linkd`.
-`install.sh` installs both under your home directory.
-
-## Shortcut test tools
-
-The repository includes the tools used to test shortcut support. Run the GNOME
-shortcut test with:
+Set `ENGINE` to another compatible container command if needed. Set `JOBS` to limit parallel work:
 
 ```bash
-scripts/test-shortcut-hold.sh
+env JOBS=8 ./build.sh
 ```
 
-Build the Wine menu test with all compiler warnings enabled. Then run its two
-modes:
+The build verifies the vendored Wine, PipeASIO, PipeWire SDK, ntsync, and Ableton Link inputs. It then creates the container image, builds Wine and PipeASIO, runs the compiled test suites and patch audit, and writes the runtime and build records to `dist/`.
+
+ThreadSanitizer runs by default. Where it cannot start at all, the default permits only a recognised startup limitation and records a non-release build; races, test failures and unrecognised errors still fail the build. To require a successful ThreadSanitizer result instead, so that a startup limitation is an error:
 
 ```bash
-winegcc -Wall -Wextra -Werror -o altnum-menu-repro tools/altnum-menu-repro.c
-./altnum-menu-repro.exe swallow
-./altnum-menu-repro.exe pass
+env PIPEASIO_TSAN_MODE=require ./build.sh
 ```
 
-The GNOME test uses temporary data and does not change the desktop settings.
-The Wine test sends keys to its own window. It needs a working Wine display.
-Each mode returns a non-zero status when a required result fails.
+Continuous integration sets `require`. Official packages need the successful result either way: packing, tagging and publishing all refuse a build record that does not carry it.
 
-Configure Ableton Link networking with:
+## Install a source build
+
+Install `cabextract`, then run the installer dispatcher after a successful build:
 
 ```bash
-./scripts/setup-link.sh
+./scripts/installer.sh install \
+  --live-installer "/path/to/Ableton Live 12 Suite Installer.zip" \
+  --live-major 12 \
+  --link=session
 ```
 
-This requests `sudo` only when an active firewall needs the UDP 20808
-allowance, or when a hook from an earlier setup version needs removing.
+The dispatcher validates the new files before changing the current installation. If an operation fails before it commits, it restores the files and configuration recorded at the start.
 
-## Build the single-file installer
-
-Run:
+Use one component directly when a full install is not needed:
 
 ```bash
-./scripts/make-installer.sh
+./scripts/installer.sh runtime install
+./scripts/installer.sh prefix create --live-major 12
+./scripts/installer.sh prefix update --live-major 12
+./scripts/installer.sh prefix repair-live11
+./scripts/installer.sh link enable --mode=session
+./scripts/installer.sh link disable
+./scripts/installer.sh link status
 ```
 
-The result is `dist/ableton-wine-setup-<version>.run`. The installer includes
-the runtime, launchers, Ableton Link support, setup scripts, and corresponding
-source required by bundled licences.
+Preview any supported operation without changing files:
 
-Verify pinned source inputs with:
+```bash
+./scripts/installer.sh plan update
+./scripts/installer.sh plan uninstall --delete-prefix
+```
+
+Run `./scripts/installer.sh --help` for the complete current command list.
+
+## Test
+
+Run the repository policy, launcher, installer, and PipeASIO checks:
+
+```bash
+make check
+make test
+```
+
+`make check` inspects the pointer changes and tests their limits with difficult input. Neither it nor `make verify` starts Wine or Live.
+
+Verify all pinned build and packaging inputs:
 
 ```bash
 make verify
 ```
+
+The container build also runs PipeASIO's non-integration CTest suite, a no-Qt build, ASan and UBSan tests, ThreadSanitizer unit tests, relocation and registration checks, and the final runtime audit. These checks do not replace a run with Live and real audio hardware.
 
 ## Nix build
 
@@ -100,14 +101,38 @@ against the Ableton prefix on this runtime, and `.#check-ntsync` runs
 `scripts/check-ntsync.sh` with its Wine root already pointed at the store. See
 the Nix section of the README for installation instructions.
 
-## Environment variables
+## Configure Ableton Link
 
-- `ABLETON_WINE_ROOT` selects the Wine runtime. The default is
-  `~/.local/opt/wine-d2d1-nspa-11.13`; the Nix package's launchers and shipped
-  scripts default to their own store path instead.
-- `ABLETON_WINEPREFIX` selects the Wine prefix. The default is
-  `~/.wine-ableton`.
-- `ABLETON_LIVE_VERSION=11|12` selects a Live major version.
+Configure Ableton Link networking and choose when it runs:
+
+```bash
+./scripts/installer.sh link enable --mode=session
+```
+
+This requests `sudo` only when an active firewall needs the UDP 20808 allowance, or when a hook from an earlier setup version needs removing.
+
+## Package
+
+After a successful `./build.sh`, create the single-file installer:
+
+```bash
+./scripts/make-installer.sh
+```
+
+This writes `dist/ableton-wine-setup-<version>.run` and its SHA-256 file. Packaging refuses a build that lacks the required sanitizer result or fails the runtime audit.
+
+## Current configuration
+
+The installer saves the runtime root, Wine prefix, selected Live major version, and Link mode. For these values, a command-line option overrides an exported `ABLETON_*` variable, which overrides the saved XDG configuration and then the default.
+
+- `ABLETON_WINE_ROOT` selects the Wine runtime. The default is `~/.local/opt/wine-d2d1-nspa-11.13`; the Nix package's launchers and shipped scripts default to their own store path instead.
+- `ABLETON_WINEPREFIX` selects the Wine prefix. The default is `~/.wine-ableton`.
+- `ABLETON_LIVE_VERSION=11|12` selects a Live major version for the launcher.
+- `ABLETON_LINK_MODE=off|session|always` controls when Ableton Link runs.
+
+These environment variables change one launch without changing the saved installer configuration:
+
+
 - `ABLETON_LIVE_EXE` selects one exact Live executable.
 - `ABLETON_INSTALLER_DIR` selects where `setup-prefix.sh` looks for your
   Ableton Live installation ZIP. The default is `~/Proprietary`.
@@ -116,8 +141,10 @@ the Nix section of the README for installation instructions.
 - `ABLETON_INSTALLER_UI=1` shows the Ableton installer window instead of
   running it silently. Only Live 12 has a silent mode here — Live 11 ships a
   WiX Burn bundle and always opens its window.
-- `ABLETON_LINKD` selects the `ableton-linkd` binary the launcher and
-  `setup-link.sh` use.
+- `ABLETON_LINK_MODE=off|session|always` selects the Link policy shared by the
+  installer, Live launcher, Max launcher, service, and uninstaller.
+- `ABLETON_LINKD` selects the Link daemon path. The generated user unit uses
+  this exact resolved path.
 - `ABLETON_SHORTCUTS=take` temporarily turns off exact Ctrl+Alt+Up and
   Ctrl+Alt+Down entries in the related GNOME settings. Live 11 also turns off
   the exact Ctrl+Alt+Delete entry. The default value, `preserve`, does not
@@ -135,6 +162,47 @@ the Nix section of the README for installation instructions.
   layout and exit-state fix for one launch.
 - `WINE_WIN32_RESIZABLE_CLASS=off` disables the monitor-sized Live window
   resizability fix for one launch without disabling fullscreen normalization.
+- `WINE_D3D_FORCE_GPU_RENDERING=1` reports a device ID Live accepts for one
+  launch, offering the GPU renderer on Intel models Live refuses; the device
+  name Live shows discloses the substitution.
+- `WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched` controls smooth
+  scrolling for one launch. `precise` is the default. `notched` keeps
+  whole wheel steps. `disabled` leaves normal mouse-wheel input available.
+- `WINE_X11_PINCH_ZOOM=disabled|legacy-wheel` controls touchpad pinch zoom for
+  one launch. Pinch zoom is on by default.
+- `WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched` controls
+  middle-button drag navigation for one launch. Navigation is on by default.
+- `WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled` controls continued movement
+  after a quick smooth scroll. It defaults to `enabled`. `auto` currently
+  behaves like `disabled` on X11. Turning inertia off leaves direct scrolling
+  unchanged.
+- `WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled` controls whether movement
+  continues after the user releases a middle-button drag. It defaults to
+  `enabled`. `disabled` leaves direct middle-button navigation unchanged.
+- `WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled` controls physical
+  mouse-wheel clicks while another button is held. It defaults to `enabled`.
+  The wheel stays blocked during middle-button navigation. Touchpad scrolling,
+  pinch and continued movement stay blocked during a drag.
+- `WINE_X11_INERTIA_CURVE=exponential|linear` selects how continued movement
+  slows. `WINE_X11_INERTIA_RATE=<0.5..16.0>` selects how soon it stops. The
+  default rate is `4.0`. Lower values keep movement going for longer. Higher
+  values stop it sooner.
+- `WINE_X11_WARP_EMULATION=disabled|auto|enabled` controls the XWayland repair
+  for faders and knobs that move farther than the pointer. It defaults to
+  `auto`, which applies the repair only after Wine observes failed warps; a
+  button release is repaired only when the drag's own motion was. `enabled`
+  forces the repair for one launch.
+- `WINE_X11_POINTER_FEATURES=disabled` turns every pointer feature off for one
+  launch regardless of any other setting, restoring stock pointer behaviour
+  for baseline comparisons.
+
+Named pointer values ignore letter case. `off` and `0` mean `disabled` where
+supported. Wine reports an invalid value in the normal launch log, then uses
+the next saved choice or default.
+
+The settings, defaults, limits, and hands-on checks are in
+[the pointer input guide](notes/ABLETON-WINE-POINTER-GESTURES.md).
+
 - `ABLETON_RT=off` disables realtime scheduling for one launch.
 - `ABLETON_POWER=off` keeps the computer's power mode unchanged for one
   launch.
@@ -145,16 +213,22 @@ the Nix section of the README for installation instructions.
 - `ENGINE` selects the container engine used by build scripts. The default is
   `podman`.
 
+The build-only `ENGINE` variable selects the container command. Its default is `podman`.
+
+PipeASIO stores its settings in `${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini`. The installer creates a 256-frame, two-input, two-output configuration only when that file does not exist. The driver accepts buffer sizes from 32 to 8192 frames.
+
+The optional `scripts/setup-realtime.sh` asks for `sudo`, adds the current user to the real-time audio group, writes the project audio limits and swappiness settings under `/etc`, and enables `rtirq` when it is installed. Run it only when you want those system changes, then log out and back in.
+
 ## Repository layout
 
-- [`patches`](patches/): Wine and PipeASIO patches
-- [`scripts`](scripts/): build, install, setup, and launch scripts
-- [`vendor`](vendor/): pinned build inputs
-- [`notes`](notes/): implementation records and investigations
+- [`patches`](patches/): ordered Wine and PipeASIO patches, checksums, and provenance
+- [`scripts`](scripts/): build, install, launch, test, and release scripts
+- [`vendor`](vendor/): pinned source inputs
 - [`tools`](tools/): diagnostic and build tools
+- [`desktop`](desktop/): application and file-type integration
 - [`bin`](bin/): installed launchers
-- [`dist`](dist/): build output
+- [`dist`](dist/): generated build output
 - [`beta`](beta/): beta test kit
 - [`flake.nix`](flake.nix) and [`nix`](nix/): Nix flake packaging
 
-The patch list and provenance are in [`patches/BASE.txt`](patches/BASE.txt).
+The authoritative patch list and provenance are in [patches/BASE.txt](patches/BASE.txt).

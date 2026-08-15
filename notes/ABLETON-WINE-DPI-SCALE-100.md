@@ -1,109 +1,51 @@
-# Display scale and window sizing
+# Display scale calibration and stable window sizing
 
-Release 2026.07.21.2 fixes the two faults documented here. The launcher
-recalibrates the Wine prefix before each start. On the tested Live 12.4.3
-GNOME/XWayland setup at 125%, Wine patches 0040 and 0042 kept the main window
-stable during tiles, moves, and interactive resizes.
+The launcher recalibrates the prefix before each Live start. Patches 0040 and
+0042 then keep Live's main window stable across moves, tiles, and interactive
+resizes on the measured GNOME/Xwayland fractional-scale setup.
 
-## Scale calibration
+## Keep Wine and Xwayland at the same scale
 
-A prefix calibrated for 125% GNOME scaling misbehaves after the desktop
-changes to 100%. Live can appear magnified, show a doubled cursor, move down
-by one or two pixels per cycle, or repeatedly request a different size from
-the window manager.
+GNOME with `xwayland-native-scaling` uses an integer-scaled Xwayland
+framebuffer. These values must describe the same mode:
 
-GNOME with `xwayland-native-scaling` uses an integer-scaled XWayland
-framebuffer. These settings must agree:
-
-| Setting | 125% display scale | 100% display scale |
+| Setting | 125% GNOME scale | 100% scale |
 |---|---:|---:|
 | `HKCU\Control Panel\Desktop\LogPixels` | 192 | 96 |
 | Live IFEO `dpiAwareness` | `2` | absent |
 | Mutter `xwayland-native-scaling` | enabled | disabled |
 
-For GNOME, `LogPixels = 96 * ceil(display scale)`. The Live
-`dpiAwareness=2` value is present only when the framebuffer is scaled above
-1x.
+Stale values can magnify Live, double the cursor, or make the main window move
+by one or two pixels per configure cycle. `scripts/detect-scale.sh` detects
+GNOME, KDE, sway, Hyprland, COSMIC, and an Xft DPI fallback. The launcher
+updates the registry values but does not change the desktop setting.
 
-The stale values cause distinct symptoms:
-
-- `LogPixels=192` on a 1x framebuffer doubles Live's rendering scale.
-- A stale `dpiAwareness=2` value makes Live and XWayland disagree about the
-  surface scale. The traced window then moved down by one or two pixels per
-  cycle.
-- `xwayland-native-scaling` on a 1x setup doubles Wine's X11 cursor.
-
-[`scripts/detect-scale.sh`](../scripts/detect-scale.sh) detects GNOME, KDE,
-sway, Hyprland, COSMIC, and an Xft DPI fallback. On non-GNOME desktops it
-uses `LogPixels = round(96 * display scale)` with no IFEO value. Supported
-display scales range from 100% to 250%.
-
-The launcher updates `LogPixels` and the Live-specific IFEO value before
-each start. It does not change Mutter settings. It warns when
-`xwayland-native-scaling` disagrees with the selected DPI block.
-
-Use a launcher override to force a known block:
+For one comparison launch:
 
 ```bash
-# 100%, with LogPixels 96 and no IFEO value
-ABLETON_DPI_MODE=100 "$HOME/.local/bin/ableton-live"
-
-# GNOME fractional scaling, with LogPixels 192 and dpiAwareness=2
-ABLETON_DPI_MODE=fractional "$HOME/.local/bin/ableton-live"
+env ABLETON_DPI_MODE=100 ableton-live
+env ABLETON_DPI_MODE=fractional ableton-live
 ```
 
-`ABLETON_DPI_MODE=preserve` leaves the prefix unchanged. Generic non-GNOME
-blocks use `dpi<N>`, such as `dpi120` for 125%. If you change Mutter's
-experimental features, preserve every unrelated entry and log out before
-testing again.
+`ABLETON_DPI_MODE=preserve` leaves the prefix values unchanged. Non-GNOME
+modes use names such as `dpi120` for 125 per cent.
 
-## Main-window growth
+## Stop resize growth
 
-At 100%, Live used to add about 56 pixels to the main window during one
-interactive resize. A trace showed that Live recalculates its outer rectangle
-after each window-manager `ConfigureNotify`. Its calculation uses the client
-rectangle, `AdjustWindowRectExForDpi(menu=TRUE)`, and an extra menu-band
-allowance.
-
-[Patch 0029](../patches/0029-win32u-lay-out-the-menu-bar-4px-taller-than-SM_CYMEN.patch)
-matched the 96 DPI allowance. Live 12.4.3 uses a 4-pixel allowance at 96 DPI
-and a 7-pixel allowance at 192 DPI.
-[Patch 0040](../patches/0040-win32u-scale-the-menu-bar-band-with-the-menu-dpi.patch)
-uses:
-
-```text
-max(4, muldiv(4, dpi, 96) - 1)
-```
-
-This gives 4 pixels at 96 DPI, 5 at 144 DPI, and 7 at 192 DPI. Popup menus
-remain font-sized.
-
-Patch 0040 fixed programmatic moves and tiles, but interactive resizing at
-125% could still add two pixels per cycle. The remaining cause was parity:
-
-1. XWayland granted only even physical sizes at a 2x framebuffer scale.
-2. Live's per-monitor layout also produced even sizes.
-3. Wine's frame offset between those grids was odd.
-4. Live rounded each odd grant up, and the window manager rounded the next
-   request again. Neither a 7-pixel nor an 8-pixel menu band could converge.
+Live derives its outer rectangle from the client size, the DPI-adjusted frame,
+and an extra menu band. Patch 0040 scales that band with the menu DPI. At a 2x
+Xwayland framebuffer, Live and the window manager could still round the same
+odd offset in opposite directions and add two pixels per cycle.
 
 [Patch 0042](../patches/0042-winex11-alias-sub-scale-WM-config-rounding-instead-o.patch)
-tracks each configure request. When a granted rectangle differs from the
-request only by sub-scale rounding on scale-aligned edges, Wine reports the
-requested rectangle to Live. It answers later requests in that range without
-another X request.
+records each configure request. When the granted rectangle differs only by
+sub-scale rounding, Wine reports the requested rectangle to Live and avoids a
+second X request for the equivalent size.
 
-Live 12.4.3 at 125% was tested with interactive resizes, window-manager
-tiles, and moves. Each operation settled once and held across sessions. The
-full trace analysis is in
-[FINDINGS-RESIZE-GROWTH-2026-07-21.md](../FINDINGS-RESIZE-GROWTH-2026-07-21.md).
+Live 12.4.3 was exercised at 125 per cent with interactive resizing, tiling,
+and moving. Each action settled once in that test. See
+[the resize findings](FINDINGS-RESIZE-GROWTH-2026-07-21.md) for the trace.
 
-## Diagnostic tools
-
-The relevant probes are in [`tools/`](../tools/):
-
-- `metricprobe.c` and `metricprobe2.c` inspect frame metrics.
-- `wmresize.c` and `wmresize2.c` reproduce window-manager resizes.
-- `menumeasure.c` measures the menu band.
-- `showrestore.c` checks restored geometry.
-- `xsettle.c` records when X geometry settles.
+The relevant tools are `metricprobe.c`, `metricprobe2.c`, `wmresize.c`,
+`wmresize2.c`, `menumeasure.c`, `showrestore.c`, and `xsettle.c` under
+`tools/`.

@@ -1,0 +1,1568 @@
+From 783dfd21bc503a61a889ed4b62bfc71ebb92a77d Mon Sep 17 00:00:00 2001
+From: Shibco <cade@parare.al>
+Date: Mon, 10 Aug 2026 18:21:02 +0200
+Subject: [PATCH 4/7] converge on a foreign quantum: predict, adopt, mute
+
+Issue #49 (ableton-linux): a foreign forced quantum (global
+clock.force-quantum from pipewire-jack, or another client's
+node.force-quantum winning last-change arbitration) leaves the driver
+feeding buffer_size frames per quantum-sized cycle: wrong-speed playback
+with periodic waveform steps.
+
+Predict: track the settings metadata's global clock.force-quantum;
+GetBufferSize, Init and buffer sizing offer it so the host builds
+matching buffers from the start. Every advertised quantum is validated
+against the accepted range first, and the running clock.duration wins
+over the raw metadata value (the daemon clamps forced values to
+clock.quantum-limit, so metadata and reality can disagree); a size
+CreateBuffers would reject is never advertised.
+
+Adopt: the config watcher withdraws our node.force-quantum after two
+consecutive mismatched polls and asks the host to rebuild at the
+observed quantum, at most 3 adoptions a minute. The rebuild target is
+committed only when the host's CreateBuffers actually arrives, so an
+ignored reset can retry the same quantum; GetBufferSize returns the
+target as preferred in host-controlled mode too, so a host that honours
+kAsioResetRequest converges. A graph-wide quantum predicted before
+CreateBuffers is committed on successful creation even without a reset
+target. The adopted state survives ordinary Stop/Start and
+DisposeBuffers/CreateBuffers cycles, and clears only when the forcing
+condition ends (forcer node departs, global clock.force-quantum cleared)
+or the user changes quantum policy; the registry tracks foreign
+node.force-quantum carriers for that.
+
+Mute: while sizes disagree the process path swaps silence both ways, so
+the audible fault is silence plus one log line per episode. The host
+callback is not run once per graph cycle at host size (a 512-frame host
+on a 128-frame graph would burn 4x DSP): graph frames accumulate and
+host-size-equivalent callbacks fire at the correct wall-clock cadence,
+with a bounded loop when the quantum exceeds the host size, so the
+transport advances at real speed and DSP stays at 1x.
+
+PIPEASIO_ALLOW_QUANTUM_MISMATCH=on restores warn-and-play-on. Both
+halves parse it (and every shared boolean variable) with one strict
+case-insensitive helper, pipeasio_env_bool. It accepts 1/0,
+true/false, yes/no, on/off and enabled/disabled; the old
+lstrcmpiA-vs-strcmp split made '=ON' mute one half only.
+
+Port buffers range up to the accepted maximum so a larger foreign
+quantum always has a buffer to land in. The WoW64 proxy gains the four
+calls (PAU_GLOBAL_FORCE_QUANTUM/QUANTUM_MUTED/FORCER_PRESENT/
+DROP_FORCE_QUANTUM) and the ABI layout guard is extended to cover them.
+---
+ include/audio.h               |  29 ++-
+ include/pipeasio_offsets.h    |  17 ++
+ include/pipeasio_parse.h      |  80 +++++++-
+ include/pipeasio_unix_abi.h   |   4 +
+ src/asio.c                    | 418 ++++++++++++++++++++++++++++++++++++++----
+ src/audio.c                   | 223 ++++++++++++++++++++--
+ src/wow64/audio_proxy.c       |  24 +++
+ src/wow64/audio_unix.c        | 134 +++++++++++---
+ tests/asio_loopback/run.sh    |   1 +
+ tests/asio_probe/run.sh       |   3 +-
+ tests/asio_probe/run32.sh     |   3 +-
+ tests/unit/test_config.c      |  84 +++++++++
+ tests/unit/test_offsets.c     |  11 ++
+ tests/wow64/unix_abi_layout.c |   6 +-
+ 14 files changed, 955 insertions(+), 82 deletions(-)
+
+diff --git a/include/audio.h b/include/audio.h
+index f1abc75..85def7a 100644
+--- a/include/audio.h
++++ b/include/audio.h
+@@ -112,10 +112,35 @@ void audio_set_follow_device(audio_client_t *client, bool follow);
+ void audio_set_realtime(audio_client_t *client, bool realtime);
+
+ /* Most recent graph quantum (clock.duration) the process callback observed
+- * while following a device, or 0 if none seen yet. Lets the ASIO side settle
+- * its buffer size to the device-dictated quantum. */
++ * during this activation, or 0 if none seen yet.  The raw duration is kept,
++ * including an unsupported value, so consumers can fail closed instead of
++ * mistaking an older valid duration for current graph reality.  Lets the ASIO
++ * side settle its buffer size to the device-dictated quantum in follow mode,
++ * adopt a foreign forced quantum
++ * outside it, and prefer graph reality over raw metadata (issue #49). */
+ audio_nframes_t audio_observed_quantum(audio_client_t *client);
+
++/* Non-zero when the settings metadata carries a global clock.force-quantum;
++ * that value outranks every node request (issue #49).  The raw metadata
++ * value: the daemon may clamp it, so prefer audio_observed_quantum while
++ * the graph runs. */
++audio_nframes_t audio_global_force_quantum(audio_client_t *client);
++
++/* True while the graph quantum disagrees with the host buffer size and the
++ * mismatch fail-safe is armed: the ASIO side swaps silence both ways until
++ * the sizes converge (issue #49). */
++bool audio_quantum_muted(audio_client_t *client);
++
++/* True while a foreign quantum forcer is visible: a global
++ * clock.force-quantum in the settings metadata, or another node carrying a
++ * nonzero node.force-quantum.  Lets the watcher clear the adoption state
++ * when the forcing condition ends (issue #49). */
++bool audio_forcer_present(audio_client_t *client);
++
++/* Withdraw this node's forced-quantum request (write node.force-quantum 0)
++ * so the graph keeps the foreign quantum being adopted. */
++void audio_drop_force_quantum(audio_client_t *client);
++
+ /* Nanosecond timestamp (PipeWire graph clock) of the most recent process cycle,
+  * 0 before the first cycle. Feeds the ASIO host's systemTime. */
+ uint64_t audio_get_time_nsec(audio_client_t *client);
+diff --git a/include/pipeasio_parse.h b/include/pipeasio_parse.h
+index e44668a..d2015e3 100644
+--- a/include/pipeasio_parse.h
++++ b/include/pipeasio_parse.h
+@@ -46,12 +46,74 @@ pipeasio_ascii_equal_ci(const char *left, const char *right)
+     return !*left && !*right;
+ }
+
++/* Update one cached node.force-quantum state from a complete PipeWire node
++ * property dictionary.  The return value is the delta for the aggregate
++ * foreign-forcer count: +1 for 0 -> Q, -1 for Q -> 0 (or absent/invalid),
++ * and 0 when the state did not change.  Keeping the transition in one pure
++ * helper makes dynamic property updates and the initial registry snapshot
++ * obey exactly the same rules. */
++static inline int
++pipeasio_quantum_forcer_transition(bool *forced, const char *value)
++{
++    int  parsed = 0;
++    bool next   = value && pipeasio_parse_int(value, 0, INT_MAX, &parsed) && parsed > 0;
++    if (!forced || next == *forced)
++        return 0;
++    *forced = next;
++    return next ? 1 : -1;
++}
++
++/* Commit a successful foreign-quantum rebuild.  A graph-wide force predicted
++ * before CreateBuffers has no pending reset target, so it must be recorded
++ * explicitly here or its later Q -> 0 transition cannot restore the user's
++ * configured preference.  A live global force outranks a stale node target. */
++static inline int
++pipeasio_quantum_commit_target(int buffer_size, int pending_quantum, int global_quantum)
++{
++    if (global_quantum > 0 && buffer_size == global_quantum)
++        return global_quantum;
++    if (pending_quantum > 0 && buffer_size == pending_quantum)
++        return pending_quantum;
++    return 0;
++}
++
++/* A reset request is only an attempt.  Retry the same restoration target after
++ * five seconds, while keeping the existing three-attempts-per-minute bound. */
++static inline bool
++pipeasio_quantum_retry_due(uint64_t last_request, uint64_t now, int attempts)
++{
++    return attempts < 3 && (!last_request || now - last_request >= 5000);
++}
++
++/* Commit restoration only after a successful CreateBuffers.  Fixed mode must
++ * land exactly on the configured target; host-controlled mode may choose any
++ * valid size after reading the post-adoption GetBufferSize contract.  A force
++ * that returned before the rebuild keeps restoration pending. */
++static inline int
++pipeasio_quantum_restore_after_create(int pending_target, bool fixed, int buffer_size,
++                                      bool foreign_forcer_present)
++{
++    if (pending_target <= 0 || foreign_forcer_present
++        || (fixed && buffer_size != pending_target))
++        return pending_target;
++    return 0;
++}
++
++static inline bool
++pipeasio_quantum_should_restore(int adopted_quantum, int pending_quantum, int observed_quantum,
++                                int host_quantum, bool foreign_forcer_present)
++{
++    return (adopted_quantum > 0 || pending_quantum > 0)
++           && (observed_quantum <= 0 || observed_quantum == host_quantum)
++           && !foreign_forcer_present;
++}
++
+ static inline bool
+ pipeasio_parse_bool(const char *text, bool *result)
+ {
+     const char *end;
+     size_t      length;
+-    char        value[8];
++    char        value[9];
+     if (!text || !result)
+         return false;
+     while (isspace((unsigned char)*text))
+@@ -65,16 +127,28 @@ pipeasio_parse_bool(const char *text, bool *result)
+     memcpy(value, text, length);
+     value[length] = '\0';
+     if (!strcmp(value, "1") || pipeasio_ascii_equal_ci(value, "true")
+-        || pipeasio_ascii_equal_ci(value, "on") || pipeasio_ascii_equal_ci(value, "yes"))
++        || pipeasio_ascii_equal_ci(value, "on") || pipeasio_ascii_equal_ci(value, "yes")
++        || pipeasio_ascii_equal_ci(value, "enabled"))
+     {
+         *result = true;
+         return true;
+     }
+     if (!strcmp(value, "0") || pipeasio_ascii_equal_ci(value, "false")
+-        || pipeasio_ascii_equal_ci(value, "off") || pipeasio_ascii_equal_ci(value, "no"))
++        || pipeasio_ascii_equal_ci(value, "off") || pipeasio_ascii_equal_ci(value, "no")
++        || pipeasio_ascii_equal_ci(value, "disabled"))
+     {
+         *result = false;
+         return true;
+     }
+     return false;
+ }
++
++/* Strict boolean toggle for PIPEASIO_* environment variables.  One parser
++ * serves the PE and Unix halves so case and token handling cannot diverge.
++ * Returns 1/0, or -1 when value is unset or not a recognised boolean. */
++static inline int
++pipeasio_env_bool(const char *value)
++{
++    bool result;
++    return pipeasio_parse_bool(value, &result) ? (result ? 1 : 0) : -1;
++}
+diff --git a/include/pipeasio_offsets.h b/include/pipeasio_offsets.h
+index 7fa36f5..eaf2226 100644
+--- a/include/pipeasio_offsets.h
++++ b/include/pipeasio_offsets.h
+@@ -47,6 +47,7 @@
+ #ifndef PIPEASIO_OFFSETS_H
+ #define PIPEASIO_OFFSETS_H
+
++#include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+
+@@ -120,4 +121,20 @@ pipeasio_host_half_offset_samples(uint32_t host_buffer_index, size_t buffer_size
+     return (size_t)host_buffer_index * buffer_size_samples;
+ }
+
++/* Graph-I/O actions for the optional WoW64 callback bridge.  Host callbacks
++ * still run at the cadence banked by audio_on_process while muted, but graph
++ * buffers must be neither read nor published; the backend owns the foreign-
++ * quantum buffers and publishes exactly one quantum of silence. */
++enum pipeasio_wow64_graph_action
++{
++    PIPEASIO_WOW64_READ_GRAPH    = 1u << 0,
++    PIPEASIO_WOW64_PUBLISH_GRAPH = 1u << 1
++};
++
++static inline uint32_t
++pipeasio_wow64_graph_actions(bool quantum_muted)
++{
++    return quantum_muted ? 0u : PIPEASIO_WOW64_READ_GRAPH | PIPEASIO_WOW64_PUBLISH_GRAPH;
++}
++
+ #endif /* PIPEASIO_OFFSETS_H */
+diff --git a/include/pipeasio_unix_abi.h b/include/pipeasio_unix_abi.h
+index c4819cc..cb866af 100644
+--- a/include/pipeasio_unix_abi.h
++++ b/include/pipeasio_unix_abi.h
+@@ -66,6 +66,10 @@ enum pa_call
+     PAU_WAIT_CALLBACK,
+     PAU_REPLY_CALLBACK,
+     PAU_SET_REALTIME,
++    PAU_GLOBAL_FORCE_QUANTUM, /* pa_simple_params, result = quantum (issue #49) */
++    PAU_QUANTUM_MUTED,        /* pa_simple_params, result = bool */
++    PAU_FORCER_PRESENT,       /* pa_simple_params, result = bool */
++    PAU_DROP_FORCE_QUANTUM,   /* pa_simple_params, result = 1 */
+     PAU_CALL_COUNT
+ };
+
+diff --git a/src/asio.c b/src/asio.c
+index f3d9d9e..299566d 100644
+--- a/src/asio.c
++++ b/src/asio.c
+@@ -297,6 +297,25 @@ typedef struct IPipeASIOImpl
+     struct pipeasio_config staged_cfg;       /* watcher -> apply handoff */
+     _Atomic bool           config_pending;   /* staged_cfg has a fresh reload */
+     _Atomic LONG           follower_quantum; /* last observed device quantum */
++    /* Foreign-quantum adoption (issue #49, pipeasio-quantum-converge).
++     * quantum_adopted: the foreign quantum this session converged on;
++     * preserved across ordinary lifecycle transitions and cleared
++     * when the forcing condition ends.  adopt_pending_quantum: the size a
++     * kAsioResetRequest
++     * asked the host to rebuild to; survives the host's Stop/Dispose and is
++     * committed (or discarded) only when the rebuild reaches CreateBuffers,
++     * so an ignored reset can retry the same quantum. */
++    _Atomic LONG           quantum_adopted;
++    _Atomic LONG           adopt_pending_quantum;
++    _Atomic uint64_t       adopt_request_tick; /* last reset request, GetTickCount64 */
++    _Atomic LONG           restore_pending_quantum; /* configured target after force ends */
++    _Atomic uint64_t       restore_request_tick; /* unacknowledged restore request */
++    LONG                   adopt_seen;   /* watcher-only: last mismatched poll */
++    int                    adopt_resets; /* adoptions this window (loop bound) */
++    ULONGLONG              adopt_window; /* cap window start */
++    int                    restore_resets; /* restore attempts this window */
++    ULONGLONG              restore_window;
++    BOOL                   pipeasio_allow_quantum_mismatch;
+     LONG                   host_current_buffersize;
+     _Atomic INT            host_driver_state;
+     _Atomic uint64_t       host_num_samples;
+@@ -413,6 +432,7 @@ typedef struct IPipeASIOImpl
+
+ static inline int process_callback(audio_nframes_t nframes, void *arg);
+ static inline int sample_rate_callback(audio_nframes_t nframes, void *arg);
++static LONG restricted_buffer_size(IPipeASIOImpl *This, LONG frames, const char *what);
+
+ /*
+  *  Support functions
+@@ -885,7 +899,10 @@ config_watch_proc(LPVOID arg)
+ #else
+     uint64_t last_fp = 0;
+ #endif
+-    LONG                   last_reset_quantum = 0;
++    LONG                   follow_pending_quantum = 0;
++    ULONGLONG              follow_request_tick    = 0;
++    int                    follow_resets           = 0;
++    ULONGLONG              follow_window           = 0;
+     struct pipeasio_config last_cfg;
+
+ #ifndef PIPEASIO_WOW64_PE
+@@ -963,10 +980,13 @@ config_watch_proc(LPVOID arg)
+ #else
+             pipeasio_config_load(&newcfg);
+ #endif
+-            bool live_changed   = newcfg.buffer_size != last_cfg.buffer_size
+-                                  || newcfg.fixed_buffer_size != last_cfg.fixed_buffer_size
++            bool quantum_policy_changed = newcfg.buffer_size != last_cfg.buffer_size
++                                          || newcfg.fixed_buffer_size
++                                                     != last_cfg.fixed_buffer_size
++                                          || newcfg.follow_device_clock
++                                                     != last_cfg.follow_device_clock;
++            bool live_changed   = quantum_policy_changed
+                                   || newcfg.sample_rate != last_cfg.sample_rate
+-                                  || newcfg.follow_device_clock != last_cfg.follow_device_clock
+                                   || newcfg.realtime != last_cfg.realtime
+                                   || newcfg.auto_connect != last_cfg.auto_connect
+                                   || strcmp(newcfg.output_device, last_cfg.output_device) != 0
+@@ -978,6 +1002,18 @@ config_watch_proc(LPVOID arg)
+                 WARN("config: channel-count/node-name change needs driver reselect to apply\n");
+             if (live_changed)
+             {
++                if (quantum_policy_changed)
++                {
++                    /* An explicit user policy change supersedes any old
++                     * foreign-quantum target immediately. */
++                    atomic_store(&This->quantum_adopted, 0);
++                    atomic_store(&This->adopt_pending_quantum, 0);
++                    atomic_store(&This->adopt_request_tick, 0);
++                    atomic_store(&This->restore_pending_quantum, 0);
++                    atomic_store(&This->restore_request_tick, 0);
++                    This->adopt_seen = 0;
++                    This->restore_resets = 0;
++                }
+                 EnterCriticalSection(&This->config_lock);
+                 This->staged_cfg = newcfg;
+                 LeaveCriticalSection(&This->config_lock);
+@@ -1007,12 +1048,160 @@ config_watch_proc(LPVOID arg)
+         if (This->pipeasio_follow_device_clock && This->host_driver_state == Running)
+         {
+             LONG q = (LONG)audio_observed_quantum(This->audio_client);
+-            if (q && q != This->host_current_buffersize && q != last_reset_quantum)
++            if (q && !pipeasio_buffer_size_supported(q))
++                q = 0;
++            if (q && q != This->host_current_buffersize)
+             {
+-                atomic_store(&This->follower_quantum, q);
+-                last_reset_quantum = q;
+-                TRACE("config watcher: device quantum %ld, re-negotiating buffer\n", (long)q);
+-                reset = true;
++                ULONGLONG now = GetTickCount64();
++                if (now - follow_window > 60000)
++                {
++                    follow_window = now;
++                    follow_resets = 0;
++                }
++                /* Do not commit the observed value as acknowledged merely
++                 * because a reset notification was sent.  Retry an ignored
++                 * request after five seconds, with the same per-minute bound
++                 * as foreign adoption. */
++                if ((follow_pending_quantum != q || !follow_request_tick
++                     || now - follow_request_tick >= 5000)
++                    && follow_resets < 3)
++                {
++                    atomic_store(&This->follower_quantum, q);
++                    follow_pending_quantum = q;
++                    follow_request_tick    = now;
++                    ++follow_resets;
++                    TRACE("config watcher: device quantum %ld, re-negotiating buffer "
++                          "(attempt %d this minute)\n",
++                          (long)q, follow_resets);
++                    reset = true;
++                }
++            }
++            else
++            {
++                follow_pending_quantum = 0;
++                follow_request_tick    = 0;
++            }
++        }
++
++        /* Adopt (issue #49): outside follow mode a foreign forced quantum
++         * (a global clock.force-quantum, or another node's newer-stamped
++         * node.force-quantum) outranks this node's request, and the graph
++         * cycles at a size we did not ask for.  After two consecutive polls
++         * at the same foreign quantum, withdraw our force (write it once to
++         * 0, never re-assert mid-episode: only a value change wins
++         * arbitration, and re-forcing suspends every follower in the
++         * graph), record the target, and ask the host to rebuild at it.
++         * The target is committed only when the host's rebuild actually
++         * reaches CreateBuffers, so an ignored reset retries the same
++         * quantum; at most 3 adoptions a minute bound the loop.  The
++         * process path mutes while the sizes disagree, so until this
++         * converges the audible fault is silence plus a log line.
++         * PIPEASIO_ALLOW_QUANTUM_MISMATCH=on disables adoption and muting. */
++        if (!This->pipeasio_follow_device_clock && !This->pipeasio_allow_quantum_mismatch)
++        {
++            BOOL running = This->host_driver_state == Running;
++            LONG q = (LONG)audio_observed_quantum(This->audio_client);
++            LONG pending = atomic_load_explicit(&This->adopt_pending_quantum,
++                                                memory_order_acquire);
++            LONG adopted = atomic_load_explicit(&This->quantum_adopted,
++                                                memory_order_acquire);
++            LONG restore = atomic_load_explicit(&This->restore_pending_quantum,
++                                                memory_order_acquire);
++            bool forcing = audio_forcer_present(This->audio_client);
++            if (restore && forcing)
++            {
++                /* A force returned before restoration was acknowledged.  Keep
++                 * the adopted size and cancel the obsolete restore target; a
++                 * new mismatch below begins a fresh adoption episode. */
++                atomic_store(&This->restore_pending_quantum, 0);
++                atomic_store(&This->restore_request_tick, 0);
++                /* Preserve restore_resets/restore_window: a flapping forcer
++                 * must not reopen the bounded restoration retry budget. */
++                restore = 0;
++                TRACE("config watcher: foreign force returned, restoration cancelled\n");
++            }
++            if (!restore && running && q && pipeasio_buffer_size_supported(q)
++                && q != This->host_current_buffersize)
++            {
++                if (q == This->adopt_seen)
++                {
++                    ULONGLONG now = GetTickCount64();
++                    if (now - This->adopt_window > 60000)
++                    {
++                        This->adopt_window = now;
++                        This->adopt_resets = 0;
++                    }
++                    uint64_t requested = atomic_load_explicit(&This->adopt_request_tick,
++                                                              memory_order_acquire);
++                    if ((pending != q || !requested || now - requested >= 5000)
++                        && This->adopt_resets < 3)
++                    {
++                        This->adopt_resets++;
++                        audio_drop_force_quantum(This->audio_client);
++                        atomic_store(&This->adopt_pending_quantum, q);
++                        atomic_store(&This->adopt_request_tick, now);
++                        TRACE("config watcher: adopting foreign quantum %ld, asking the "
++                              "host to rebuild (attempt %d this minute)\n",
++                              (long)q, This->adopt_resets);
++                        reset = true;
++                    }
++                }
++                This->adopt_seen = q;
++            }
++            else
++                This->adopt_seen = 0;
++
++            /* The graph already agrees with the host.  A pending request is
++             * either satisfied without a rebuild or no longer needed; do not
++             * let it override later configuration. */
++            if (q && q == This->host_current_buffersize && pending)
++            {
++                if (q == pending)
++                    atomic_store(&This->quantum_adopted, q);
++                atomic_store(&This->adopt_pending_quantum, 0);
++                atomic_store(&This->adopt_request_tick, 0);
++                adopted = q == pending ? q : adopted;
++                pending = 0;
++            }
++
++            /* The forcing condition ended (forcer node departed, global
++             * clock.force-quantum cleared) and no mismatch remains.  Queue a
++             * restoration target, but retain the adopted state until a
++             * successful CreateBuffers acknowledges the reset. */
++            if (!restore
++                && pipeasio_quantum_should_restore(adopted, pending, q,
++                                                   This->host_current_buffersize, forcing))
++            {
++                restore = restricted_buffer_size(This, This->pipeasio_preferred_buffersize,
++                                                 "restored buffer size");
++                atomic_store(&This->restore_pending_quantum, restore);
++                atomic_store(&This->restore_request_tick, 0);
++                atomic_store(&This->adopt_pending_quantum, 0);
++                atomic_store(&This->adopt_request_tick, 0);
++                pending = 0;
++                TRACE("config watcher: foreign forced quantum gone; restoration to %ld "
++                      "is pending CreateBuffers acknowledgement\n",
++                      (long)restore);
++            }
++            if (restore && !forcing && running)
++            {
++                ULONGLONG now = GetTickCount64();
++                if (now - This->restore_window > 60000)
++                {
++                    This->restore_window = now;
++                    This->restore_resets = 0;
++                }
++                uint64_t requested = atomic_load_explicit(&This->restore_request_tick,
++                                                          memory_order_acquire);
++                if (pipeasio_quantum_retry_due(requested, now, This->restore_resets))
++                {
++                    ++This->restore_resets;
++                    atomic_store(&This->restore_request_tick, now);
++                    TRACE("config watcher: asking the host to restore quantum policy "
++                          "(target %ld, attempt %d this minute)\n",
++                          (long)restore, This->restore_resets);
++                    reset = true;
++                }
+             }
+         }
+
+@@ -1242,6 +1382,27 @@ effective_forced_rate(IPipeASIOImpl *This)
+     return (audio_nframes_t)atomic_load_explicit(&This->host_requested_rate, memory_order_acquire);
+ }
+
++/* The quantum a global clock.force-quantum will actually give the graph:
++ * global settings metadata outranks every node request (issue #49).  The
++ * running clock.duration wins over the raw metadata value because the
++ * daemon clamps forced values to clock.quantum-limit, so metadata and
++ * reality can disagree (pipeasio-quantum-arbitration).  Returns 0 when no
++ * global force is set, or when the effective value is one CreateBuffers
++ * would reject: an invalid pin must never be advertised to the host. */
++static LONG
++effective_global_quantum(IPipeASIOImpl *This)
++{
++    if (!This->audio_client)
++        return 0;
++    LONG gq = (LONG)audio_global_force_quantum(This->audio_client);
++    if (gq <= 0)
++        return 0;
++    LONG eff = (LONG)audio_observed_quantum(This->audio_client);
++    if (eff)
++        return pipeasio_buffer_size_supported(eff) ? eff : 0;
++    return pipeasio_buffer_size_supported(gq) ? gq : 0;
++}
++
+ /* sysRef is 0 on OS/X; on Windows it is the application's main window handle.
+  * Returns 0 on error, 1 on success. */
+
+@@ -1331,6 +1492,13 @@ Init(LPPIPEASIO iface, void *sysRef)
+         if (hint)
+             This->host_current_buffersize = hint;
+     }
++    /* Predict (issue #49): a global clock.force-quantum outranks every node
++     * request, so start from the size the graph will actually run. */
++    {
++        LONG gq = effective_global_quantum(This);
++        if (gq)
++            This->host_current_buffersize = gq;
++    }
+
+     This->input_channel = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY,
+                                     (size_t)total * sizeof(*This->input_channel));
+@@ -1765,22 +1991,55 @@ GetBufferSize(LPPIPEASIO iface, LONG *minSize, LONG *maxSize, LONG *preferredSiz
+         pref   = This->staged_cfg.buffer_size;
+         LeaveCriticalSection(&This->config_lock);
+     }
+-    if (fixed || follow)
++    /* Predict (issue #49): a global clock.force-quantum outranks every node
++     * request; offering the size the graph will actually run means
++     * CreateBuffers matches it from the start, no host cooperation needed.
++     * effective_global_quantum validates the value and prefers the running
++     * clock.duration over the raw metadata string, so a size CreateBuffers
++     * would reject is never advertised. */
+     {
+-        LONG quantum = atomic_load_explicit(&This->follower_quantum, memory_order_acquire);
+-        *minSize = *maxSize = *preferredSize = (follow && quantum) ? quantum : pref;
+-        *granularity                         = 0;
++        LONG pin = effective_global_quantum(This);
++        if (pin)
++        {
++            *minSize = *maxSize = *preferredSize = pin;
++            *granularity                         = 0;
++            TRACE("global forced quantum: offering %ld (pending=%d)\n", (long)pin, (int)pending);
++            method_end(&token);
++            return 0;
++        }
+     }
+-    else
+     {
+-        *minSize       = PIPEASIO_MIN_BUFFER_SIZE;
+-        *maxSize       = PIPEASIO_MAX_BUFFER_SIZE;
+-        *preferredSize = pref;
+-        /* Positive granularity means arithmetic steps of that many frames
+-         * (ASIO SDK); -1 would promise power-of-two steps, which no longer
+-         * matches CreateBuffers' range-only contract.  Any frame count in
+-         * [minSize, maxSize] is accepted. */
+-        *granularity   = 1;
++        LONG quantum = atomic_load_explicit(&This->follower_quantum, memory_order_acquire);
++        LONG adopt   = atomic_load_explicit(&This->adopt_pending_quantum, memory_order_acquire);
++        LONG adopted = atomic_load_explicit(&This->quantum_adopted, memory_order_acquire);
++        LONG restore = atomic_load_explicit(&This->restore_pending_quantum, memory_order_acquire);
++        /* The quantum being adopted (issue #49): an in-flight rebuild target
++         * first (it survives the host's Stop/DisposeBuffers), then the
++         * converged session's quantum.  Validated before use. */
++        LONG use = restore ? 0 : (adopt ? adopt : adopted);
++        if (use && !pipeasio_buffer_size_supported(use))
++            use = 0;
++        if (fixed || follow)
++        {
++            *minSize = *maxSize = *preferredSize
++                    = use ? use : ((follow && quantum) ? quantum : pref);
++            *granularity = 0;
++        }
++        else
++        {
++            *minSize       = PIPEASIO_MIN_BUFFER_SIZE;
++            *maxSize       = PIPEASIO_MAX_BUFFER_SIZE;
++            /* Prefer the adopted quantum in host-controlled mode too: a host
++             * that honours kAsioResetRequest re-reads GetBufferSize and
++             * rebuilds at the preferred size, and only the adopted value
++             * converges (issue #49). */
++            *preferredSize = use ? use : pref;
++            /* Positive granularity means arithmetic steps of that many frames
++             * (ASIO SDK); -1 would promise power-of-two steps, which no longer
++             * matches CreateBuffers' range-only contract.  Any frame count in
++             * [minSize, maxSize] is accepted. */
++            *granularity   = 1;
++        }
+     }
+     method_end(&token);
+     return 0;
+@@ -2065,16 +2324,33 @@ apply_pending_config(IPipeASIOImpl *This)
+               (int)This->pipeasio_follow_device_clock, (int)This->pipeasio_connect_to_hardware,
+               (int)This->pipeasio_realtime);
+     }
+-    /* Forced quantum: follow-device uses the observed graph quantum, else the
+-     * configured preferred size.  Mirrors Init().  Runs every call so a
+-     * follow-device-only reset (config_pending false) still settles.  Host-
+-     * controlled mode leaves host_current_buffersize to the host. */
++    /* Forced quantum: follow-device and adoption (issue #49) use the observed
++     * graph quantum, else the configured preferred size.  Mirrors Init().
++     * Runs every call so a follow-device-only reset (config_pending false)
++     * still settles.  Host-controlled mode leaves host_current_buffersize to
++     * the host.  An in-flight adoption target survives the host's
++     * Stop/DisposeBuffers, so the rebuild answering kAsioResetRequest lands
++     * on the adopted size even in fixed mode.  A global clock.force-quantum
++     * outranks everything. */
+     if (This->pipeasio_fixed_buffersize || This->pipeasio_follow_device_clock)
+     {
+-        LONG q = atomic_load_explicit(&This->follower_quantum, memory_order_relaxed);
+-        This->host_current_buffersize = (This->pipeasio_follow_device_clock && q)
+-                                                ? q
+-                                                : This->pipeasio_preferred_buffersize;
++        LONG q       = atomic_load_explicit(&This->follower_quantum, memory_order_relaxed);
++        LONG adopt   = atomic_load_explicit(&This->adopt_pending_quantum, memory_order_relaxed);
++        LONG adopted = atomic_load_explicit(&This->quantum_adopted, memory_order_relaxed);
++        LONG restore = atomic_load_explicit(&This->restore_pending_quantum, memory_order_relaxed);
++        LONG use     = restore ? 0 : (adopt ? adopt : adopted);
++        if (use && !pipeasio_buffer_size_supported(use))
++            use = 0;
++        This->host_current_buffersize
++                = use ? use
++                      : ((This->pipeasio_follow_device_clock && q)
++                                 ? q
++                                 : This->pipeasio_preferred_buffersize);
++    }
++    {
++        LONG gq = effective_global_quantum(This);
++        if (gq)
++            This->host_current_buffersize = gq;
+     }
+ }
+
+@@ -2382,6 +2658,57 @@ CreateBuffers(LPPIPEASIO iface, BufferInformation *bufferInfo, LONG numChannels,
+         error = -1000;
+         goto fail_internal_published;
+     }
++    /* A reset is acknowledged only after the entire CreateBuffers transaction
++     * succeeds.  Earlier points can still fail activation, allocation, device
++     * connection, callback publication, or state transition.  Keeping the
++     * target pending on every such failure permits a retry at the same
++     * quantum; a successful rebuild at a different size also remains pending
++     * for the watcher's bounded retry loop. */
++    {
++        LONG adopt  = atomic_load_explicit(&This->adopt_pending_quantum, memory_order_acquire);
++        LONG global = effective_global_quantum(This);
++        LONG commit = pipeasio_quantum_commit_target(bufferSize, adopt, global);
++        LONG restore = atomic_load_explicit(&This->restore_pending_quantum, memory_order_acquire);
++        if (commit)
++        {
++            atomic_store(&This->follower_quantum, commit);
++            atomic_store(&This->quantum_adopted, commit);
++            atomic_store(&This->adopt_pending_quantum, 0);
++            atomic_store(&This->adopt_request_tick, 0);
++            atomic_store(&This->restore_pending_quantum, 0);
++            atomic_store(&This->restore_request_tick, 0);
++            TRACE("host completed rebuild at the %s quantum %ld "
++                  "(pipeasio-quantum-converge)\n",
++                  global == commit ? "global-forced" : "adopted", (long)commit);
++        }
++        else if (restore)
++        {
++            LONG remaining = pipeasio_quantum_restore_after_create(
++                    restore, This->pipeasio_fixed_buffersize, bufferSize,
++                    audio_forcer_present(This->audio_client));
++            if (!remaining)
++            {
++                atomic_store(&This->follower_quantum, 0);
++                atomic_store(&This->quantum_adopted, 0);
++                atomic_store(&This->adopt_pending_quantum, 0);
++                atomic_store(&This->adopt_request_tick, 0);
++                atomic_store(&This->restore_pending_quantum, 0);
++                atomic_store(&This->restore_request_tick, 0);
++                TRACE("host acknowledged quantum restoration at %ld (%s mode)\n",
++                      (long)bufferSize,
++                      This->pipeasio_fixed_buffersize ? "fixed" : "host-controlled");
++            }
++            else
++                TRACE("host rebuilt at %ld without acknowledging restoration target %ld; "
++                      "the force returned or the fixed target was missed; "
++                      "the config watcher will retry within its bound\n",
++                      (long)bufferSize, (long)restore);
++        }
++        else if (adopt)
++            TRACE("host completed rebuild at %ld, not the pending quantum %ld; "
++                  "the config watcher will retry within its bound\n",
++                  (long)bufferSize, (long)adopt);
++    }
+     HeapFree(GetProcessHeap(), 0, tables);
+     method_end(&token);
+     return 0;
+@@ -2619,6 +2871,7 @@ process_callback(audio_nframes_t nframes, void *arg)
+     pipeasio_host_call_token token;
+     bool admitted = pipeasio_host_call_begin(This, PIPEASIO_HOST_PROCESS, &token);
+     int  half     = 0;
++    BOOL muted    = FALSE;
+
+     if (admitted)
+     {
+@@ -2634,6 +2887,13 @@ process_callback(audio_nframes_t nframes, void *arg)
+             pipeasio_host_call_sample_rate(&token, rate);
+         }
+
++        /* While the graph quantum disagrees with the host buffer size, swap
++         * silence in both directions (issue #49): the graph's buffers are
++         * quantum-sized, ours are host-sized, and the audible fault must be
++         * silence instead of wrong-speed playback while the config watcher
++         * adopts the foreign quantum (pipeasio-quantum-converge). */
++        muted = audio_quantum_muted(This->audio_client) ? TRUE : FALSE;
++
+         /* Read only while admitted: Start writes host_buffer_index after
+          * draining the host gate, which rejected callbacks are not part of. */
+         half = This->host_buffer_index;
+@@ -2641,7 +2901,9 @@ process_callback(audio_nframes_t nframes, void *arg)
+         {
+             if (!This->input_channel[i].active)
+                 continue;
+-            audio_sample_t *source = audio_port_get_buffer(This->input_channel[i].port, nframes);
++            audio_sample_t *source
++                    = muted ? NULL
++                            : audio_port_get_buffer(This->input_channel[i].port, nframes);
+             audio_sample_t *destination = &This->input_channel[i].audio_buffer[nframes * half];
+             if (source)
+                 memcpy(destination, source, sizeof(*destination) * nframes);
+@@ -2652,13 +2914,18 @@ process_callback(audio_nframes_t nframes, void *arg)
+         pipeasio_host_call_process(&token, half, nframes, audio_get_time_nsec(This->audio_client));
+     }
+
+-    for (int i = 0; i < This->pipeasio_number_outputs; ++i)
+-    {
+-        const audio_sample_t *source
+-                = admitted ? &This->output_channel[i].audio_buffer[nframes * half] : NULL;
+-        audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
+-                                  This->output_channel[i].active);
+-    }
++    /* In fail-silent mismatch mode the backend owns the graph buffer and
++     * publishes exactly quantum frames of silence once per graph cycle.  The
++     * host callback still advances at host-period cadence, but must not queue
++     * host-sized chunks into a foreign-sized graph cycle. */
++    if (!muted)
++        for (int i = 0; i < This->pipeasio_number_outputs; ++i)
++        {
++            const audio_sample_t *source
++                    = admitted ? &This->output_channel[i].audio_buffer[nframes * half] : NULL;
++            audio_port_publish_output(This->output_channel[i].port, source, nframes, admitted,
++                                      This->output_channel[i].active);
++        }
+     if (admitted)
+         This->host_buffer_index = half ? 0 : 1;
+     pipeasio_host_call_end(&token);
+@@ -2789,6 +3056,13 @@ configure_driver(IPipeASIOImpl *This)
+                          sizeof(environment_variable))
+         && pipeasio_parse_bool(environment_variable, &flag))
+         This->pipeasio_follow_device_clock = flag ? TRUE : FALSE;
++    /* The backend checks the same variable in audio.c; both halves go
++     * through the one strict boolean parser (pipeasio_env_bool) because
++     * the two sides disagreeing splits the mute from the adopt path. */
++    if (read_environment("PIPEASIO_ALLOW_QUANTUM_MISMATCH", environment_variable,
++                         sizeof(environment_variable)))
++        This->pipeasio_allow_quantum_mismatch
++                = pipeasio_env_bool(environment_variable) == 1 ? TRUE : FALSE;
+     if (read_environment("PIPEASIO_PREFERRED_BUFFERSIZE", environment_variable,
+                          sizeof(environment_variable)))
+     {
+@@ -2847,6 +3173,11 @@ PipeASIOCreateInstance(REFIID riid, LPVOID *ppobj)
+     atomic_init(&pobj->host_time_stamp, 0);
+     atomic_init(&pobj->config_pending, false);
+     atomic_init(&pobj->follower_quantum, 0);
++    atomic_init(&pobj->quantum_adopted, 0);
++    atomic_init(&pobj->adopt_pending_quantum, 0);
++    atomic_init(&pobj->adopt_request_tick, 0);
++    atomic_init(&pobj->restore_pending_quantum, 0);
++    atomic_init(&pobj->restore_request_tick, 0);
+     atomic_init(&pobj->lifecycle_waiters, 0);
+     atomic_init(&pobj->stop_generation, 0);
+     atomic_init(&pobj->gate_owner_seq, 1);
+diff --git a/src/audio.c b/src/audio.c
+index 06d82c2..b609985 100644
+--- a/src/audio.c
++++ b/src/audio.c
+@@ -298,6 +298,11 @@ struct audio_client
+     _Atomic uint64_t   last_clock_nsec;
+     bool               debug_enabled;
+     bool               quantum_warned;
++    _Atomic bool       quantum_muted;          /* mismatch mute active (issue #49) */
++    bool               allow_quantum_mismatch; /* PIPEASIO_ALLOW_QUANTUM_MISMATCH=on */
++    uint64_t           mute_accum;             /* graph frames banked while muted */
++    _Atomic uint32_t   global_force_quantum;   /* settings clock.force-quantum, 0 = none */
++    _Atomic uint32_t   foreign_forcers;        /* cached nodes with node.force-quantum */
+     bool               rate_announced; /* process announced a rate this activation */
+     uint64_t           cycle_count;
+     struct spa_source *diagnostic_event;
+@@ -375,6 +380,7 @@ struct audio_node_info
+     char    *node_name;
+     char    *display_name;
+     char    *media_class;
++    bool     foreign_forcer; /* counted in foreign_forcers (issue #49) */
+ };
+
+ struct audio_port
+@@ -470,6 +476,9 @@ audio_open(const char *client_name, uint32_t options, uint32_t *status)
+     atomic_init(&c->sample_rate, AUDIO_DEFAULT_SAMPLE_RATE);
+     atomic_init(&c->last_clock_nsec, 0);
+     atomic_init(&c->observed_quantum, 0);
++    atomic_init(&c->quantum_muted, false);
++    atomic_init(&c->global_force_quantum, 0);
++    atomic_init(&c->foreign_forcers, 0);
+     atomic_init(&c->graph_rate, 0);
+     atomic_init(&c->graph_force_rate, 0);
+     atomic_init(&c->default_changed, false);
+@@ -713,8 +722,17 @@ audio_activate(audio_client_t *c)
+     c->quantum_warned = false;
+     c->rate_announced = false;
+     c->cycle_count    = 0;
++    c->mute_accum     = 0;
+     atomic_store_explicit(&c->diagnostic_kind, 0, memory_order_release);
+
++    /* Escape hatch for the quantum-mismatch fail-safe (issue #49): "on"
++     * keeps audio flowing at mismatched sizes, the warn-and-play-on
++     * behaviour, wrong speed included.  The shared case-insensitive parser
++     * keeps this half in step with the PE side reading the same variable
++     * (pipeasio-quantum-converge). */
++    c->allow_quantum_mismatch
++            = pipeasio_env_bool(getenv("PIPEASIO_ALLOW_QUANTUM_MISMATCH")) == 1;
++
+     const size_t bsize_samples = c->buffer_size;
+     const size_t bsize_bytes   = bsize_samples * sizeof(audio_sample_t);
+
+@@ -789,11 +807,19 @@ audio_activate(audio_client_t *c)
+          * buffer layout, and even power-of-two sizes would request up to a
+          * 32 KiB alignment for no benefit.  Stock clients omit align
+          * entirely; 16 matches the context's SIMD minimum
+-         * (pipeasio-any-buffer-size). */
++         * (pipeasio-any-buffer-size).
++         *
++         * The size prefers one ASIO period but ranges up to the largest
++         * accepted buffer, so a larger foreign quantum always has a buffer
++         * to land in while the adopt path converges (issue #49). */
+         const struct spa_pod  *params[] = {
+             spa_pod_builder_add_object(
+                     &b, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers, SPA_PARAM_BUFFERS_buffers,
+-                    SPA_POD_Int(2), SPA_PARAM_BUFFERS_size, SPA_POD_Int((int)bsize_bytes),
++                    SPA_POD_Int(2), SPA_PARAM_BUFFERS_size,
++                    SPA_POD_CHOICE_RANGE_Int(
++                            (int)bsize_bytes,
++                            (int)(PIPEASIO_MIN_BUFFER_SIZE * sizeof(audio_sample_t)),
++                            (int)(PIPEASIO_MAX_BUFFER_SIZE * sizeof(audio_sample_t))),
+                     SPA_PARAM_BUFFERS_stride, SPA_POD_Int(sizeof(audio_sample_t)),
+                     SPA_PARAM_BUFFERS_align, SPA_POD_Int(16),
+                     SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(1 << SPA_DATA_MemFd)),
+@@ -935,6 +961,13 @@ audio_deactivate(audio_client_t *c)
+     if (!c->active)
+         return true;
+     audio_teardown_filter(c);
++    /* Stale process-side state must not leak into the next activation: the
++     * observed quantum and the mute flag describe a graph this filter is no
++     * longer part of, and the predict/adopt paths must not act on them
++     * (issue #49). */
++    atomic_store_explicit(&c->observed_quantum, 0, memory_order_release);
++    atomic_store_explicit(&c->quantum_muted, false, memory_order_release);
++    c->mute_accum = 0;
+     c->active = false;
+     return true;
+ }
+@@ -1024,6 +1057,45 @@ audio_observed_quantum(audio_client_t *c)
+     return c ? atomic_load(&c->observed_quantum) : 0;
+ }
+
++audio_nframes_t
++audio_global_force_quantum(audio_client_t *c)
++{
++    return c ? atomic_load_explicit(&c->global_force_quantum, memory_order_acquire) : 0;
++}
++
++bool
++audio_quantum_muted(audio_client_t *c)
++{
++    return c ? atomic_load_explicit(&c->quantum_muted, memory_order_acquire) : false;
++}
++
++bool
++audio_forcer_present(audio_client_t *c)
++{
++    if (!c)
++        return false;
++    if (atomic_load_explicit(&c->global_force_quantum, memory_order_acquire))
++        return true;
++    return atomic_load_explicit(&c->foreign_forcers, memory_order_acquire) != 0;
++}
++
++void
++audio_drop_force_quantum(audio_client_t *c)
++{
++    if (!c || !c->filter)
++        return;
++    pw_thread_loop_lock(c->loop);
++    struct spa_dict_item item = SPA_DICT_ITEM_INIT(PW_KEY_NODE_FORCE_QUANTUM, "0");
++    struct spa_dict      dict = SPA_DICT_INIT(&item, 1);
++    pw_filter_update_properties(c->filter, NULL, &dict);
++    pw_thread_loop_unlock(c->loop);
++    /* NODE_LOCK_QUANTUM stays for the rest of this activation.  The rebuild
++     * that answers the reset request tears the filter down and starts a
++     * fresh arbitration round with our own force at the new size, so no
++     * persistent "adopted" state survives here (issue #49). */
++    TRACE("dropped node.force-quantum: adopting the graph quantum\n");
++}
++
+ uint64_t
+ audio_get_time_nsec(audio_client_t *c)
+ {
+@@ -1517,7 +1589,26 @@ audio_diagnostic_event(void *data, uint64_t count)
+             = atomic_load_explicit(&client->diagnostic_buffer_size, memory_order_acquire);
+     (void)count;
+     if (kind & AUDIO_DIAGNOSTIC_QUANTUM)
+-        WARN("PipeWire quantum %u differs from host buffer size %u\n", quantum, buffer_size);
++    {
++        if (client->allow_quantum_mismatch)
++            WARN("PipeWire quantum %u differs from host buffer size %u: a forced "
++                 "quantum elsewhere outranks ours (arbitration is last-change-wins; "
++                 "clock.min-quantum/clock.max-quantum play no part). Playback runs "
++                 "at %u/%u speed while the sizes disagree "
++                 "(pipeasio-quantum-arbitration). Check clock.force-quantum in "
++                 "'pw-metadata -n settings' and other clients' node.force-quantum "
++                 "in 'pw-dump'.\n",
++                 quantum, buffer_size, buffer_size, quantum);
++        else
++            WARN("PipeWire quantum %u differs from host buffer size %u: a forced "
++                 "quantum elsewhere outranks ours (arbitration is last-change-wins; "
++                 "clock.min-quantum/clock.max-quantum play no part). Output is muted "
++                 "until the sizes converge (pipeasio-quantum-converge). Check "
++                 "clock.force-quantum in 'pw-metadata -n settings' and other "
++                 "clients' node.force-quantum in 'pw-dump'; "
++                 "PIPEASIO_ALLOW_QUANTUM_MISMATCH=on restores warn-and-play-on.\n",
++                 quantum, buffer_size);
++    }
+     if (kind & AUDIO_DIAGNOSTIC_XRUN)
+         WARN("xrun: missed the cycle deadline (%u this activation, buffer size %u)\n",
+              atomic_load_explicit(&client->xrun_count, memory_order_acquire), buffer_size);
+@@ -1567,16 +1658,33 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+
+     const uint32_t quantum = position ? (uint32_t)position->clock.duration : 0;
+
+-    /* Follow-device mode: remember the device-dictated quantum so the ASIO
+-     * side can settle its buffer size to it (read by audio_observed_quantum). */
+-    if (c->follow_device && pipeasio_buffer_size_supported(quantum))
++    /* Remember the raw graph quantum every cycle (read by
++     * audio_observed_quantum):
++     * follow-device mode settles its buffer size to it, the config watcher
++     * adopts a foreign forced quantum from it, and the predict path prefers
++     * it over raw metadata (issue #49).  Unsupported values are deliberately
++     * retained too: consumers validate before use, and seeing the invalid
++     * current value is safer than advertising a stale valid one. */
++    if (quantum)
+         atomic_store(&c->observed_quantum, quantum);
+
+-    if (quantum && quantum != c->buffer_size && !c->quantum_warned)
++    /* bufferSwitch and PipeWire must run at the same quantum.  While they
++     * disagree, mute: the ASIO side reads audio_quantum_muted and swaps both
++     * directions for silence, so the audible fault is silence plus one log
++     * line per episode instead of wrong-speed playback (issue #49).  The
++     * config watcher adopts the foreign quantum in parallel and the episode
++     * ends with a buffer renegotiation. */
++    const bool quantum_supported = pipeasio_buffer_size_supported(quantum);
++    const bool mismatch          = quantum && quantum != c->buffer_size;
++    const bool muted             = mismatch && !c->allow_quantum_mismatch;
++    atomic_store_explicit(&c->quantum_muted, muted, memory_order_release);
++    if (mismatch && !c->quantum_warned)
+     {
+         c->quantum_warned = true;
+         audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_QUANTUM, quantum, position);
+     }
++    else if (!mismatch)
++        c->quantum_warned = false; /* episode over: re-arm the warning */
+
+     /* The running position io is the authoritative sample rate: settings
+      * metadata is only a pre-activation estimate the daemon may refuse to
+@@ -1605,8 +1713,42 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+             audio_signal_diagnostic(c, AUDIO_DIAGNOSTIC_TRACE, quantum, position);
+     }
+
+-    const bool delivered
+-            = c->process_cb ? c->process_cb(c->buffer_size, c->process_cb_arg) == 0 : false;
++    /* Deliver the host callback.  At matched sizes, once per cycle.  While
++     * muted, the graph cycles at the foreign quantum but the host still
++     * expects buffer_size frames per bufferSwitch: invoking it once per
++     * cycle would run the host's DSP at quantum-to-buffer-size times real
++     * speed (a 512-frame host on a 128-frame graph burns 4x DSP and races
++     * the transport).  Accumulate graph frames instead and fire one host
++     * callback per buffer_size frames accumulated: the transport advances
++     * at real speed, DSP stays at 1x, and the output stays muted while the
++     * episode lasts (pipeasio-quantum-converge).  The loop is bounded for
++     * quantum > buffer_size; both values are range-validated, so the bound
++     * is at most max/min callbacks per cycle. */
++    bool delivered = false;
++    if (!muted)
++    {
++        c->mute_accum = 0;
++        delivered     = c->process_cb ? c->process_cb(c->buffer_size, c->process_cb_arg) == 0
++                                      : false;
++    }
++    else if (quantum_supported && c->process_cb && c->buffer_size)
++    {
++        c->mute_accum += quantum;
++        uint32_t bound = quantum / c->buffer_size + 2;
++        while (c->mute_accum >= c->buffer_size && bound--)
++        {
++            c->mute_accum -= c->buffer_size;
++            c->process_cb(c->buffer_size, c->process_cb_arg);
++        }
++        if (c->mute_accum > c->buffer_size)
++            c->mute_accum = c->buffer_size; /* bound trimmed: bank no backlog */
++    }
++    else
++        /* An out-of-contract graph duration cannot be represented by our
++         * buffers and could otherwise request millions of host callbacks in
++         * one cycle.  Stay fail-silent and do no DSP work until a supported
++         * duration returns. */
++        c->mute_accum = 0;
+
+     /* Count cycles the host was due but did not get.  SPA_IO_CLOCK_FLAG_XRUN_RECOVER
+      * cannot serve here: impl-node.c only sets it around the driver node's own
+@@ -1644,7 +1786,11 @@ audio_on_process(void *userdata, struct spa_io_position *position)
+     {
+         audio_port_t *port = c->ports[i];
+         if (port->direction == PW_DIRECTION_OUTPUT)
+-            audio_port_publish_output(port, NULL, c->buffer_size, false, false);
++            /* During a mismatch the PE callback deliberately leaves the live
++             * PipeWire buffer alone; publish exactly one quantum of silence
++             * here.  Publishing host-sized chunks at foreign cadence violated
++             * the graph contract, especially when quantum > host size. */
++            audio_port_publish_output(port, NULL, quantum_supported ? quantum : 0, false, false);
+         else
+         {
+             struct pw_buffer *buffer
+@@ -1756,6 +1902,7 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
+     const char *media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+     const char *description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
+     const char *nick        = spa_dict_lookup(props, PW_KEY_NODE_NICK);
++    const char *force_q     = spa_dict_lookup(props, PW_KEY_NODE_FORCE_QUANTUM);
+     if (!node_name || !audio_registry_property_valid(node_name)
+         || !audio_registry_property_valid(media_class)
+         || !audio_registry_property_valid(description) || !audio_registry_property_valid(nick))
+@@ -1792,7 +1939,21 @@ audio_cache_node(audio_client_t *c, uint32_t id, const struct spa_dict *props)
+     struct audio_node_info *n = calloc(1, sizeof(*n));
+     if (!n)
+         return;
+-    n->id           = id;
++    n->id = id;
++    /* Track foreign quantum forcers so the watcher can tell when the
++     * forcing condition ends (issue #49).  Our own node's force is not
++     * foreign.  Best effort: a node that turns its force on after being
++     * cached is not seen (registry props are read at global emission). */
++    if (!is_ours && force_q && audio_registry_property_valid(force_q))
++    {
++        int fq = 0;
++        if (pipeasio_parse_int(force_q, 0, INT_MAX, &fq) && fq > 0)
++        {
++            n->foreign_forcer = true;
++            atomic_fetch_add_explicit(&c->foreign_forcers, 1, memory_order_acq_rel);
++            TRACE("registry: node %u forces quantum %d\n", id, fq);
++        }
++    }
+     n->node_name    = strdup(node_name);
+     n->media_class  = audio_dup_or_null(media_class);
+     n->display_name = strdup(description ? description : (nick ? nick : node_name));
+@@ -2000,10 +2161,40 @@ audio_on_metadata_property(void *userdata, uint32_t subject, const char *key, co
+     audio_client_t *client = userdata;
+     char           *destination;
+     char            name[256] = "";
+-    (void)subject;
+     (void)type;
+     if (!key || strnlen(key, AUDIO_REGISTRY_PROPERTY_MAX + 1) > AUDIO_REGISTRY_PROPERTY_MAX)
+         return 0;
++    /* Graph-wide settings/defaults belong to the core.  Ignore per-node
++     * metadata carrying the same keys: it must not pin the whole ASIO driver. */
++    if (subject != PW_ID_CORE)
++        return 0;
++    if (!strcmp(key, "clock.force-quantum"))
++    {
++        /* "settings" metadata: a global forced quantum belongs to PW_ID_CORE
++         * and outranks every node's own request (issue #49).  The ASIO side
++         * reads it through audio_global_force_quantum so GetBufferSize can
++         * offer a size the graph will actually run; a removed key
++         * (value == NULL) or "0" means the global force is gone.  The value
++         * is stored raw; consumers validate it and prefer the running
++         * clock.duration, because the daemon clamps forced values to
++         * clock.quantum-limit. */
++        int parsed = 0;
++        if (value && !pipeasio_parse_int(value, 0, INT_MAX, &parsed))
++        {
++            WARN("settings metadata: invalid clock.force-quantum=\"%s\"; clearing stale force\n",
++                 value);
++            atomic_store_explicit(&client->observed_quantum, 0, memory_order_release);
++            atomic_store_explicit(&client->global_force_quantum, 0, memory_order_release);
++            return 0;
++        }
++        /* The previous duration belongs to the old force value.  Wait for a
++         * fresh process observation before preferring graph reality. */
++        atomic_store_explicit(&client->observed_quantum, 0, memory_order_release);
++        atomic_store_explicit(&client->global_force_quantum, (uint32_t)parsed,
++                              memory_order_release);
++        TRACE("settings metadata: clock.force-quantum=%d\n", parsed);
++        return 0;
++    }
+     if (!strcmp(key, "clock.rate") || !strcmp(key, "clock.force-rate"))
+     {
+         /* "settings" metadata: plain integer values ("48000"); a removed
+@@ -2115,6 +2300,12 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
+         pw_proxy_destroy((struct pw_proxy *)client->settings_metadata);
+         client->settings_metadata    = NULL;
+         client->settings_metadata_id = SPA_ID_INVALID;
++        /* Forced values describe the removed object, not the replacement.
++         * Clear them immediately so stale pins cannot outlive metadata
++         * recreation.  Keep clock.rate as the last useful estimate. */
++        atomic_store_explicit(&client->global_force_quantum, 0, memory_order_release);
++        atomic_store_explicit(&client->graph_force_rate, 0, memory_order_release);
++        audio_adopt_graph_rate(client);
+         /* Keep the last known graph rate - better than snapping back to the
+          * 48 kHz default while the daemon restarts its metadata object. */
+         return;
+@@ -2140,6 +2331,8 @@ audio_on_registry_global_remove(void *userdata, uint32_t id)
+         if (client->nodes[i]->id == id)
+         {
+             struct audio_node_info *node = client->nodes[i];
++            if (node->foreign_forcer)
++                atomic_fetch_sub_explicit(&client->foreign_forcers, 1, memory_order_acq_rel);
+             free(node->node_name);
+             free(node->display_name);
+             free(node->media_class);
+diff --git a/src/wow64/audio_proxy.c b/src/wow64/audio_proxy.c
+index 3d1c6db..c1fcb9b 100644
+--- a/src/wow64/audio_proxy.c
++++ b/src/wow64/audio_proxy.c
+@@ -345,6 +345,30 @@ audio_observed_quantum(audio_client_t *client)
+     return simple_u32((proxy_ctx *)client, PAU_OBSERVED_QUANTUM);
+ }
+
++audio_nframes_t
++audio_global_force_quantum(audio_client_t *client)
++{
++    return simple_u32((proxy_ctx *)client, PAU_GLOBAL_FORCE_QUANTUM);
++}
++
++bool
++audio_quantum_muted(audio_client_t *client)
++{
++    return simple_u32((proxy_ctx *)client, PAU_QUANTUM_MUTED) != 0;
++}
++
++bool
++audio_forcer_present(audio_client_t *client)
++{
++    return simple_u32((proxy_ctx *)client, PAU_FORCER_PRESENT) != 0;
++}
++
++void
++audio_drop_force_quantum(audio_client_t *client)
++{
++    simple_u32((proxy_ctx *)client, PAU_DROP_FORCE_QUANTUM);
++}
++
+ uint64_t
+ audio_get_time_nsec(audio_client_t *client)
+ {
+diff --git a/src/wow64/audio_unix.c b/src/wow64/audio_unix.c
+index 8674abe..f3b0a09 100644
+--- a/src/wow64/audio_unix.c
++++ b/src/wow64/audio_unix.c
+@@ -342,12 +342,15 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
+     bool        admitted = false;
+     uint32_t    produced;
+     pthread_mutex_lock(&cc->prod_mutex);
+-    bool half = cc->half;
++    bool     half          = cc->half;
++    uint32_t graph_actions
++            = pipeasio_wow64_graph_actions(audio_quantum_muted(cc->client));
+     if (!cc->buffer_base)
+     {
+-        for (uint32_t i = 0; i < cc->n_out; ++i)
+-            if (cc->out_port[i])
+-                audio_port_publish_output(cc->out_port[i], NULL, nframes, false, false);
++        if (graph_actions & PIPEASIO_WOW64_PUBLISH_GRAPH)
++            for (uint32_t i = 0; i < cc->n_out; ++i)
++                if (cc->out_port[i])
++                    audio_port_publish_output(cc->out_port[i], NULL, nframes, false, false);
+         pthread_mutex_unlock(&cc->prod_mutex);
+         return 1; /* no host buffer bound: nothing consumed this cycle */
+     }
+@@ -354,30 +357,48 @@ wow64_rt_process(audio_nframes_t nframes, void *arg)
+-    for (uint32_t i = 0; i < cc->n_in; ++i)
+-        if (cc->in_active[i] && cc->in_port[i])
++    if (graph_actions & PIPEASIO_WOW64_READ_GRAPH)
++    {
++        for (uint32_t i = 0; i < cc->n_in; ++i)
++            if (cc->in_active[i] && cc->in_port[i])
++            {
++                audio_sample_t *source = audio_port_get_buffer(cc->in_port[i], nframes);
++                audio_sample_t *destination
++                        = cc->buffer_base + pipeasio_host_input_offset_samples(i, cc->buffer_size)
++                          + pipeasio_host_half_offset_samples(half, cc->buffer_size);
++                if (source)
++                    memcpy(destination, source, sizeof(*destination) * nframes);
++                else
++                    memset(destination, 0, sizeof(*destination) * nframes);
++            }
++    }
++    else
++    {
++        /* Optional BUILD_WOW64_32 follows the native fail-silent contract.
++         * audio_on_process already banks these calls at host cadence; clear
++         * the entire bound input half, let the host advance, and leave the
++         * foreign-sized graph buffers to the backend. */
++        for (uint32_t i = 0; i < cc->n_in; ++i)
+         {
+-            audio_sample_t *source = audio_port_get_buffer(cc->in_port[i], nframes);
+             audio_sample_t *destination
+                     = cc->buffer_base + pipeasio_host_input_offset_samples(i, cc->buffer_size)
+                       + pipeasio_host_half_offset_samples(half, cc->buffer_size);
+-            if (source)
+-                memcpy(destination, source, sizeof(*destination) * nframes);
+-            else
+-                memset(destination, 0, sizeof(*destination) * nframes);
++            memset(destination, 0, sizeof(*destination) * cc->buffer_size);
+         }
++    }
+     produced = bridge_invoke_locked(cc, PAU_CB_BUFFER_SWITCH, half, nframes,
+                                     audio_get_time_nsec(cc->client), 0, &admitted);
+-    for (uint32_t i = 0; i < cc->n_out; ++i)
+-    {
+-        const audio_sample_t *source
+-                = admitted && produced
+-                          ? cc->buffer_base
+-                                    + pipeasio_host_output_offset_samples(i, cc->n_in,
+-                                                                          cc->buffer_size)
+-                                    + pipeasio_host_half_offset_samples(half, cc->buffer_size)
+-                          : NULL;
+-        if (cc->out_port[i])
+-            audio_port_publish_output(cc->out_port[i], source, nframes, admitted && produced,
+-                                      cc->out_active[i]);
+-    }
++    if (graph_actions & PIPEASIO_WOW64_PUBLISH_GRAPH)
++        for (uint32_t i = 0; i < cc->n_out; ++i)
++        {
++            const audio_sample_t *source
++                    = admitted && produced
++                              ? cc->buffer_base
++                                        + pipeasio_host_output_offset_samples(i, cc->n_in,
++                                                                              cc->buffer_size)
++                                        + pipeasio_host_half_offset_samples(half, cc->buffer_size)
++                              : NULL;
++            if (cc->out_port[i])
++                audio_port_publish_output(cc->out_port[i], source, nframes, admitted && produced,
++                                          cc->out_active[i]);
++        }
+     if (admitted)
+         cc->half = !half;
+     bridge_complete_locked(cc);
+@@ -564,6 +564,63 @@ wow64_observed_quantum(void *args)
+     return STATUS_SUCCESS;
+ }
+
++static NTSTATUS
++wow64_global_force_quantum(void *args)
++{
++    pa_simple_params *p = args;
++    client_ctx       *cc;
++
++    PAU_CHECK(p);
++    cc = cc_get(p->client);
++    if (!cc)
++        return STATUS_INVALID_HANDLE;
++    p->result = audio_global_force_quantum(cc->client);
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++wow64_quantum_muted(void *args)
++{
++    pa_simple_params *p = args;
++    client_ctx       *cc;
++
++    PAU_CHECK(p);
++    cc = cc_get(p->client);
++    if (!cc)
++        return STATUS_INVALID_HANDLE;
++    p->result = audio_quantum_muted(cc->client) ? 1 : 0;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++wow64_forcer_present(void *args)
++{
++    pa_simple_params *p = args;
++    client_ctx       *cc;
++
++    PAU_CHECK(p);
++    cc = cc_get(p->client);
++    if (!cc)
++        return STATUS_INVALID_HANDLE;
++    p->result = audio_forcer_present(cc->client) ? 1 : 0;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS
++wow64_drop_force_quantum(void *args)
++{
++    pa_simple_params *p = args;
++    client_ctx       *cc;
++
++    PAU_CHECK(p);
++    cc = cc_get(p->client);
++    if (!cc)
++        return STATUS_INVALID_HANDLE;
++    audio_drop_force_quantum(cc->client);
++    p->result = 1;
++    return STATUS_SUCCESS;
++}
++
+ static NTSTATUS
+ wow64_get_time_nsec(void *args)
+ {
+@@ -985,6 +1042,10 @@ const unixlib_entry_t __wine_unix_call_funcs[] = {
+     wow64_wait_callback,
+     wow64_reply_callback,
+     wow64_set_realtime,
++    wow64_global_force_quantum,
++    wow64_quantum_muted,
++    wow64_forcer_present,
++    wow64_drop_force_quantum,
+ };
+
+ #ifdef _WIN64
+@@ -1019,6 +1080,10 @@ const unixlib_entry_t __wine_unix_call_wow64_funcs[] = {
+     wow64_wait_callback,
+     wow64_reply_callback,
+     wow64_set_realtime,
++    wow64_global_force_quantum,
++    wow64_quantum_muted,
++    wow64_forcer_present,
++    wow64_drop_force_quantum,
+ };
+ _Static_assert(sizeof(__wine_unix_call_wow64_funcs) / sizeof(__wine_unix_call_wow64_funcs[0])
+                        == PAU_CALL_COUNT,
+diff --git a/tests/asio_loopback/run.sh b/tests/asio_loopback/run.sh
+index 3bccb80..a875a7e 100755
+--- a/tests/asio_loopback/run.sh
++++ b/tests/asio_loopback/run.sh
+@@ -109,6 +109,7 @@ export PIPEASIO_CLIENT_NAME="$node"
+ export PIPEASIO_CONNECT_TO_HARDWARE=off
+ export PIPEASIO_FIXED_BUFFERSIZE=off
+ export PIPEASIO_FOLLOW_DEVICE_CLOCK=off
++export PIPEASIO_ALLOW_QUANTUM_MISMATCH=off
+ export PIPEASIO_NUMBER_INPUTS=2
+ export PIPEASIO_NUMBER_OUTPUTS=2
+
+diff --git a/tests/asio_probe/run.sh b/tests/asio_probe/run.sh
+index 4d3de8f..bd4d950 100755
+--- a/tests/asio_probe/run.sh
++++ b/tests/asio_probe/run.sh
+@@ -108,7 +108,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_PREFERRED_BUFFERSIZE PIPEASIO_SAMPLE_RATE \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+-                PIPEASIO_CONNECT_TO_HARDWARE; do
++                PIPEASIO_CONNECT_TO_HARDWARE \
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/asio_probe/run32.sh b/tests/asio_probe/run32.sh
+index 377338e..c043ba9 100755
+--- a/tests/asio_probe/run32.sh
++++ b/tests/asio_probe/run32.sh
+@@ -93,7 +93,8 @@ for _cfg_var in PIPEASIO_NUMBER_INPUTS PIPEASIO_NUMBER_OUTPUTS \
+                 PIPEASIO_PREFERRED_BUFFERSIZE PIPEASIO_SAMPLE_RATE \
+                 PIPEASIO_OUTPUT_DEVICE PIPEASIO_INPUT_DEVICE \
+                 PIPEASIO_CLIENT_NAME PIPEASIO_RT_PRIORITY \
+-                PIPEASIO_CONNECT_TO_HARDWARE; do
++                PIPEASIO_CONNECT_TO_HARDWARE \
++                PIPEASIO_ALLOW_QUANTUM_MISMATCH; do
+     case " ${PROBE_ENV_KEEP:-} " in
+         *" $_cfg_var "*) ;;
+         *) unset "$_cfg_var" ;;
+diff --git a/tests/unit/test_config.c b/tests/unit/test_config.c
+index 04b7f63..af6c7e8 100644
+--- a/tests/unit/test_config.c
++++ b/tests/unit/test_config.c
+@@ -169,6 +169,90 @@ main(void)
+         }
+     }
+
++    TEST_GROUP("strict shared environment booleans")
++    {
++        static const struct
++        {
++            const char *text;
++            int         expected;
++        } cases[] = {
++            { "1", 1 },        { "true", 1 },     { "TRUE", 1 },
++            { "yes", 1 },      { "YeS", 1 },      { "on", 1 },
++            { "ON", 1 },       { "enabled", 1 },  { "ENABLED", 1 },
++            { " enabled ", 1 },
++            { "0", 0 },        { "false", 0 },    { "FALSE", 0 },
++            { "no", 0 },       { "No", 0 },       { "off", 0 },
++            { "OFF", 0 },      { "disabled", 0 }, { "DISABLED", 0 },
++            { " disabled ", 0 },
++            { NULL, -1 },       { "", -1 },        { "   ", -1 },
++            { "2", -1 },       { "enable", -1 },  { "disable", -1 },
++            { "truthy", -1 },  { "onward", -1 },  { "disabledx", -1 },
++        };
++        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i)
++            EXPECT_EQ(pipeasio_env_bool(cases[i].text), cases[i].expected);
++
++        bool unchanged = true;
++        EXPECT_TRUE(!pipeasio_parse_bool("invalid", &unchanged));
++        EXPECT_TRUE(unchanged);
++        unchanged = false;
++        EXPECT_TRUE(!pipeasio_parse_bool("invalid", &unchanged));
++        EXPECT_TRUE(!unchanged);
++    }
++
++    /* A cached foreign node remains alive while node.force-quantum changes.
++     * The aggregate counter must follow 0 -> Q -> Q -> 0 without relying on
++     * registry removal to clear the state. */
++    TEST_GROUP("dynamic force-quantum transitions")
++    {
++        bool forced = false;
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, "0"), 0);
++        EXPECT_TRUE(!forced);
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, "128"), 1);
++        EXPECT_TRUE(forced);
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, "883"), 0);
++        EXPECT_TRUE(forced);
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, "0"), -1);
++        EXPECT_TRUE(!forced);
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, "invalid"), 0);
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, "960"), 1);
++        EXPECT_EQ(pipeasio_quantum_forcer_transition(&forced, NULL), -1);
++        EXPECT_TRUE(!forced);
++    }
++
++    TEST_GROUP("ignored restoration reset")
++    {
++        /* Sending a reset does not acknowledge it: the same target becomes
++         * due again at five seconds and stays pending until CreateBuffers. */
++        EXPECT_TRUE(pipeasio_quantum_retry_due(0, 1000, 0));
++        EXPECT_TRUE(!pipeasio_quantum_retry_due(1000, 5999, 1));
++        EXPECT_TRUE(pipeasio_quantum_retry_due(1000, 6000, 1));
++        int restore_attempts = 2;
++        EXPECT_TRUE(pipeasio_quantum_retry_due(0, 7000, restore_attempts));
++        ++restore_attempts;
++        /* A forcer reappearance cancels the target, not this window budget. */
++        EXPECT_TRUE(!pipeasio_quantum_retry_due(0, 8000, restore_attempts));
++
++        int restore = 960;
++        EXPECT_EQ(pipeasio_quantum_restore_after_create(restore, true, 128, false), restore);
++        EXPECT_EQ(pipeasio_quantum_restore_after_create(restore, true, 960, true), restore);
++        EXPECT_EQ(pipeasio_quantum_restore_after_create(restore, true, 960, false), 0);
++        EXPECT_EQ(pipeasio_quantum_restore_after_create(restore, false, 883, false), 0);
++    }
++
++    /* A graph-wide force may be predicted before CreateBuffers, without ever
++     * creating a pending reset.  Record it after the successful rebuild, keep
++     * it while the forcer remains, and restore after an in-place Q -> 0. */
++    TEST_GROUP("predicted global quantum lifecycle")
++    {
++        int adopted = pipeasio_quantum_commit_target(128, 0, 128);
++        EXPECT_EQ(adopted, 128);
++        EXPECT_TRUE(!pipeasio_quantum_should_restore(adopted, 0, 128, 128, true));
++        EXPECT_TRUE(pipeasio_quantum_should_restore(adopted, 0, 128, 128, false));
++        EXPECT_EQ(pipeasio_quantum_commit_target(128, 128, 0), 128);
++        EXPECT_EQ(pipeasio_quantum_commit_target(256, 128, 0), 0);
++        EXPECT_EQ(pipeasio_quantum_commit_target(128, 256, 128), 128);
++    }
++
+     /* Comments, stray whitespace, unknown keys, bool spellings, no header. */
+     TEST_GROUP("lenient parse")
+     {
+diff --git a/tests/unit/test_offsets.c b/tests/unit/test_offsets.c
+index b1f8813..dd1dd82 100644
+--- a/tests/unit/test_offsets.c
++++ b/tests/unit/test_offsets.c
+@@ -161,6 +161,16 @@ static void test_host_callback_layout(void)
+     }
+ }
+
++static void test_wow64_mismatch_actions(void)
++{
++    TEST_GROUP("WoW64 mismatch graph-I/O gate") {
++        uint32_t normal = pipeasio_wow64_graph_actions(false);
++        EXPECT_TRUE(normal & PIPEASIO_WOW64_READ_GRAPH);
++        EXPECT_TRUE(normal & PIPEASIO_WOW64_PUBLISH_GRAPH);
++        EXPECT_EQ(pipeasio_wow64_graph_actions(true), 0u);
++    }
++}
++
+ static void test_edge_cases(void)
+ {
+     /* Tiny ASIO buffer (RME prefers 32).  Should still align cleanly. */
+@@ -186,6 +196,7 @@ int main(void)
+     test_mapoffset_partition();
+     test_port_buffer_offset_samples();
+     test_host_callback_layout();
++    test_wow64_mismatch_actions();
+     test_edge_cases();
+     return test_report();
+ }
+diff --git a/tests/wow64/unix_abi_layout.c b/tests/wow64/unix_abi_layout.c
+index ec2f57e..815afb3 100644
+--- a/tests/wow64/unix_abi_layout.c
++++ b/tests/wow64/unix_abi_layout.c
+@@ -42,7 +42,11 @@ CHECK(PAU_LOAD_CONFIG == 24, "call enum drift");
+ CHECK(PAU_WAIT_CALLBACK == 26, "call enum drift");
+ CHECK(PAU_REPLY_CALLBACK == 27, "call enum drift");
+ CHECK(PAU_SET_REALTIME == 28, "call enum drift - PAU_SET_REALTIME must stay appended");
+-CHECK(PAU_CALL_COUNT == 29, "call count drift - update both unix call tables");
++CHECK(PAU_GLOBAL_FORCE_QUANTUM == 29, "call enum drift - append only");
++CHECK(PAU_QUANTUM_MUTED == 30, "call enum drift - append only");
++CHECK(PAU_FORCER_PRESENT == 31, "call enum drift - append only");
++CHECK(PAU_DROP_FORCE_QUANTUM == 32, "call enum drift - append only");
++CHECK(PAU_CALL_COUNT == 33, "call count drift - update both unix call tables");
+ CHECK(PAU_CB_BUFFER_SWITCH == 0, "callback kind drift");
+ CHECK(PAU_CB_RESERVED_3 == 3, "callback kind drift");
+
+
+--
+2.43.0

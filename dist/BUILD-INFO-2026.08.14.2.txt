@@ -1,0 +1,29 @@
+dist-version: 2026.08.14.2
+wine:         wine-11.13
+base:         giang17/wine d2d1-dcomp-11.13 @ 5c23dd1c
+prefix:       /opt/wine-d2d1-nspa-11.13 (configure-time only; tarball is relocatable, see relocation gate)
+patches:      104
+wine-patches: 95
+pipeasio-patches: 9
+patch-head:   d39fafc9917ffbab9bb5c4c9dd52f8de38b66df0
+patch-stack:  aa3773a6c685d79d615c72b036fcc364f62947196dded47bad354a6fefb774a5
+source-tree:  0c9066c4d3498963c13d04b6b6a1f0ff92f4cf77a94b022337c7fb80d5303d69
+builder-packages: 1dcd332ce0fa5ccbf47b1a26d6288e11c6de0584571d7239e7e63ba641a4187c
+cabextract-static: 7943e60673f029eeb7150dd201f39a8cdefa16b7995a948540789d659b1bc92b
+ableton-linkd: 6e8d4454728fd8f0191d8a3affe744a6bebfd32277234eaa04ca1213be47bc20
+pipeasio:     1.5.0
+pipewire-floor: 1.4.2 (required for both client library and daemon at install and driver startup)
+pipewire-version-probe: 4ea7a631decb71c0c9dfa562c916efeb82df8b5d7187b06e942f74dbbb63c31f
+pipewire-version-probe-tests: client-stub+ASan+UBSan passed
+pipeasio-panel: built
+pipeasio-settings: 8e8304ac13baa19d9c78c1a7f3baa96264f8e5fc4005cde71477e78c3ba9c44c (Qt 6.2 link)
+pipeasio-tests: CTest non-integration scope passed (unit, registration/layout, ABI, panel)
+pipeasio-no-qt: CMake driver build/install + non-integration CTest passed
+pipeasio-sanitizers: ASan+UBSan unit+panel passed (driver imports verified); TSan unit passed
+ntsync:       yes (vendored linux/ntsync.h 006437ee52a3e04f921df77081eb5c21c44c71f598b10ac534c6ef9e78296262)
+libusb-pe:    e9c7ce09005f450bac01c6b8d1e8f85b47d3933a6fb27463d09aba75c2e06f2d
+libusb-unix:  5c18dc48b25ce6dc14b38c40eec3e640378bd80490a8ec63ac0aaf6f227b842e
+portal-unix:  2bc1af44d3aa5452d8ecee3c1cea3fd948cd1019222ac46eb00b17b251b8fa57
+pipeasio-pe:  9143f186c90faedd9220752d57c201871e3b864cf4bbd0097e3ad6f8e1ac6794
+pipeasio-unix: 0ad2b992b32991b0dab9e2ac999a98ecb0843cbdf8381f45e197022d1f8a6ea9
+built-on:     Ubuntu 22.04 (glibc 2.35)

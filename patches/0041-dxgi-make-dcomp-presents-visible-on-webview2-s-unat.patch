@@ -4,8 +4,7 @@ Date: Tue, 21 Jul 2026 07:01:07 +0200
 Subject: [PATCH] dxgi: make dcomp presents visible on WebView2's unattributed
  layered targets
 
-Three interlocked fixes for the Learn View display path
-(notes/ABLETON-WINE-LEARNVIEW-FLICKER.md):
+Three interlocked fixes for the Learn View display path:
 
 1. Root cause #3: Chromium binds composition swapchains to its
    "Intermediate D3D Window" (WS_EX_LAYERED|WS_EX_NOREDIRECTIONBITMAP|
@@ -326,4 +325,3 @@ index 0454a2d0..b4ed824f 100644
                  RemovePropW(t, L"__wine_dcomp_orig_wndproc");
 -- 
 2.55.0
-

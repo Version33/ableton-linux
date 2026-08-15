@@ -2,7 +2,7 @@
 # Host realtime profile for Ableton Live under Wine: the user-space half of the
 # distribution-canon pro-audio setup (Arch Wiki professional-audio guide,
 # linuxaudio.org system-configuration wiki). Idempotent; safe to re-run.
-# Needs root (uses sudo when not root; run it via sudo or as root).
+# Run it as your own user; it asks for sudo when it needs it.
 #
 # Writes exactly these drop-ins, nothing else:
 #   /etc/security/limits.d/90-ableton-rt.conf   rtprio 95, memlock unlimited,
@@ -30,6 +30,37 @@
 #            DESTDIR=path           stage the drop-ins under path only; no live
 #                                   host changes (packaging/testing)
 set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+root_safe_lib() {  # $1 = candidate library; true when root may source it
+    # The installed copy of this script lives under the user's data directory,
+    # so a root run whose HOME survived sudo would source a file its owner can
+    # rewrite. Only trust a candidate that root owns in a directory root owns,
+    # with no group or world write bit on either.
+    local candidate="$1" target owner mode
+    for target in "$(dirname "$candidate")" "$candidate"; do
+        owner="$(stat -c '%u' -- "$target" 2>/dev/null)" || return 1
+        mode="$(stat -c '%a' -- "$target" 2>/dev/null)" || return 1
+        [ "$owner" = "0" ] || return 1
+        (( (8#$mode & 0022) == 0 )) || return 1
+    done
+    return 0
+}
+for config_lib in "$here/lib/config.sh" "$here/config.sh" \
+                  "${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/lib/config.sh"; do
+    if [ -r "$config_lib" ]; then
+        if [ "${EUID:-$(id -u)}" -eq 0 ] && ! root_safe_lib "$config_lib"; then
+            echo "!! You started setup-realtime.sh as root, and another account can write" >&2
+            echo "   $config_lib." >&2
+            echo "   Run it as your ordinary user. It asks for sudo when it needs it." >&2
+            exit 2
+        fi
+        . "$config_lib"; break
+    fi
+done
+declare -F ableton_sudo_run_bounded >/dev/null 2>&1 || {
+    echo "!! setup-realtime.sh cannot find its sudo helper" >&2
+    exit 1
+}
 
 case "${1:-}" in
     "") ;;
@@ -43,32 +74,68 @@ SYSCTL="$DESTDIR/etc/sysctl.d/90-ableton-rt.conf"
 # Installed by versions of this script before 2026-08; removed in step 3.
 OLD_GOV_UNIT=/etc/systemd/system/ableton-cpufreq-performance.service
 
-sudo=()
-if [ "$(id -u)" -ne 0 ]; then
-    command -v sudo >/dev/null 2>&1 || { echo "!! setup-realtime.sh needs root and sudo is not installed — rerun as root" >&2; exit 1; }
-    sudo true 2>/dev/null || { echo "!! setup-realtime.sh needs root: sudo authentication failed (rerun via sudo or as root)" >&2; exit 1; }
-    sudo=(sudo)
-fi
+validate_rt_group() {  # $1 = group name bound for usermod and the PAM limits file
+    # This group gets rtprio 95 and unlimited memlock, and step 1 adds the
+    # invoking user to it. Reject a name that carries other authority, and a
+    # name that could not be one well-formed group line.
+    # LC_ALL=C keeps the character test byte-exact: under a UTF-8 collation the
+    # [a-z] range also matches accented letters, which no group name uses.
+    local LC_ALL=C name="$1" reject=""
+    case "$name" in
+        root|wheel|sudo|admin|adm|docker|disk|shadow|staff|operator)
+            reject="that group carries host privileges beyond audio" ;;
+    esac
+    if [ -z "$reject" ] && [ "${#name}" -gt 32 ]; then
+        reject="a group name is at most 32 characters"
+    fi
+    if [ -z "$reject" ] && ! [[ "$name" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        reject="a group name uses lowercase letters, digits, underscore and hyphen, and starts with a letter or underscore"
+    fi
+    [ -n "$reject" ] || return 0
+    echo "!! ABLETON_RT_GROUP=$name is rejected: $reject." >&2
+    echo "   Unset it to use the default group (audio), or name a group kept for audio work." >&2
+    return 2
+}
+
+as_root()
+{
+    if [ -n "$DESTDIR" ] || [ "${EUID:-$(id -u)}" -eq 0 ]; then
+        ableton_run_bounded 120 "$@"
+    else
+        ableton_sudo_run_bounded 120 "$@"
+    fi
+}
 
 install_dropin() {  # $1 = destination path; file content on stdin
-    local tmp
+    local tmp rc=0
     tmp="$(mktemp)"
-    cat > "$tmp"
-    "${sudo[@]}" install -D -m 644 "$tmp" "$1"
+    cat > "$tmp" || rc=$?
+    [ "$rc" -ne 0 ] || as_root install -D -m 644 "$tmp" "$1" || rc=$?
     rm -f "$tmp"
+    return "$rc"
 }
+
+validate_rt_group "$RT_GROUP" || exit 2
+
+if [ -n "$DESTDIR" ]; then
+    echo "Staged run: nothing on this computer changes. It writes these two files:"
+else
+    echo "This run adds you to the $RT_GROUP group and writes these two files:"
+fi
+echo "   $LIMITS"
+echo "   $SYSCTL"
 
 echo "== [1/5] RT privileges: $RT_GROUP group + PAM limits =="
 if [ -n "$DESTDIR" ]; then
     echo "   staged mode (DESTDIR=$DESTDIR) — skipping groupadd/usermod"
 else
-    getent group "$RT_GROUP" >/dev/null || "${sudo[@]}" groupadd -r "$RT_GROUP"
+    getent group "$RT_GROUP" >/dev/null || as_root groupadd -r "$RT_GROUP"
     # Under sudo $USER is root; the invoking user is in SUDO_USER.
     rt_user="${SUDO_USER:-${USER:-$(id -un)}}"
     if id -nG "$rt_user" | grep -qw "$RT_GROUP"; then
         echo "   $rt_user is already in the $RT_GROUP group"
     else
-        "${sudo[@]}" usermod -aG "$RT_GROUP" "$rt_user"
+        as_root usermod -aG "$RT_GROUP" "$rt_user"
         echo "   added $rt_user to the $RT_GROUP group (takes effect on re-login)"
     fi
 fi
@@ -86,7 +153,7 @@ vm.swappiness = 10
 EOF
 echo "   wrote $SYSCTL"
 if [ -z "$DESTDIR" ]; then
-    "${sudo[@]}" sysctl --system >/dev/null
+    as_root sysctl --system >/dev/null
     echo "   applied to the running kernel (sysctl --system)"
 fi
 
@@ -101,9 +168,9 @@ if [ -n "$DESTDIR" ]; then
     echo "   staged mode — nothing to stage (the launcher holds the profile per session)"
 else
     if [ -f "$OLD_GOV_UNIT" ]; then
-        "${sudo[@]}" systemctl disable "$(basename "$OLD_GOV_UNIT")" >/dev/null 2>&1 || true
-        "${sudo[@]}" rm -f "$OLD_GOV_UNIT"
-        "${sudo[@]}" systemctl daemon-reload
+        as_root systemctl disable "$(basename "$OLD_GOV_UNIT")" >/dev/null
+        as_root rm -f "$OLD_GOV_UNIT"
+        as_root systemctl daemon-reload
         echo "   removed the boot-time performance-governor unit an earlier version installed"
         echo "   (the governor keeps today's setting until reboot; from now on your"
         echo "    desktop's power settings own it outside Live sessions)"
@@ -137,7 +204,7 @@ EOF
 fi
 if [ -z "$DESTDIR" ]; then
     if systemctl cat rtirq.service >/dev/null 2>&1; then
-        if "${sudo[@]}" systemctl enable rtirq.service >/dev/null 2>&1; then
+        if as_root systemctl enable rtirq.service >/dev/null 2>&1; then
             echo "   rtirq.service enabled"
         else
             echo "-- rtirq.service is installed but could not be enabled — enable it by hand"

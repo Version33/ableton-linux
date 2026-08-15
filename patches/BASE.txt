@@ -6,15 +6,15 @@ Base commit: `5c23dd1c`, `winex11: use NORMAL not UTILITY for non-DComp ownerles
 
 Bumped 2026-07-21 from `d2d1-dcomp-11.11` (`7ea0c8b7dd`) to close the Wine
 point-version gap with upstream's actively-maintained branch and with ENCORE
-(github.com/wowitsjack/ENCORE), which runs plain Wine 11.13. Full rebase
-narrative — 5 merge conflicts, three build breaks the clean rebase didn't
-catch, a build.sh/pipefail tooling gotcha — is in
-`notes/ABLETON-WINE-11.11-TO-11.13-BASE-BUMP.md`.
+(github.com/wowitsjack/ENCORE), which runs plain Wine 11.13.
 
-The current Wine series contains 81 files, numbered 0001 through 0089.
-Patches 0027 and 0044 are intentionally absent. Numbers 0066 through 0068
-and 0072 through 0074 are reserved by open pull requests and will enter this
-branch as those merge.
+The rebase involved five merge conflicts and uncovered three additional build
+breaks, plus a `build.sh`/`pipefail` tooling issue.
+
+The current Wine series contains 96 files, numbered 0001 through 0098.
+Patches 0027 and 0044 are intentionally absent. The ClickSentinel changes
+once numbered 0066 and 0067 now appear after the gesture patches as 0093
+and 0094, because 0066 through 0068 were held for this GPU series.
 
 ## Applying the series
 
@@ -40,21 +40,19 @@ Apply them in sequence with the rest of the series.
   DirectComposition, shared-session, sRGB, audio-name, and OpenGL fixes.
 - `0027`: Git housekeeping. Its commit remains in the source history, but the
   patch file was removed from the shipped series on 2026-07-14.
-- `0028`: resubscribe to Wine ALSA MIDI devices after reconnect. See
-  `notes/ABLETON-WINE-MIDI-HOTPLUG.md`.
+- `0028`: resubscribe to Wine ALSA MIDI devices after reconnect.
 - `0029`: add 4 px to the Win32 menu-bar band at 96 DPI. This fixes the
-  main-window resize offset at 100% scale. See
-  `notes/ABLETON-WINE-DPI-SCALE-100.md`.
+  main-window resize offset at 100% scale.
 - `0030`: block stale-size DirectComposition blits. This is a partial Learn
-  View fix. See `notes/ABLETON-WINE-LEARNVIEW-FLICKER.md`.
+  View fix.
 - `0031`: add the XDG file-dialog portal backend. It combines Wine MR !10060
   v5 patches 0001, 0002, 0003, and 0005 with its responsiveness follow-up,
-  rebased from Wine 11.0 to this Wine 11.11 tree. MR patch 0004 was test-only
-  and was not included. See `notes/ABLETON-WINE-FILE-PORTAL.md`.
+  rebased from Wine 11.0 to the earlier Wine 11.11 base and subsequently
+  carried to the current Wine 11.13 base. MR patch 0004 was test-only and was
+  not included.
 - `0032`: add an x86-64 helper-scoped host libusb bridge for the Push 2
   display. It exports the 16-function Win64 libusb 1.0.23 ABI used by
-  `Push2DisplayProcess.exe`. The i386 bridge is disabled. See
-  `notes/ABLETON-WINE-PUSH2-DISPLAY.md`.
+  `Push2DisplayProcess.exe`. The i386 bridge is disabled.
 - `0033`: add `WINE_DISABLE_UNIX_MOUNT_REPARSE`. The launchers set it to `1`
   so Unix mount boundaries appear as normal directories instead of incomplete
   mount-point reparse records.
@@ -73,34 +71,29 @@ Apply them in sequence with the rest of the series.
   `a080cbd2`.
 - `0038`: keep menu tracking active while X input focus stays inside the same
   client. This prevents dropdowns from closing during focus changes under
-  Mutter and Muffin. See `notes/ABLETON-WINE-MENU-FOCUSOUT.md`.
+  Mutter and Muffin.
 - `0039`: do not change a mapped popup from unmanaged to managed. The window
   manager makes that decision again on the next map. This prevents dropdown
-  remaps and lost clicks. See `notes/ABLETON-WINE-DROPDOWN-MANAGED-FLIP.md`.
+  remaps and lost clicks.
 - `0040`: scale the menu-bar band with DPI. It corrects one-shot geometry for
   programmatic window-manager tiles at 125%. It did not stop the interactive
-  resize loop, which patch 0042 fixes. Mailbox commit: `1173c1d5`. See
-  `notes/ABLETON-WINE-DPI-SCALE-100.md`.
+  resize loop, which patch 0042 fixes. Mailbox commit: `1173c1d5`.
 - `0041`: make DirectComposition presents visible on WebView2 layered targets,
   retry stale resize blits on a 120 ms timer for up to five attempts, and keep
-  reblits active after idle. Mailbox commit: `9d34f87f`. See
-  `notes/ABLETON-WINE-LEARNVIEW-FLICKER.md`.
+  reblits active after idle. Mailbox commit: `9d34f87f`.
 - `0042`: treat sub-scale window-manager geometry differences as compositor
   rounding instead of returning them to Win32. This stopped Live's 2 px
   interactive resize loop on the tested 125% GNOME/XWayland setup. Adapted
-  from ENCORE. Mailbox commit: `a014d2aa`. See
-  `FINDINGS-RESIZE-GROWTH-2026-07-21.md`.
+  from ENCORE. Mailbox commit: `a014d2aa`.
 - `0043`: send Live's Show in Explorer request through the XDG OpenDirectory
   portal. Wine Explorer remains the fallback when the portal or policy refuses
-  the request. Mailbox commit: `996524ab`. See
-  `notes/ABLETON-WINE-SHOW-IN-EXPLORER.md`.
+  the request. Mailbox commit: `996524ab`.
 - `0044`: reserved for the issue 57 parked-pane reblit work, which shipped
   as patch 0056 instead. No patch file is shipped under this number.
 - `0045`: reject `RevokeDragDrop` for a window owned by another process. This
   prevents a foreign-process drop-target pointer from crashing Live when a
   WebView2 plugin editor closes. Ported from `giang17/wine` commit
-  `fafb443f85e0`. See
-  `notes/ABLETON-WINE-WEBVIEW2-PLUGIN-CLOSE-CRASH.md`.
+  `fafb443f85e0`.
 - `0046`: fix build against 11.13's frame-latency-as-semaphore refactor.
   `struct d3d11_swapchain` no longer carries its own `frame_latency_event`
   handle upstream; fetches the waitable object, releases it as a semaphore,
@@ -114,24 +107,23 @@ Apply them in sequence with the rest of the series.
   Patch 0032's Push2 bridge gate checked a cache variable only
   `AC_CHECK_LIB` sets; fixes both the generated `configure` script and
   `configure.ac`. Renumbered from 0045 alongside 0046/0047.
-- `0049`: drop the engraved-bevel double-draw for grayed native menu
+- `0049`: drop the engraved-bevel double-draw for greyed native menu
   items. The highlight pass assumed `COLOR_3DHILIGHT` sits close to the
   menu background, true for the stock light theme but not once an app
   themes the menu bar dark via `SetSysColors`; both draw paths now do a
   single plain draw with `COLOR_GRAYTEXT`, matching what the `MF_HILITE`
   case already did. This code has zero diff from stock Wine, so the bug
   is upstream, not fork-specific.
-- `0050`: invalidate each process's per-process system-color cache -
+- `0050`: invalidate each process's per-process system-colour cache -
   including any already-created brush/pen - when `WM_SYSCOLORCHANGE`
-  arrives. Wine reads and caches every system color once
+  arrives. Wine reads and caches every system colour once
   (`get_rgb_entry`'s `loaded` flag) and never re-reads it; a
   `SetSysColors` from another process was otherwise invisible to an
   already-running window forever. Together with `theme_watch_loop`
   (`scripts/ableton-live`) and 0051 below, this is the practical
   ceiling for issue 35 point 4 (real-time theme switching): Live emits
   no observable signal at all - no file, no registry write, nothing -
-  while its Preferences dialog is open, only on close. See
-  `notes/FINDINGS-LIVE-THEME-PREVIEW-SIGNAL-2026-07-26.md`.
+  while its Preferences dialog is open, only on close.
 - `0051`: add `RDW_FRAME` to `NtUserSetSysColors`'s forced repaint so the
   redraw reaches the non-client area, where a native menu bar actually
   lives. Removes the need for `setsyscolors.exe`'s old `EnumWindows` +
@@ -153,9 +145,8 @@ Apply them in sequence with the rest of the series.
   manager then clamps interactive resizes at the app minimum, as USER
   does on Windows. Without the hint, a grab below Live's minimum made
   Live counter mid-drag and the window fought the drag (growth at the
-  opposite edge, occasional spurious maximize). Found 2026-07-27 while
-  enabling Live's GPU renderer. See
-  `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  opposite edge, occasional spurious maximise). Found 2026-07-27 while
+  enabling Live's GPU renderer.
 - `0054`: fall back to a linked font for a glyph missing from the
   launcher's Ableton Sans menu-bar substitute (issue 35). Wine consults
   the `SystemLink` chain only when selecting a whole font by charset,
@@ -164,8 +155,7 @@ Apply them in sequence with the rest of the series.
   registered families for one that covers the whole string.
   `calc_menu_item_size` measures with that same font: it had sized
   `item->rect` with the original, clipping the wider fallback render
-  ("オプション" truncating to "プショ"). See
-  `notes/ABLETON-WINE-MENU-FONT-FALLBACK.md`.
+  ("オプション" truncating to "プショ").
 - `0055`: set `WINED3D_SWAPCHAIN_PREFER_GL_PRESENT` for top-level D3D11
   swapchain windows. Without the flag, wined3d displayed every frame of
   Live's main window through GDI: it copied the finished frame from the
@@ -178,23 +168,20 @@ Apply them in sequence with the rest of the series.
   popup windows show black content on the direct path until the first
   interaction. Setting `WINE_DISABLE_GL_PRESENT=1` restores the GDI
   path for every window; the value `0` is ignored. Diagnosis and
-  measurements:
-  Lucas Gillingham (ClickSentinel). See
-  `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  measurements: Lucas Gillingham (ClickSentinel).
 - `0056`: gate parked DirectComposition reblits on window visibility.
   A parked WebView2 composition target kept stamping its stale
   composite over live siblings (issue 57).
 - `0057`: identify Intel GPUs from Ice Lake through Lunar Lake, plus the
   Arc A-series cards. Without an entry wined3d reports each of them as
-  "Intel(R) HD Graphics 4000", which Live 12 rejects for D3D11, exactly
-  as 0035 describes for Battlemage. Device IDs come from the pci.ids
-  database; devices still missing fall through to 0061's synthesised
-  description instead. A table entry takes precedence over 0061, and for
-  Meteor Lake it has to: 0061 synthesises the device's real Windows
-  name, "Intel(R) Arc(tm) Graphics", and a 0061-only build stayed
-  greyed out on the issue 84 machine (PR 105 comments, 2026-07-31). The
-  "(MTL)" suffix in the table name is what passes Live's check. See
-  issue 84 and `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  fabricated device `0x0162`, "Intel(R) HD Graphics 4000", a PCI ID
+  Live 12 rejects for D3D11, exactly as 0035 describes for Battlemage.
+  Device IDs come from the pci.ids database; devices still missing fall
+  through to 0061's synthesised description instead. A table entry
+  takes precedence over 0061, and on the issue 84 machine it had to: a
+  0061-only build stayed greyed out there (PR 105 comments,
+  2026-07-31). Live's check reads PCI device IDs, never names (see
+  0066). See issue 84 and `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0058`: fall back to the GDI present path for any frame whose
   present-time client rect disagrees with the captured destination
   rect. The direct GL path (0055) y-flips against a client rect
@@ -202,13 +189,12 @@ Apply them in sequence with the rest of the series.
   captured in the window's DPI context on the presenting thread; a
   disagreement (DPI-awareness mismatch between the threads, or a
   resize in flight) lands the frame low with a black band on top
-  (issue 100 and the niri report on PR 98). See
-  `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  (issue 100 and the niri report on PR 98).
 - `0059`: query the y-flip's client rect in the window's DPI context.
   0023 bracketed the present-time queries but missed
   `wined3d_texture_translate_drawable_coords`, the one on the CS
   thread; under fractional scaling the two disagreed and 0058's gate
-  fired on every frame. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  fired on every frame.
 - `0060`: implement `IFileOperation::DeleteItem`. Live's shared
   deletion path (browser deletion, pruning old project backups) uses
   it; Wine's method was an E_NOTIMPL stub. Deletes queue in the
@@ -217,48 +203,60 @@ Apply them in sequence with the rest of the series.
 - `0061`: describe a GPU that is not in wined3d's device table using the name
   the driver reports for itself, rather than guessing a card from the feature
   level. Without it an RX 7900 XT is reported as "ATI Radeon HD 5600 Series"
-  and every Intel GPU newer than the table as "Intel(R) HD Graphics 4000" —
-  the string Live rejects, which is what 0035 worked around one device at a
-  time. The Vulkan back end already behaves this way. See issue 84 and
+  and every Intel GPU newer than the table as fabricated device `0x0162`,
+  "Intel(R) HD Graphics 4000", which Live refuses; 0035 worked around
+  that one device at a time. The Vulkan back end already behaves this
+  way. The synthesis needs a non-zero video-memory report; 0067 removes
+  that dependency. See issue 84 and
   `notes/ABLETON-WINE-GPU-RENDERER.md`.
 - `0062`: let the launcher keep one exact top-level Windows class on
   winex11's offscreen-composited path. The Live launcher selects
   `Ableton Live Window Class`, preventing M4L child visibility from
   unmapping and reparenting the full Live client when track selection
   changes. Was proposed as 0057 on PR 88; renumbered, and 0057 went to
-  the Intel GPU identification work it was reserved for. See
-  `notes/ABLETON-WINE-M4L-SELECTION-FLICKER.md`.
+  the Intel GPU identification work it was reserved for.
 - `0063`: send Show in Explorer folder targets to the desktop file
   manager through `org.freedesktop.FileManager1.ShowItems`. The OpenURI
   portal's `OpenDirectory` method is defined for files, and folder
   reveals failed on the setups reported in issue 41. The portal call and
-  Wine Explorer remain the fallbacks. Mailbox commit: `bc577464`. See
-  `notes/ABLETON-WINE-SHOW-IN-EXPLORER.md`.
+  Wine Explorer remain the fallbacks. Mailbox commit: `bc577464`.
 - `0064`: route explorer folder-open commands (`/e,<dir>`, `/root,<dir>`,
   bare `<dir>`) to `org.freedesktop.FileManager1.ShowFolders`. Live's
   library panel issues `explorer.exe /e,"<folder>"`, which 0043/0063
   only intercepted in its `/select` form, so the library panel still
   spawned Wine Explorer. Fallbacks: the 0063 reveal ladder, then Wine
-  Explorer. See `notes/ABLETON-WINE-SHOW-IN-EXPLORER.md`.
-- `0065`: normalize monitor-covering geometry for one launcher-selected
+  Explorer.
+- `0065`: normalise monitor-covering geometry for one launcher-selected
   top-level Windows class, keep its attached menu out of fullscreen layout
   and painting, and retire an already-satisfied X11 configure request before
   removing `_NET_WM_STATE_FULLSCREEN` on exit. The Live launcher selects
   `Ableton Live Window Class`; other classes and ordinary windowed geometry
   retain Wine's existing behavior. See `notes/ABLETON-WINE-FULLSCREEN.md`.
+- `0066`: add the 24 Intel graphics devices missing between Skylake and
+  Amber Lake, including the desktop UHD 630 `0x3e92`. Live's GPU gate
+  refuses PCI device IDs on an internal list, and a table miss
+  fabricates denylisted device `0x0162`, so each missing entry disabled
+  the GPU renderer. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0067`: build the 0061 synthesised description even when the driver
+  reports no video memory, carrying a neutral figure; a machine that
+  reports one is unaffected. Without it a driver lacking
+  `GL_NVX_gpu_memory_info` fell back to fabricated device `0x0162`.
+- `0068`: add `WINE_D3D_FORCE_GPU_RENDERING=1`: report a baseline Intel
+  device ID in place of one Live refuses. Intel only, off by default,
+  and the description keeps the real card name with the substitution
+  named after it.
 - `0069`: keep `WINE_SWP_RESIZABLE` when the launcher-selected top-level
   window still has both `WS_CAPTION` and
   `WS_THICKFRAME`, even if its restored geometry covers the monitor. Genuine
   borderless fullscreen, unselected windows, and plugin windows retain Wine's
-  existing behavior. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
-  for comparison. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+  existing behaviour. `WINE_WIN32_RESIZABLE_CLASS=off` disables only this fix
+  for comparison.
 - `0070`: break the DefWindowProc Alt/F10 menu-bar arming on the win32u
   input retrieval path, so an Alt chord Live consumes (Alt+0 through Alt+8
   and the other Alt shortcuts) no longer activates the menu bar on Alt
   release. Windows keeps this state in win32k queue flags that message
   consumption cannot starve. Alt+letter menu mnemonics and bare Alt are
-  unchanged. Repro: `tools/altnum-menu-repro.c`. See
-  `notes/ABLETON-WINE-SHORTCUT-PARITY.md`.
+  unchanged. Repro: `tools/altnum-menu-repro.c`.
 - `0071`: report a sustained present-size fallback instead of staying
   silent. The 0058 gate keeps every frame correct but decides per frame; a
   persistent coordinate fault once pinned a swapchain to the GDI copy path
@@ -269,6 +267,20 @@ Apply them in sequence with the rest of the series.
   an unconditional MESSAGE line, and prints a one-line summary when the
   swapchain is destroyed. The launchers now run `WINEDEBUG=-all,+winediag`
   so the warning reaches the log. See `notes/ABLETON-WINE-GPU-RENDERER.md`.
+- `0072`: add six pointer settings and middle-button drag navigation. Keep
+  normal middle clicks and correct the pointer position after a drag.
+  `SmoothScrolling` defaults to `precise`. Selecting XI2 events on our own
+  windows makes a button press an implicit XI2 grab, which fails the core
+  `XGrabPointer` that `SetCursorPos` needs; `0098` suspends that selection
+  for the duration of a core drag, so the default is safe. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0073`: report vertical and horizontal wheel movement at the pointer's screen
+  position. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0074`: convert touchpad pinch to Ctrl+wheel without Ctrl key events and
+  keep the zoom at the window and point where it began. Limit each update to
+  one wheel step and stop it while a mouse button is held. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
 - `0075`: export UnregisterApplicationRecoveryCallback from kernel32.
   Applications link it as a static import, so the generated stub
   raised EXCEPTION_WINE_STUB during exit teardown. Fakes success to
@@ -278,7 +290,7 @@ Apply them in sequence with the rest of the series.
   first seven digest words. libcef.dll links it as a regular import;
   the generated stub fired when Chromium's sandbox derived the
   AppContainer SID for a sandboxed child process.
-- `0077`: advertise the minimize and maximize Motif functions for
+- `0077`: advertise the minimise and maximise Motif functions for
   disabled windows, extending 0037's close-function reasoning. Hints
   computed during a WS_DISABLED phase (a startup modal holding the
   main window) made mutter refuse the application's own programmatic
@@ -371,3 +383,72 @@ Apply them in sequence with the rest of the series.
   expression mixed an unsigned grayscale value with a lower channel sample,
   so subtraction underflow could saturate that channel to 255 instead of
   reducing it.
+- `0090`: add fine vertical and horizontal scrolling. Keep each update at its
+  starting point, ignore large jumps, and clear saved movement when the focus,
+  window, pointer control, or device changes. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0091`: add bounded continued movement after a fast scroll or middle-button
+  drag. Keep it at its starting point and stop it on new input or a window
+  change.
+  See `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0092`: stop old scroll, zoom, or continued movement from reaching a control
+  after a button press. Keep ignored movement from catching up after release
+  and limit middle-button navigation to its own held button. Add the
+  `update_driver_button` request, grow `union message_data` from 48 to 56 bytes,
+  regenerate the protocol files, and raise `SERVER_PROTOCOL_VERSION` from 957
+  to 961. Patch 0095 restores normal wheel use while a button is held without
+  weakening the checks for older movement. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0093`: clear old pointer state when a Max for Live window loses focus. This
+  stops the device from sending false pointer positions to Live after loading
+  (issue 122). Ported from ClickSentinel commit `ddea297054`; see
+  `notes/ABLETON-WINE-M4L-INPUT-INJECTION.md`.
+- `0094`: add an optional XWayland repair for faders and knobs that move farther
+  than the pointer. It stays off by default and automatic mode waits until it
+  sees the fault twice. Focus, pointer control, device, thread, and button
+  changes stop the repair. Reworked from ClickSentinel commit `d2996582b5`; see
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0095`: give fine-scroll inertia and middle-drag throw separate controls and
+  enable both by default. Continued movement slows more gradually. A short or
+  curved middle-button drag can throw when released. Add the 100 ms scroll
+  fallback. Keep normal wheel steps during a button hold, except
+  during middle-button navigation, while blocking smooth scrolling, pinch and
+  earlier continued movement. Stop continued movement when its input or target
+  changes, and disable it if timing setup fails. Named values ignore letter
+  case; `off` and `0` mean `disabled` where supported. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0096`: cache the enumerated host font list in
+  `c:\windows\wine-host-font.cache`. Wine otherwise re-reads every host
+  font in every font-using process, and the launcher kills the wineserver
+  on every launch, so Live repeated the reading on every start: about
+  1.9 s per launch on the measured machine. The file stores the raw
+  result of one read, plus a stamp of every input to that read. When any
+  input changes, Wine reads everything again and rewrites the file. Wine
+  discards a damaged file whole, and always reads fonts inside the
+  prefix directly. `WINE_DISABLE_HOST_FONT_CACHE=1` turns the cache off.
+  PR 139 first shipped this patch as 0070; it is 0096 here, renumbered
+  above the merged 0090-0095 pointer gesture series and repaired before
+  merge. See `notes/FINDINGS-M4L-LAUNCH-2026-08-04.md`, P-M1.
+- `0097`: use the final 100 ms of movement for inertia and middle-drag throw.
+  Set the default rate to 4.0 and raise the continuation limits. Stop a second
+  touch from speeding up a left- or right-button control drag. Keep one-finger
+  dragging unchanged, and invert both middle-button navigation axes so content
+  follows the pointer. Deliver the vertical wheel with the opposite sign while
+  Ctrl is held, so a Ctrl+middle drag towards the top of the screen zooms in;
+  the horizontal wheel is unchanged and the accumulator keeps the pan sign, so
+  a modifier change mid-drag strands no partial notch. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.
+- `0098`: select XI motion for smooth scrolling only while no ordinary core
+  button is held. A core press replaces the window's XI mask without motion;
+  the X server therefore owns the implicit grab and supplies real core drag
+  motion until the final core release restores XI motion. Already-queued XI
+  motion is discarded across the transition. Native smooth reports outside a
+  drag suppress only their correlated legacy core wheel copies, while physical
+  wheel buttons retain the stock core path. Scroll baselines are invalidated at
+  both drag boundaries. Event tracing records whether the server delivered an
+  accepted core `MotionNotify` before the drag ended. Warp emulation defaults
+  to `auto`: it engages only after observed failed warps, never preemptively,
+  and a button release is reported in the emulated coordinate space only when
+  the drag's own motion was delivered there. `WINE_X11_POINTER_FEATURES`
+  disables every pointer feature at once for baseline comparisons. See
+  `notes/ABLETON-WINE-POINTER-GESTURES.md`.

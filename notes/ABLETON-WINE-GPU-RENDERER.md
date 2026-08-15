@@ -1,97 +1,57 @@
-# Live's GPU renderer: enablement and effects
+# Live GPU rendering
 
-This note explains why the stack now runs Live's own GPU renderer, what
-that fixes, and how to verify it. Change date: 2026-07-27.
+Prefix setup removes the old `-_ForceGdiBackend` option so Live can use its GPU
+renderer. This change removed the measured Learn View and Splice alternation
+and reduced idle CPU to one to two per cent on the test system. Those numbers
+describe that system, not every Linux computer.
 
-## The change
+## Present frames without a CPU readback
 
-Remove the line `-_ForceGdiBackend` from every
-`drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences/Options.txt`
-in the prefix. `scripts/setup-prefix.sh` step 5c does this
-automatically. Live then uses its Direct2D/Direct3D 11 renderer instead
-of the GDI fallback.
+Before patch 0055, Wine copied each finished top-level frame from graphics
+memory to main memory and sent a full image to X11. Continuous UI activity
+produced about 650 MB/s of display traffic in the recorded issue 91 trace.
 
-Wine patch 0053 accompanies the change: winex11 exports the app's
-`WM_GETMINMAXINFO` minimum tracking size as the X11 `PMinSize` hint, so
-the window manager clamps interactive resizes at Live's minimum.
+[Patch 0055](../patches/0055-dxgi-prefer-GL-present-for-top-level-swapchain-devic.patch)
+uses Wine's direct GL present path for eligible top-level swapchains. Compare
+the earlier path with:
 
-Patch 0069 corrects the selected Live window's resizability classification.
-If captioned startup or restored geometry covers the monitor, Wine keeps the
-window resizable while `WS_CAPTION` and `WS_THICKFRAME` remain set. The window
-therefore stays on patch 0053's existing resizable size-hint path, publishing
-Live's DPI-dependent `PMinSize` without a `PMaxSize`; borderless fullscreen
-remains fixed-size. `WINE_WIN32_RESIZABLE_CLASS=off` disables only patch 0069
-for a one-launch A/B comparison.
+```bash
+env WINE_DISABLE_GL_PRESENT=1 ableton-live
+```
 
-## What it fixes
+## Keep fractional-scale frames aligned
 
-- The WebView2 pane flicker (Learn View, Splice view): with the GDI
-  renderer, Wine's DirectComposition keep-alive reblit (patch 0041) and
-  Chromium's stale software frame alternated in the pane at 5 Hz. With
-  the GPU renderer both painters hold identical content and the pane is
-  stable. Measured 2026-07-27 with xdmg and frame hashing: the 5 Hz
-  damage stamps still fire but 30 of 30 pane captures hash identical,
-  on both the wine-11.11 production runtime and the wine-11.13 build of
-  main.
-- Idle CPU drops to 1-2% (reported by the maintainer on the production
-  setup). The GDI renderer measured about 59% of one core mid-session.
-- Below-minimum interactive resize (patch 0053): without the PMinSize
-  hint, shrinking a window below Live's minimum (1610x1346 physical at
-  200% scale) made Live counter the grant mid-drag; the window grew at
-  the opposite edge and the configure storm could end in a spurious
-  maximize. With the hint the window manager stops the drag at the
-  minimum.
+The direct path exposed a frame drawn below its window at fractional scale.
+Patch 0058 takes the GDI path when the present-time client rectangle disagrees
+with the swapchain rectangle. Patch 0059 queries both rectangles in the
+window's DPI context, which removes the known source of that disagreement.
 
-## Why -_ForceGdiBackend existed
+Patch 0071 counts sustained mismatches and writes one diagnostic line after
+the threshold is reached. Current launcher output is also saved at
+`${XDG_STATE_HOME:-$HOME/.local/state}/ableton-wine/logs/live.log`. Search it
+with:
 
-Early setups (before the giang17 d2d1-dcomp base fork and before the
-file-dialog portal, patch 0031) hit blank file dialogs when Live's GPU
-renderer was on, and the flag was carried into the prefix as a
-requirement. Both reasons are gone: the base fork exists to make
-Direct2D rendering work, and file dialogs go through the XDG portal.
-The old machine-local docs that mark the flag as required are
-superseded by this note.
+```bash
+grep -i 'sustained present-size mismatch:' \
+  "$HOME/.local/state/ableton-wine/logs/live.log"
+```
 
-## Verification
+Include the whole line in a report. It contains the desktop and window DPI
+needed to reproduce the fallback.
 
-1. `grep -r ForceGdiBackend "$WINEPREFIX"/drive_c/users/*/AppData/Roaming/Ableton/*/Preferences/Options.txt`
-   returns nothing.
-2. Open the Learn View and the Splice view. Both render their content
-   and stay stable.
-3. `xprop -id <live-x-window> WM_NORMAL_HINTS` shows
-   `program specified minimum size` and no `program specified maximum size`.
-4. Drag a window edge below Live's minimum. The drag stops at the
-   minimum and the window does not fight the drag.
+## Report the real graphics device
 
-Checks that still need a pass after longer real-world use: file dialogs
-under sustained work, plugin editor open/close (JUCE, SWAM), and both
-panes across scale factors other than 200%.
+Live disables its renderer when Wine names an old or unsupported device.
 
-## Present path (added 2026-07-29, issue 91)
+- Patch 0035 adds Intel Battlemage G21.
+- Patch 0057 adds Intel devices from Ice Lake through current Arc generations.
+- Patch 0061 uses the driver's reported name, PCI identifiers, and video
+  memory when Wine has no table entry.
 
-A present is the step where Live hands a finished frame to Wine for
-display. With the GPU renderer on, Wine handled every present of Live's
-main window on its GDI path: it copied the finished frame from the
-graphics card into main memory and sent it to the display server as a
-full-window image, about 14 MB per frame at 2560x1350. An idle window
-presents nothing, so the idle figures above stay correct. Continuous UI
-activity, including mouse movement over the window, produced about
-650 MB per second of display-server traffic and used more than one CPU
-core. Lucas Gillingham (ClickSentinel) reported and measured this in
-issue 91.
+These changes let Live decide against the actual adapter instead of a generic
+HD 4000 or Radeon HD 5600 fallback.
 
-Wine patch 0055 marks the main window's frame buffers at creation with
-`WINED3D_SWAPCHAIN_PREFER_GL_PRESENT`. Wine then shows each finished
-frame directly from the graphics card with `glXSwapBuffers` and skips
-the copy. The patch applies this to top-level windows only. Windows
-with the `WS_CHILD` style (composition targets, embedded plugin
-editors) keep the GDI path because they have no X11 window of their
-own. Windows with the `WS_POPUP` style (Settings, the authorisation
-dialog, context menus) also keep the GDI path because they show black
-content on the direct path until the first click or keypress. Set
-`WINE_DISABLE_GL_PRESENT=1` in the environment to restore the GDI path
-for every window; a rebuild is unnecessary. The value `0` is ignored
-and keeps the direct path.
+## Check a renderer change
 
 To confirm which path a build uses, start Live with
 `WINEDEBUG=fixme+all,err+all` and count the message `Using GDI present`
@@ -302,9 +262,54 @@ entry takes precedence over 0061, and the "(MTL)" suffix in 0057's
 entry is what passes Live's check. A traced launch from that machine
 confirming the exact rejected name is still open.
 
+The two paragraphs above explain the refusal by the reported name.
+That explanation is wrong, and the subsection below replaces it.
+
 To check a machine: open Preferences > Display & Input. "Enable GPU
 Renderer" must be a switch, not greyed out with the HD 4000 reason
 text.
+
+### Live matches ID numbers, not names (2026-08-02, patch 0066)
+
+Every graphics chip reports a vendor number and a device number. Live
+reads only those numbers: it refuses a device number found on an
+internal list of 101 Intel parts sold between roughly 2004 and 2014,
+and the name appears only in the refusal message. Established by
+reading `Ableton Live 12 Suite.exe`. A suffix cannot matter to a check
+that never reads names, which rules out the "(MTL)" account above.
+
+When Wine cannot identify a card it reports Intel device `0x0162`,
+which is on Live's list, so every unidentified Intel card arrives
+wearing a refused identity. Patches 0066 through 0068 close the gaps:
+0066 adds the missing 2015 to 2019 table entries, 0067 keeps an
+unlisted card's real identity when the driver reports no video memory,
+and 0068 adds the opt-in `WINE_D3D_FORCE_GPU_RENDERING=1` substitution
+for the parts Live genuinely lists, disclosed in the device name. Each
+patch header carries its mechanism and evidence.
+
+#### Reading a machine's log
+
+```bash
+grep -a "TD3dSurface: Adapter\|GPU Renderer:\|Can't use GPU" \
+  ~/.wine-ableton/drive_c/users/*/AppData/Roaming/Ableton/Live*/Preferences/Log.txt | tail
+```
+
+An `Adapter:` line carries the pair Live received: `(8086:0162)` is the
+invented identity, `(8086:3e92)` a real one. The line appears only
+while Live draws through Direct3D, so it is absent with
+`-_ForceGdiBackend` set and after Live has refused the renderer. A
+`Can't use GPU renderer:` line records a refusal, but Live writes it
+only when the preference is already on, so its absence proves nothing
+at the default of off.
+
+The fastest datum from a reporter is a screenshot of Settings > Display
+& Input. "Unexplained slow UI at zoom-level 100% and/or crashes" means
+the ID pair was refused. "Gpu rendering is incompatible with
+_ForceGdiBackend" means the legacy flag is still set. "Cannot fetch
+IDXGIAdapter1" means Live found no adapter.
+
+Use `find ~/.wine-ableton -name Options.txt` to check for that flag
+file; in fish a glob that matches nothing aborts the whole command.
 
 ## Related
 
@@ -313,6 +318,7 @@ text.
 - [Patch 0053](../patches/0053-winex11-export-the-app-minimum-tracking-size-as-PMin.patch)
 - [Patch 0055](../patches/0055-dxgi-prefer-GL-present-for-top-level-swapchain-devic.patch)
 - [Patch 0057](../patches/0057-wined3d-add-Intel-graphics-devices-from-Ice-Lake-to-.patch)
+- [Patch 0066](../patches/0066-wined3d-add-the-missing-Intel-devices-from-Skylake-t.patch)
 - [Patch 0071](../patches/0071-wined3d-count-and-report-sustained-present-size-fall.patch)
 - Resize trace from the diagnosis session:
   `~/Projects/Code/ableton/live-resize-trace-gpu-20260727.log`

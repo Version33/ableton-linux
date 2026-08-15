@@ -101,4 +101,18 @@ if grep -Fq 'PRIVATE-SERIAL' <<< "$redacted"; then
     fail 'shared redactor retained a serial value'
 fi
 
+mkdir -p "$tmp/private-home" "$tmp/private-library"
+linux_report="$(
+    HOME="$tmp/private-home" \
+    ABLETON_LIBRARY_PATH="$tmp/private-library" \
+    WAYLAND_DISPLAY='' DISPLAY='' \
+        bash "$LINUX" 2>/dev/null
+)"
+grep -Fq 'requested_library_path=' <<< "$linux_report" \
+    || fail 'Linux profiler omitted the requested library state'
+if grep -Fq "$tmp/private-home" <<< "$linux_report" \
+   || grep -Fq "$tmp/private-library" <<< "$linux_report"; then
+    fail 'Linux profiler retained a private home or library path'
+fi
+
 printf 'Profiler privacy checks passed.\n'

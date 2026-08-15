@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ableton Live
+MimeType=x-scheme-handler/ableton;
+Exec=@BIN@/ableton-live %u
+NoDisplay=true
+StartupNotify=true
+Icon=live-suite

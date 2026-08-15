@@ -8,11 +8,19 @@
 # ableton_ask_color and ableton_live_theme_file read Ableton Live's own theme
 # (.ask) files, for coloring the win32 chrome like Live's surface.
 
+_adt_run() {
+    if declare -F ableton_run_bounded >/dev/null 2>&1; then
+        ableton_run_bounded 5 "$@"
+    else
+        timeout --signal=TERM --kill-after=2s 5s "$@"
+    fi
+}
+
 _adt_portal() {
     local out val=""
     if command -v gdbus >/dev/null 2>&1; then
         # serialises as "(<<uint32 1>>,)"
-        out="$(timeout 5 gdbus call --session \
+        out="$(_adt_run gdbus call --session \
             --dest org.freedesktop.portal.Desktop \
             --object-path /org/freedesktop/portal/desktop \
             --method org.freedesktop.portal.Settings.Read \
@@ -21,14 +29,14 @@ _adt_portal() {
     fi
     if [ -z "$val" ] && command -v busctl >/dev/null 2>&1; then
         # replies "v v u 1"
-        out="$(timeout 5 busctl --user call org.freedesktop.portal.Desktop \
+        out="$(_adt_run busctl --user call org.freedesktop.portal.Desktop \
             /org/freedesktop/portal/desktop org.freedesktop.portal.Settings Read \
             ss org.freedesktop.appearance color-scheme 2>/dev/null)" &&
             val="$(printf '%s\n' "$out" | awk '{print $NF; exit}' | grep -xE '[0-9]+')"
     fi
     if [ -z "$val" ] && command -v dbus-send >/dev/null 2>&1; then
         # replies "   variant       variant          uint32 1"
-        out="$(timeout 5 dbus-send --session --print-reply \
+        out="$(_adt_run dbus-send --session --print-reply \
             --dest=org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
             org.freedesktop.portal.Settings.Read \
             string:org.freedesktop.appearance string:color-scheme 2>/dev/null)" &&
@@ -45,7 +53,7 @@ _adt_portal() {
 _adt_gsettings() {
     command -v gsettings >/dev/null 2>&1 || return 1
     local scheme
-    scheme="$(timeout 5 gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" || return 1
+    scheme="$(_adt_run gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null)" || return 1
     case "$scheme" in
         *prefer-dark*)            echo dark ;;
         *prefer-light*|*default*) echo light ;;
