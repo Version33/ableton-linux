@@ -148,6 +148,21 @@ ableton_legacy_project_evidence()
         && grep -qF 'Ableton Live launcher for the patched Wine stack' "$launcher"
 }
 
+# The Nix package's pre-marker setup likewise created ~/.wine-ableton with no
+# ownership marker, and it stages nothing under ~/.local/bin or VERSION — the
+# tarball evidence above can never see it. Its footprint is the project's own
+# runtime link (a symlink only this project's launcher and setup maintain,
+# kept at runtime-link.sh's fixed path and pointing at an ableton-wine tree in
+# the store) plus the PipeASIO CLSID only this project registers, which the
+# prefix validator below checks in the prefix itself.
+ableton_legacy_nix_evidence()
+{
+    local link="$HOME/.local/share/ableton-wine/runtime" target
+    [ -L "$link" ] || return 1
+    target="$(readlink -- "$link" 2>/dev/null)" || return 1
+    case "$target" in /nix/store/*-ableton-wine-*) return 0 ;; *) return 1 ;; esac
+}
+
 ableton_legacy_default_runtime_valid()
 {
     local runtime="$1" expected info pe_count unix_count pe_hash unix_hash
@@ -177,11 +192,19 @@ ableton_legacy_default_prefix_valid()
 {
     local prefix="$1" expected registry
     expected="$(ableton_realpath_m "$HOME/.wine-ableton")" || return 1
-    [ "$prefix" = "$expected" ] && ableton_legacy_project_evidence \
+    [ "$prefix" = "$expected" ] \
         && [ -d "$prefix" ] && [ ! -L "$prefix" ] \
         && [ ! -e "$prefix/.ableton-linux-prefix" ] \
         && [ ! -L "$prefix/.ableton-linux-prefix" ] \
         && [ -d "$prefix/drive_c/windows/system32" ] || return 1
+    if ! ableton_legacy_project_evidence; then
+        # A pre-marker nix setup: the runtime link plus the PipeASIO CLSID
+        # this project registered in the prefix's own registry.
+        ableton_legacy_nix_evidence \
+            && [ -f "$prefix/system.reg" ] && [ ! -L "$prefix/system.reg" ] \
+            && grep -q '2D3CA9E2-1193-4C5D-B5FD-38798F3DC074' "$prefix/system.reg" \
+            || return 1
+    fi
     for registry in system.reg user.reg userdef.reg; do
         [ -f "$prefix/$registry" ] && [ ! -L "$prefix/$registry" ] \
             && [ "$(sed -n '1p' "$prefix/$registry" 2>/dev/null)" = 'WINE REGISTRY Version 2' ] \
