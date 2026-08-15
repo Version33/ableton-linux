@@ -7,6 +7,8 @@
   ableton-linkd,
   cabextract,
   unzip,
+  pipewire,
+  pkg-config,
   # The frozen patch manifest (patches/): stamped into the tree and diffed
   # against it by the build audit below.
   patchesDir,
@@ -87,7 +89,9 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = [
     removeReferencesTo
+    pkg-config
   ];
+  buildInputs = [ pipewire ];
 
   installPhase = ''
         runHook preInstall
@@ -96,15 +100,16 @@ stdenv.mkDerivation {
         cp -a ${wine} $out
         chmod -R u+w $out
         # Both names: Wine resolves pipeasio64.dll to builtin "pipeasio.dll"
-        # (from its spec) and looks for the unix half under that name.
+        # (from its spec) and looks for the unix half under that name. The
+        # aliases stay RELATIVE symlinks — upstream's CMake install contract,
+        # which build-audit.sh verifies.
         for pair in \
           pipeasio64.dll:x86_64-windows \
-          pipeasio64.dll.so:x86_64-unix \
-          pipeasio.dll:x86_64-windows \
-          pipeasio.dll.so:x86_64-unix; do
+          pipeasio64.dll.so:x86_64-unix; do
           file=''${pair%%:*}
           dir=''${pair##*:}
           cp -f ${pipeasio}/lib/wine/$dir/$file $out/lib/wine/$dir/
+          ln -sfn $file $out/lib/wine/$dir/''${file/pipeasio64/pipeasio}
         done
         # Build-time-only files pipeasio consumed: headers and winegcc/winebuild
         # drove its compile, the import libs (*.a) its link.
@@ -142,6 +147,13 @@ stdenv.mkDerivation {
         # staged next to the launcher; without it that feature silently does
         # nothing here while it works from the .run install.
         install -m644 ${../scripts/shortcut-hold.sh} $out/libexec/shortcut-hold.sh
+        # The launcher and max9 resolve their config/lifecycle helpers beside
+        # themselves first ($launcher_here/lib), then under the user's
+        # ~/.local/share/ableton-wine (which only installer.sh populates).
+        mkdir -p $out/libexec/lib
+        for helper in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+          install -m644 ${../scripts/lib}/$helper $out/libexec/lib/$helper
+        done
         # Quoted heredoc ('SHIM'): nothing shell-expands at build; @out@ is
         # substituted after. Runtime shell ''${...} is written with the '''' escape;
         # the pinBlock lines (nix-interpolated) are already literal shell.
@@ -204,40 +216,54 @@ stdenv.mkDerivation {
         install -m644 ${../tools/learnheal.exe}          $out/share/ableton-wine/learnheal.exe
         install -m755 ${../scripts/setup-realtime.sh}    $out/share/ableton-wine/scripts/setup-realtime.sh
         install -m755 ${../scripts/setup-link.sh}        $out/share/ableton-wine/scripts/setup-link.sh
-        # Sourced by the launcher and setup-link.sh: every path they write into
-        # user configuration goes through the stable link it maintains, never
-        # this store path (which a garbage collection can delete and an upgrade
-        # renames). Same $HOME-then-$WINE_ROOT lookup as the detection libs.
+        # setup-prefix.sh, setup-link.sh and ableton-linkctl source these from
+        # $here/lib before falling back to the user's staging.
+        mkdir -p $out/share/ableton-wine/scripts/lib
+        for helper in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+          install -m644 ${../scripts/lib}/$helper $out/share/ableton-wine/scripts/lib/$helper
+        done
+        # The Link lifecycle controller both launchers call; installer.sh
+        # stages it under ~/.local/share, the launchers fall back to this copy.
+        install -m755 ${../scripts/ableton-linkctl}      $out/share/ableton-wine/scripts/ableton-linkctl
+        # Sourced by the launcher: every path it writes into user configuration
+        # goes through the stable link it maintains, never this store path
+        # (which a garbage collection can delete and an upgrade renames). Same
+        # $HOME-then-$WINE_ROOT lookup as the detection libs.
         install -m755 ${../scripts/runtime-link.sh}      $out/share/ableton-wine/scripts/runtime-link.sh
-        # install.sh / uninstall.sh are tarball tools — not shipped.
+        # install.sh / uninstall.sh / installer.sh are tarball tools — not shipped.
+
+        # -- PipeWire compatibility probe --
+        # setup-prefix.sh refuses to touch a prefix before
+        # ableton_pipewire_preflight has run $WINE_ROOT/bin/pipewire-version-probe.
+        # The .run kit ships a host-resolving build; this one pins the closure's
+        # libpipewire through its RUNPATH (build-audit.sh allows the store pin).
+        $CC -std=c11 -O2 -Wall -Wextra -Werror \
+          $(pkg-config --cflags libpipewire-0.3) \
+          ${../tools/pipewire-version-probe.c} \
+          -lpipewire-0.3 -o $out/bin/pipewire-version-probe
 
         # -- Ableton Link session anchor --
-        # install.sh stages the daemon and its user unit in
-        # ~/.local/share/ableton-wine; both launchers and setup-link.sh look
-        # there and have no $WINE_ROOT fallback for them (unlike learnheal.exe),
-        # so repoint every default at the store. ABLETON_LINKD still overrides.
-        # The unit must sit next to the daemon: setup-link.sh reads it from
-        # dirname "$linkd" before falling back to its own directory.
+        # config.sh defaults ABLETON_LINKD to ~/.local/share/ableton-wine/ableton-linkd,
+        # which only installer.sh populates; the staged config.sh copies below
+        # default to this store copy instead. ABLETON_LINKD still overrides.
+        # The unit template stays verbatim: setup-link.sh renders @ABLETON_LINKD@
+        # itself from the resolved daemon path.
         install -m755 ${ableton-linkd}/bin/ableton-linkd \
           $out/share/ableton-wine/ableton-linkd
         install -m644 ${../scripts/ableton-linkd.service} \
           $out/share/ableton-wine/ableton-linkd.service
-        for f in libexec/ableton-live libexec/max9 \
-                 share/ableton-wine/scripts/setup-link.sh; do
-          substituteInPlace $out/$f \
-            --replace-fail '$HOME/.local/share/ableton-wine/ableton-linkd' \
-                           "$out/share/ableton-wine/ableton-linkd"
-        done
-        # %h/... in the shipped unit resolves to the user's home, where nothing
-        # is installed, so the ExecStart here names the store path. setup-link.sh
-        # rewrites it to the runtime link on the way into ~/.config/systemd/user:
-        # a user unit outlives package hashes, this copy does not have to.
-        substituteInPlace $out/share/ableton-wine/ableton-linkd.service \
-          --replace-fail '%h/.local/share/ableton-wine/ableton-linkd' \
-                         "$out/share/ableton-wine/ableton-linkd"
 
-        # Point default WINE_ROOT (and the launcher path) at the store.
-        for script in setup-prefix.sh check-live-audio.sh check-ntsync.sh setup-link.sh; do
+        # Point the shipped defaults at the store. The launchers and setup
+        # scripts now read their runtime root and daemon path from lib/config.sh,
+        # so the compatibility defaults are substituted there (both staged
+        # copies); check-live-audio.sh and check-ntsync.sh keep their own.
+        for config_copy in libexec/lib/config.sh share/ableton-wine/scripts/lib/config.sh; do
+          substituteInPlace $out/$config_copy \
+            --replace-fail '$HOME/.local/opt/$ABLETON_RUNTIME_NAME' "$out" \
+            --replace-fail '"''${configured:-$ABLETON_DATA_HOME/ableton-linkd}"' \
+                           "\"\''${configured:-$out/share/ableton-wine/ableton-linkd}\""
+        done
+        for script in check-live-audio.sh check-ntsync.sh; do
           substituteInPlace $out/share/ableton-wine/scripts/$script \
             --replace-fail '$HOME/.local/opt/wine-d2d1-nspa-11.13' "$out"
         done
@@ -292,22 +318,28 @@ stdenv.mkDerivation {
         rm -f $out/share/applications/wine.desktop
         mkdir -p $out/share/applications $out/share/ableton-wine/desktop
         render_desktop() {
-          sed -e "s#@HOME@/.local/bin/#$out/bin/#" \
+          sed -e "s#@BIN@#$out/bin#" \
               -e 's#@NAME@#Ableton Live#' \
               -e 's#@ICON@#live-suite#' \
               -e '/^StartupWMClass=@WMCLASS@$/d' \
-              -e '/^Path=/d' "$1" > "$2"
+              -e '/^Path=@PREFIX@/d' "$1" > "$2"
           if grep -qE '@[A-Z]+@' "$2"; then
             echo "!! unsubstituted token in $2:" >&2; grep -E '@[A-Z]+@' "$2" >&2; exit 1
           fi
         }
-        for f in ableton-live wine-protocol-ableton wine-extension-auz; do
-          render_desktop ${../desktop}/$f.desktop.in $out/share/applications/$f.desktop
-        done
-        # The launcher's repair_handler_entries reads staged copies; without
-        # ~/.local/share ones (install.sh) it falls back to this root.
-        for f in wine-protocol-ableton wine-extension-auz; do
-          cp $out/share/applications/$f.desktop $out/share/ableton-wine/$f.desktop
+        render_desktop ${../desktop/ableton-live.desktop.in} \
+          $out/share/applications/ableton-live.desktop
+        # The authorisation handlers carry the project's reverse-DNS desktop
+        # IDs (lib/config.sh); the launcher's repair_handler_entries reads
+        # staged copies at $ABLETON_DATA_HOME/<id> (install.sh) and falls back
+        # to this root.
+        render_desktop ${../desktop/ableton-linux-protocol.desktop.in} \
+          "$out/share/ableton-wine/io.github.shibco.ableton-linux.protocol.desktop"
+        render_desktop ${../desktop/ableton-linux-auz.desktop.in} \
+          "$out/share/ableton-wine/io.github.shibco.ableton-linux.auz.desktop"
+        for id in io.github.shibco.ableton-linux.protocol.desktop \
+                  io.github.shibco.ableton-linux.auz.desktop; do
+          cp "$out/share/ableton-wine/$id" "$out/share/applications/$id"
         done
         # Staged, not active: install.sh gates the Max 9 entries on a Max
         # install, which the store cannot see. Copy them in if you use Max.
@@ -323,6 +355,26 @@ stdenv.mkDerivation {
           $out/share/mime/packages/x-wine-extension-auz.xml
         install -m644 ${../desktop/icons/application-ableton-live.xml} \
           $out/share/mime/packages/application-ableton-live.xml
+
+
+        runHook postInstall
+  '';
+
+  # Stamped after fixup: strip/patchelf rewrite the recorded binaries, so
+  # hashing them any earlier writes records the audit's byte-match rejects.
+  postFixup = ''
+        # -- Builder manifest --
+        # The container records its apt package set here; this build's inputs
+        # are the pinned nix closure, so record those versions instead. Same
+        # contract build-audit.sh checks: sorted, unique, two fields per line.
+        printf '%s\n' \
+          "ableton-linkd ${ableton-linkd.version or "4.0"}" \
+          "cabextract ${cabextract.version}" \
+          "pipeasio 1.5.0" \
+          "pipewire ${pipewire.version}" \
+          "unzip ${unzip.version}" \
+          "wine-d2d1-nspa ${wine.version}" \
+          | LC_ALL=C sort -u > $out/ABLETON-WINE-BUILD-PACKAGES.txt
 
         # -- Provenance --
         # The two files the tarball carries (scripts/container-build.sh), for
@@ -350,7 +402,9 @@ stdenv.mkDerivation {
     wine-patches: $n_wine
     pipeasio-patches: $n_asio
     patch-stack:  $stack_sha
-    pipeasio:     1.2.2
+    pipeasio:     1.5.0
+    pipeasio-panel: skipped
+    pipeasio-settings: skipped (disabled)
     pipewire:     pinned in the closure via RUNPATH (the .run resolves the host's)
     gst-decoders: base/good/bad/ugly/libav pinned in the closure (the .run uses the host's)
     ntsync:       yes (vendored linux/ntsync.h, gated in nix/wine.nix)
@@ -359,10 +413,10 @@ stdenv.mkDerivation {
     portal-unix:  $(sha_of lib/wine/x86_64-unix/comdlg32.so)
     pipeasio-pe:  $(sha_of lib/wine/x86_64-windows/pipeasio64.dll)
     pipeasio-unix: $(sha_of lib/wine/x86_64-unix/pipeasio64.dll.so)
+    pipewire-version-probe: $(sha_of bin/pipewire-version-probe)
+    builder-packages: $(sha_of ABLETON-WINE-BUILD-PACKAGES.txt)
     built-by:     nix
     INFO
-
-        runHook postInstall
   '';
 
   disallowedReferences = [ wine ];
@@ -392,11 +446,36 @@ stdenv.mkDerivation {
       || { echo "ableton-wine shim does not default WINEPREFIX to the Ableton prefix"; exit 1; }
     # The shipped scripts must default to THIS runtime. The tarball's
     # ~/.local/opt path does not exist on Nix, and a script that keeps it
-    # aborts with "no wine at ..." for every Nix user who runs it.
-    for f in setup-prefix.sh check-live-audio.sh check-ntsync.sh setup-link.sh; do
-      if grep -qF '.local/opt/wine-d2d1-nspa' $out/share/ableton-wine/scripts/$f; then
+    # aborts with "no wine at ..." for every Nix user who runs it. The setup
+    # scripts and launchers read theirs from the staged lib/config.sh copies.
+    for f in scripts/check-live-audio.sh scripts/check-ntsync.sh \
+             scripts/lib/config.sh; do
+      if grep -qF '.local/opt/wine-d2d1-nspa' $out/share/ableton-wine/$f; then
         echo "$f still defaults to the tarball wine root"; exit 1
       fi
+    done
+    if grep -qF '.local/opt/wine-d2d1-nspa' $out/libexec/lib/config.sh; then
+      echo "libexec/lib/config.sh still defaults to the tarball wine root"; exit 1
+    fi
+    # The launchers and setup scripts hard-fail without their config and
+    # lifecycle helpers; they resolve them beside themselves first.
+    for d in libexec/lib share/ableton-wine/scripts/lib; do
+      for helper in config.sh lifecycle.sh manifest.sh pipeasio.sh; do
+        [ -r $out/$d/$helper ] || { echo "$helper is not staged in $d"; exit 1; }
+      done
+    done
+    # setup-prefix.sh refuses to run before the PipeWire preflight probe passes.
+    [ -x $out/bin/pipewire-version-probe ] \
+      || { echo "pipewire-version-probe is not staged"; exit 1; }
+    LC_ALL=C $out/bin/pipewire-version-probe >/dev/null 2>&1 || [ $? -ne 127 ] \
+      || { echo "pipewire-version-probe cannot resolve its libraries"; exit 1; }
+    # Both launchers fall back to this Link controller when installer.sh has
+    # staged nothing under ~/.local/share.
+    [ -x $out/share/ableton-wine/scripts/ableton-linkctl ] \
+      || { echo "ableton-linkctl is not staged"; exit 1; }
+    for f in libexec/ableton-live libexec/max9; do
+      grep -qF 'share/ableton-wine/scripts/ableton-linkctl' $out/$f \
+        || { echo "$f does not fall back to the staged ableton-linkctl"; exit 1; }
     done
     # check-ntsync.sh resolves its probe relative to its own directory.
     [ -f $out/share/ableton-wine/beta/tester-kit/probes/windows/ntsyncprobe.exe ] \
@@ -414,22 +493,27 @@ stdenv.mkDerivation {
     done
     [ -s $out/share/ableton-wine/vendor/fonts/bitstream-vera/COPYRIGHT.TXT ] \
       || { echo "the Bitstream Vera notice does not ship beside the faces"; exit 1; }
-    # Both launchers, setup-link.sh and the unit must all name the staged
-    # daemon: a missed substitution leaves Link silently unanchored here.
+    # The staged config.sh copies must default the Link daemon to the staged
+    # store copy: the compatibility default under ~/.local/share is only
+    # populated by installer.sh, which never runs on Nix.
     [ -x $out/share/ableton-wine/ableton-linkd ] \
       || { echo "ableton-linkd is not staged"; exit 1; }
-    for f in libexec/ableton-live libexec/max9 \
-             share/ableton-wine/scripts/setup-link.sh \
-             share/ableton-wine/ableton-linkd.service; do
+    for f in libexec/lib/config.sh share/ableton-wine/scripts/lib/config.sh; do
       grep -qF "$out/share/ableton-wine/ableton-linkd" $out/$f \
-        || { echo "$f does not point at the staged ableton-linkd"; exit 1; }
+        || { echo "$f does not default ABLETON_LINKD to the staged daemon"; exit 1; }
     done
+    # setup-link.sh renders the user unit from the template itself.
+    grep -qF '@ABLETON_LINKD@' $out/share/ableton-wine/ableton-linkd.service \
+      || { echo "the staged unit template lost its @ABLETON_LINKD@ token"; exit 1; }
     # Nothing this package installs may write THIS store path into user
     # configuration: it is deleted by a garbage collection of an unrooted
     # `nix run` closure and superseded by every upgrade. The launcher's handler
-    # entries and setup-link.sh's user unit both route through the runtime link,
-    # so its library has to be staged where their $HOME-then-$WINE_ROOT lookup
-    # finds it, and both must still call it.
+    # entries route through the runtime link, so its library has to be staged
+    # where the $HOME-then-$WINE_ROOT lookup finds it, and the launcher must
+    # still call it. (setup-link.sh's unit deliberately names the exact
+    # resolved daemon — its ownership digests require it — and the launcher's
+    # per-launch GC root keeps that path alive; re-run setup-link after an
+    # upgrade to re-point an always-on unit.)
     [ -r $out/share/ableton-wine/scripts/runtime-link.sh ] \
       || { echo "runtime-link.sh is not staged for the launcher and setup-link.sh"; exit 1; }
     # Same failure mode as the fonts: the launcher resolves this one beside
@@ -440,9 +524,16 @@ stdenv.mkDerivation {
       || { echo "the launcher no longer resolves shortcut-hold.sh beside itself"; exit 1; }
     ${stdenv.shell} -n $out/share/ableton-wine/scripts/runtime-link.sh \
       || { echo "runtime-link.sh has a syntax error"; exit 1; }
-    for f in libexec/ableton-live share/ableton-wine/scripts/setup-link.sh; do
-      grep -qF 'ableton_runtime_link' $out/$f \
-        || { echo "$f does not route user configuration through the runtime link"; exit 1; }
+    grep -qF 'ableton_runtime_link' $out/libexec/ableton-live \
+      || { echo "the launcher does not route user configuration through the runtime link"; exit 1; }
+    # The handler entries the launcher repairs from this root must carry the
+    # project's reverse-DNS IDs and exec this package's launcher.
+    for id in io.github.shibco.ableton-linux.protocol.desktop \
+              io.github.shibco.ableton-linux.auz.desktop; do
+      [ -f "$out/share/ableton-wine/$id" ] \
+        || { echo "$id is not staged for the launcher's handler repair"; exit 1; }
+      grep -qF "Exec=$out/bin/ableton-live" "$out/share/ableton-wine/$id" \
+        || { echo "$id does not exec this package's launcher"; exit 1; }
     done
     # No guessed window class: it is per edition, the store cannot see the
     # prefix, and a wrong one associates the window with nothing at all.
@@ -477,12 +568,15 @@ stdenv.mkDerivation {
     # PipeASIO pair, DT_NEEDED and RUNPATH) checked. Those invariants are the
     # must list this package used to reimplement one gate at a time.
     # It resolves the manifest as ../patches beside itself, so give it a kit.
+    # The nix profile relaxes ONLY the container-pipeline provenance records
+    # (sanitizer runs, git source-tree digest, installer helper hashes) this
+    # build cannot truthfully stamp; everything structural still fails hard.
     echo "Build audit"
     auditkit=$(mktemp -d)
     mkdir -p $auditkit/scripts
     cp ${../scripts/build-audit.sh} $auditkit/scripts/build-audit.sh
     cp -r ${patchesDir} $auditkit/patches
-    bash $auditkit/scripts/build-audit.sh $out
+    ABLETON_AUDIT_PROFILE=nix bash $auditkit/scripts/build-audit.sh $out
   '';
 
   meta = {

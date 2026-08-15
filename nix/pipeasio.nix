@@ -5,6 +5,9 @@
   pipewire,
   pipeasioSrc,
   patchesDir,
+  cmake,
+  ninja,
+  pkg-config,
 }:
 
 let
@@ -16,7 +19,7 @@ in
 
 stdenv.mkDerivation {
   pname = "pipeasio";
-  version = "1.2.2";
+  version = "1.5.0";
 
   src = pipeasioSrc;
 
@@ -42,56 +45,42 @@ stdenv.mkDerivation {
     echo "Verified $(echo "$series" | wc -l) pipeasio patches"
   '';
 
-  # winegcc/winebuild come from the patched Wine; libpipewire backs the unix half.
-  nativeBuildInputs = [ wine ];
+  # 1.5.0 builds with CMake (cmake/WineDLL.cmake drives winebuild/winegcc from
+  # the patched Wine); libpipewire backs the unix half. Same production
+  # configuration as scripts/container-build.sh, minus the Qt panel (not used
+  # inside Wine; the runtime stays driver-only and BUILD-INFO records it) and
+  # the test rig (the container runs the CTest scope; nothing here would).
+  nativeBuildInputs = [
+    cmake
+    ninja
+    pkg-config
+    wine
+  ];
   buildInputs = [ pipewire ];
 
-  # Same five-object build as scripts/container-build.sh, against this Wine's
-  # headers and nixpkgs' PipeWire. 64-bit only — Live 12 is 64-bit.
-  buildPhase = ''
-    runHook preBuild
-    mkdir -p build64
-    for f in asio audio config main regsvr; do
-      gcc -c -o build64/$f.o src/$f.c \
-        -Iinclude \
-        -I${lib.getDev pipewire}/include/pipewire-0.3 \
-        -I${lib.getDev pipewire}/include/spa-0.2 \
-        -I${wine}/include -I${wine}/include/wine \
-        -I${wine}/include/wine/windows \
-        -D_REENTRANT -Wall -pipe -fno-strict-aliasing -Wwrite-strings \
-        -Wpointer-arith -Werror=implicit-function-declaration \
-        -fPIC -O2 -DNDEBUG -fvisibility=hidden
-    done
-    winebuild -m64 --dll --fake-module -E pipeasio.dll.spec build64/*.o -o build64/pipeasio64.dll
-    winegcc -shared pipeasio.dll.spec build64/*.o \
-      -L${lib.getLib pipewire}/lib \
-      -lodbc32 -lole32 -luuid -lwinmm -luser32 -lpipewire-0.3 \
-      -o build64/pipeasio64.dll.so
-    runHook postBuild
-  '';
-
-  # Both names: Wine resolves pipeasio64.dll to builtin "pipeasio.dll" (from
-  # its spec) and looks for the unix half under that name; without both,
-  # LoadLibrary fails with STATUS_DLL_NOT_FOUND.
-  installPhase = ''
-    runHook preInstall
-    mkdir -p $out/lib/wine/x86_64-windows $out/lib/wine/x86_64-unix
-    install -m644 build64/pipeasio64.dll    $out/lib/wine/x86_64-windows/pipeasio64.dll
-    install -m644 build64/pipeasio64.dll.so $out/lib/wine/x86_64-unix/pipeasio64.dll.so
-    install -m644 build64/pipeasio64.dll    $out/lib/wine/x86_64-windows/pipeasio.dll
-    install -m644 build64/pipeasio64.dll.so $out/lib/wine/x86_64-unix/pipeasio.dll.so
-    runHook postInstall
-  '';
+  cmakeFlags = [
+    "-DWINEBUILD=${wine}/bin/winebuild"
+    "-DWINEGCC=${wine}/bin/winegcc"
+    "-DBUILD_SETTINGS_PANEL=OFF"
+    "-DBUILD_TESTS=OFF"
+  ];
 
   # Unlike the tarball (which must resolve the HOST's PipeWire, so no rpath),
   # this pins nixpkgs' libpipewire via RUNPATH; the client<->daemon protocol
-  # is stable across daemon versions.
+  # is stable across daemon versions. The CMake install owns the layout:
+  # lib/wine/{x86_64-windows,x86_64-unix}/pipeasio64.* plus the RELATIVE
+  # pipeasio.* alias symlinks Wine resolves the builtin through (and which
+  # build-audit.sh requires to be links), and bin/pipeasio-register (unused
+  # here — setup-prefix.sh registers through its own bounded wine calls — but
+  # part of upstream's install contract).
   doInstallCheck = true;
   installCheckPhase = ''
     test -s $out/lib/wine/x86_64-windows/pipeasio64.dll
     test -s $out/lib/wine/x86_64-unix/pipeasio64.dll.so
-    test -s $out/lib/wine/x86_64-windows/pipeasio.dll
-    test -s $out/lib/wine/x86_64-unix/pipeasio.dll.so
+    for alias in lib/wine/x86_64-windows/pipeasio.dll lib/wine/x86_64-unix/pipeasio.dll.so; do
+      [ -L $out/$alias ] || { echo "$alias is not the upstream install's alias symlink"; exit 1; }
+      [ -s $out/$alias ] || { echo "$alias dangles"; exit 1; }
+    done
     readelf -d $out/lib/wine/x86_64-unix/pipeasio64.dll.so \
       | grep -F 'Shared library: [libpipewire-0.3.so.0]' \
       || { echo "unix half does not link libpipewire-0.3.so.0"; exit 1; }
@@ -102,7 +91,7 @@ stdenv.mkDerivation {
   '';
 
   meta = with lib; {
-    description = "PipeASIO 1.2.2 — native PipeWire ASIO driver, compiled against patched Wine";
+    description = "PipeASIO 1.5.0 — native PipeWire ASIO driver, compiled against patched Wine";
     platforms = [ "x86_64-linux" ];
     license = licenses.gpl3Plus; # SPDX GPL-3.0-or-later in src/*.c
   };

@@ -15,10 +15,10 @@
         ntsyncUapi = ./vendor/ntsync-uapi;
       };
 
-      # PipeASIO 1.2.2 (native PipeWire ASIO driver) compiled against the patched Wine
+      # PipeASIO 1.5.0 (native PipeWire ASIO driver) compiled against the patched Wine
       pipeasio = pkgs.callPackage ./nix/pipeasio.nix {
         wine = wine-d2d1-nspa;
-        pipeasioSrc = ./vendor/pipeasio-1.2.2.tar.gz;
+        pipeasioSrc = ./vendor/pipeasio-1.5.0.tar.gz;
         patchesDir = ./patches;
       };
 
