@@ -34,13 +34,13 @@ have already fixed your issue.
   - [A plugin's installer won't start](#a-plugins-installer-wont-start)
   - [My plugin won't activate, or its copy protection fails](#my-plugin-wont-activate-or-its-copy-protection-fails)
   - [A plugin I installed doesn't appear in Live](#a-plugin-i-installed-doesnt-appear-in-live)
-  - [A plugin window keeps resizing itself, or looks smeared](#a-plugin-window-keeps-resizing-itself-or-looks-smeared)
+  - [A plugin window keeps resizing itself, is smaller than its window frame, or has visible corruption](#a-plugin-window-keeps-resizing-itself-is-smaller-than-its-window-frame-or-has-visible-corruption)
   - [A plugin loads into a Live channel fine, and can play sound, but fails to open its window](#a-plugin-loads-into-a-live-channel-fine-and-can-play-sound-but-fails-to-open-its-window)
   - [My Linux VST or CLAP plugins don't appear in Live](#my-linux-vst-or-clap-plugins-dont-appear-in-live)
 - [Inputs (mouse and keyboard) and devices (MIDI and controllers)](#inputs-mouse-and-keyboard-and-devices-midi-and-controllers)
   - [Live ignores or does something unexpected when you use a keyboard shortcut](#live-ignores-or-does-something-unexpected-when-you-use-a-keyboard-shortcut)
   - [CPU spikes when moving your mouse](#cpu-spikes-when-moving-your-mouse)
-  - [My MIDI controller doesn't show up in Live](#my-midi-controller-doesnt-show-up-in-live)
+  - [My MIDI controller or audio interface doesn't show up in Live](#my-midi-controller-or-audio-interface-doesnt-show-up-in-live)
   - [Push 2 does not connect](#push-2-does-not-connect)
   - [My Push 3 or Move doesn't work](#my-push-3-or-move-doesnt-work)
 - [Ableton Link](#ableton-link)
@@ -716,13 +716,14 @@ else.
 
 When you are testing Live 12 Beta, use `live-beta.log` in that same folder.
 
-### My MIDI controller doesn't show up in Live
+### My MIDI controller or audio interface doesn't show up in Live
 
-Connect your controller before you start Live. Live only finds MIDI gear that
-was already plugged in when it started, so anything you connect afterwards
-stays invisible until you close Live and open it again. A device that was
-connected before Live started keeps working if you unplug it and plug it back
-in.
+Connect your gear before you start Live. Live only finds MIDI devices that were
+already plugged in when it started, so anything you connect afterwards stays
+invisible until you close Live and open it again. A device that was connected
+before Live started keeps working if you unplug it and plug it back in.
+
+#### MIDI controllers
 
 With the controller connected and Live running, open
 **Settings > Link, Tempo & MIDI**:
@@ -739,6 +740,27 @@ which is the quickest way to tell whether it worked.
 
 If your controller was connected before launch and still does not appear,
 [open an issue](https://github.com/shibco/ableton-linux/issues) and tell us its
+make and model.
+
+#### Audio interfaces
+
+Your interface will not appear by name in Live's **Audio Device** list, and that
+is normal. On Linux, Live sees a single audio device called **PipeASIO**, which
+passes sound to whichever interface your system is using.
+
+Pick your interface in **PipeASIO Settings** instead, using the **Hardware
+Setup** button in **Settings > Audio**. If you connected the interface after
+Live started, set **Audio Device** to **None** and back to **PipeASIO** first.
+If it is still missing, close Live and start it again.
+
+If PipeASIO Settings will not open, see
+[I can't change any audio settings in Live](#i-cant-change-any-audio-settings-in-live)
+for how to set your devices in a text file instead.
+
+If your interface is missing from PipeASIO Settings as well, it is your system
+that cannot see it rather than Live. Check that it appears in your desktop's own
+sound settings first, then
+[open an issue](https://github.com/shibco/ableton-linux/issues) and tell us the
 make and model.
 
 ### Push 2 does not connect
