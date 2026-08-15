@@ -180,7 +180,12 @@ ableton_pipeasio_validate_runtime()
     fi
     dist_version="$(ableton_pipeasio_build_info_value "$info" dist-version)" || {
         echo "!! runtime has no unique distribution version" >&2; return 1; }
-    [[ "$dist_version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] || {
+    # "nix" is the Nix package's distribution identity: the store hash, not a
+    # release date, identifies that build. Kit installs still pass
+    # expected_version below, so a nix runtime can never satisfy a versioned
+    # installer payload check.
+    [[ "$dist_version" =~ ^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]] \
+        || [ "$dist_version" = nix ] || {
         echo "!! runtime has an invalid distribution version" >&2; return 1; }
     if [ -n "$expected_version" ] && [ "$dist_version" != "$expected_version" ]; then
         echo "!! runtime build information belongs to version $dist_version, not $expected_version" >&2
