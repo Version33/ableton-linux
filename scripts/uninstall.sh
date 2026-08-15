@@ -472,7 +472,7 @@ if [ "$delete_prefix" -eq 0 ] && [ -f "$safe_prefix/system.reg" ]; then
     }
     uninstall_wineserver_wait()
     {
-        ableton_run_bounded 60 "$safe_runtime/bin/wineserver" -w
+        ableton_prefix_wait "$safe_runtime" "$safe_prefix"
     }
     echo "== unregister PipeASIO from the retained prefix =="
     ableton_pipeasio_unregister uninstall_wine uninstall_wineserver_wait

@@ -2,11 +2,12 @@
 # Prefix- and runtime-scoped Wine lifecycle inspection.  No process is selected
 # by a global image-name match: both /proc/PID/exe and WINEPREFIX must match.
 
+# Definitions only: callers resolve the configuration themselves, because the
+# command line reaches some of them after this file is sourced.
 _ableton_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F ableton_config_init >/dev/null 2>&1; then
     . "$_ableton_lib_dir/config.sh"
 fi
-ableton_config_init
 
 ableton_pid_has_env()
 {
@@ -133,6 +134,38 @@ ableton_wait_for_pid_exit()
         sleep 0.1
     done
     return 1
+}
+
+# Wait for every process in the prefix to exit.  Bounded: a resident that outlives
+# the command that started it holds the server open indefinitely.
+ableton_prefix_wait()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    ableton_run_bounded 60 env WINEPREFIX="$prefix" \
+        "$runtime/bin/wineserver" -w >/dev/null 2>&1
+}
+
+# Wait, and on timeout end every process in the prefix and wait again.  The stop is
+# indiscriminate, so this is only for a prefix the caller owns outright - a staging
+# prefix it just built, or one it is about to remove.  On a prefix the user can
+# reach, name the images to end instead and take ableton_prefix_wait's verdict as
+# advisory.  wineserver -k shuts down through SIGINT, so the registry is saved.
+# Returns 1 when a straggler survived the stop, and the wait's own exit code when
+# the wait could not run at all.
+ableton_prefix_quiesce()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}" rc=0
+    ableton_prefix_wait "$runtime" "$prefix" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
+        return "$rc"
+    fi
+    echo "-- a leftover background program is holding the prefix open; stopping it"
+    ableton_run_bounded 20 env WINEPREFIX="$prefix" \
+        "$runtime/bin/wineserver" -k >/dev/null 2>&1 || true
+    ableton_prefix_wait "$runtime" "$prefix" || return 1
 }
 
 ableton_stop_prefix()

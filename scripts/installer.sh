@@ -11,6 +11,7 @@ if [ -d "$here/../bin" ]; then
     export PATH="$kit_bin:$PATH"
 fi
 . "$here/lib/config.sh"
+. "$here/lib/lifecycle.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
 
@@ -745,7 +746,7 @@ esac
 install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
-    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg=""
+    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg="" holder holder_name
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
         unpack="$(mktemp -d "${TMPDIR:-/tmp}/ableton-live-installer.XXXXXX")"
@@ -818,13 +819,35 @@ EOF
         done
         rm -f -- "$seed_reg"
     fi
-    for tray in AbletonPushCpl.exe tusbaudiocplapp.exe; do
+    # Images the payload starts and never stops. Live 12's WebView2 bootstrapper
+    # leaves MicrosoftEdgeUpdate.exe in core mode (/c), which has no window and, in a
+    # prefix, does not reach the exit it takes on Windows; the Push images are the
+    # driver's tray agents. All three are windowless background agents named exactly,
+    # so no application is ended here.
+    for tray in AbletonPushCpl.exe tusbaudiocplapp.exe MicrosoftEdgeUpdate.exe; do
         ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
             "$ABLETON_WINE_ROOT/bin/wine" taskkill /f /im "$tray" >/dev/null 2>&1 || true
     done
-    ableton_run_bounded 60 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-        "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1 || {
-            echo "!! post-installer prefix wait timed out" >&2; return 1; }
+    # This prefix is the promoted one, so anything the names above did not cover is
+    # reported and left running rather than stopped: it is the user's, and the
+    # install is complete either way. The prefix was promoted before the payload ran
+    # and nothing after this point touches it, so the wait is hygiene, not a gate.
+    if ! ableton_prefix_wait; then
+        echo "-- the install is complete. A program in the prefix is still running and"
+        echo "   was left alone:"
+        for holder in $(ableton_prefix_pids); do
+            # comm truncates at 15 characters, which is short of most Windows image
+            # names, so the command line is the one that can be acted on.
+            holder_name="$(tr '\0' '\n' < "/proc/$holder/cmdline" 2>/dev/null | head -n 1)"
+            holder_name="${holder_name##*\\}"
+            holder_name="${holder_name##*/}"
+            [ -n "$holder_name" ] || holder_name="$(cat "/proc/$holder/comm" 2>/dev/null || true)"
+            printf '   %s (pid %s)\n' "${holder_name:-unknown}" "$holder"
+        done
+        echo "-- nothing needs to be done. To end it anyway, close it or run:"
+        printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
+            "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
+    fi
     [ -z "$unpack" ] || cleanup_live_unpack
 }
 

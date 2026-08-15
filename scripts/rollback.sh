@@ -201,7 +201,7 @@ rollback_wine()
 }
 rollback_wineserver_wait()
 {
-    ableton_run_bounded 60 "$runtime/bin/wineserver" -w
+    ableton_prefix_wait "$runtime"
 }
 
 move_runtime_to_empty()

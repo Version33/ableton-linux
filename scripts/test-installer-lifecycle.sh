@@ -527,6 +527,159 @@ grep -q 'appears to be Live 11' "$base/err" || fail "payload mismatch is explici
 [ ! -e "$base/runtime" ] && [ ! -e "$base/prefix" ] && [ ! -e "$base/config" ] || fail "payload mismatch mutates no installation state"
 ok "Live payload major is validated before installation"
 
+base="$(new_env prefix-quiesce)"
+mkdir -p "$base/runtime/bin" "$base/prefix"
+# 124 is timeout's TERM verdict, so the stub reports an expired wait without the
+# suite spending the wait's wall clock on it.
+cat > "$base/runtime/bin/wineserver" <<'EOF'
+#!/usr/bin/env bash
+printf '%s prefix=%s\n' "$1" "${WINEPREFIX-unset}" >> "${ABLETON_TEST_LOG:?}"
+case "$1" in
+    -w)
+        [ "${ABLETON_TEST_WAIT_EXIT:-0}" -eq 0 ] || exit "${ABLETON_TEST_WAIT_EXIT}"
+        [ ! -e "${ABLETON_TEST_BUSY:?}" ] || exit 124
+        exit 0 ;;
+    -k)
+        [ "${ABLETON_TEST_UNKILLABLE:-0}" -eq 1 ] || rm -f -- "${ABLETON_TEST_BUSY:?}"
+        exit 0 ;;
+esac
+exit 2
+EOF
+cat > "$base/run-quiesce" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/lifecycle.sh"
+ableton_config_init
+status=0
+ableton_prefix_quiesce "\$@" || status=\$?
+printf 'rc=%s\n' "\$status"
+EOF
+chmod +x "$base/runtime/bin/wineserver" "$base/run-quiesce"
+quiesce_calls()
+{
+    awk '{print $1}' "$base/log" | tr '\n' ' '
+}
+run_quiesce()
+{
+    local assignments=()
+    while [ "$#" -gt 0 ] && [[ "$1" = *=* ]]; do assignments+=("$1"); shift; done
+    : > "$base/log"
+    run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+        ABLETON_TEST_LOG="$base/log" ABLETON_TEST_BUSY="$base/busy" "${assignments[@]}" \
+        bash "$base/run-quiesce" "$@" >"$base/out" 2>"$base/err"
+}
+
+rm -f "$base/busy"
+run_quiesce
+grep -qx 'rc=0' "$base/out" || fail "a quiet prefix reports success"
+[ "$(quiesce_calls)" = "-w " ] || fail "a quiet prefix is waited for exactly once"
+grep -qx -- "-w prefix=$base/prefix" "$base/log" || fail "the wait names the configured prefix"
+ok "a quiet prefix is waited for once and never stopped"
+
+: > "$base/busy"
+run_quiesce
+grep -qx 'rc=0' "$base/out" || fail "a stopped straggler reports success"
+[ "$(quiesce_calls)" = "-w -k -w " ] || fail "a held prefix is stopped and waited for again"
+grep -q 'holding the prefix open' "$base/out" || fail "stopping the prefix is reported"
+ok "a straggler holding the prefix open is stopped, not made fatal"
+
+: > "$base/busy"
+run_quiesce ABLETON_TEST_UNKILLABLE=1
+grep -qx 'rc=1' "$base/out" || fail "a surviving straggler is reported as still busy"
+[ "$(quiesce_calls)" = "-w -k -w " ] || fail "a surviving straggler is not waited for a third time"
+ok "a straggler that survives the stop is reported, and the wait stays bounded"
+
+rm -f "$base/busy"
+run_quiesce ABLETON_TEST_WAIT_EXIT=127
+grep -qx 'rc=127' "$base/out" || fail "a wait that cannot run keeps its exit code"
+[ "$(quiesce_calls)" = "-w " ] || fail "a wait that cannot run does not stop the prefix"
+ok "only an expired wait stops the prefix; any other failure is passed back"
+
+# setup-prefix.sh waits on its staging prefix, which is not the configured one.
+: > "$base/busy"
+run_quiesce "$base/runtime" "$base/staging-prefix"
+grep -qx 'rc=0' "$base/out" || fail "an explicitly named prefix is quiesced"
+grep -qx -- "-k prefix=$base/staging-prefix" "$base/log" || fail "the stop names the prefix it was given"
+! grep -q -- "prefix=$base/prefix\$" "$base/log" || fail "a named prefix displaces the configured one"
+ok "the runtime and prefix a caller names override the configured pair"
+
+# The payload step's own wait, on the promoted prefix.  Every sub-script is stubbed
+# so install_live_payload is reached with a wineserver whose -w never returns.
+base="$(new_env payload-wait)"
+kit="$base/kit"
+mkdir -p "$kit/scripts/lib" "$kit/bin" "$base/runtime/bin"
+cp -- "$here/installer.sh" "$kit/scripts/"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
+    "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
+cat > "$kit/bin/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+printf 'client=1.4.2\ndaemon=1.4.2\n'
+EOF
+cat > "$kit/scripts/install.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'component %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+exit 0
+EOF
+cat > "$kit/scripts/setup-prefix.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'prefix %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+case " $* " in
+    *' --preflight-commit '*|*' --commit '*|*' --preflight-rollback '*|*' --rollback '*) exit 0 ;;
+esac
+mkdir -p -- "${ABLETON_WINEPREFIX:?}"
+printf 'registry\n' > "${ABLETON_WINEPREFIX}/system.reg"
+EOF
+cat > "$kit/scripts/setup-link.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'link %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+EOF
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+printf 'wine %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+EOF
+cat > "$base/runtime/bin/wineserver" <<'EOF'
+#!/bin/sh
+printf 'wineserver %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+case "${1:-}" in
+    -w) exit "${ABLETON_TEST_WAIT_EXIT:-0}" ;;
+esac
+EOF
+chmod 755 "$kit/scripts/"*.sh "$kit/bin/pipewire-version-probe" "$base/runtime/bin/"*
+printf 'Ableton Live 12 Suite Installer\n' > "$base/Ableton Live 12 Suite Installer.exe"
+
+run_payload_install()
+{
+    : > "$base/calls.log"
+    rm -rf -- "$base/prefix" "$base/config" "$base/state" "$base/data"
+    run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" "$@" \
+        bash "$kit/scripts/installer.sh" install \
+            --live-installer "$base/Ableton Live 12 Suite Installer.exe" \
+            --link=off --runtime-root "$base/runtime" --prefix "$base/prefix" --yes \
+        >"$base/out" 2>"$base/err"
+}
+
+# 124 is timeout's TERM verdict: the wait ran out with a process still in the prefix.
+run_payload_install ABLETON_TEST_WAIT_EXIT=124 || fail "an expired payload wait fails the install"
+grep -q 'OK: install completed' "$base/out" || fail "an expired payload wait leaves the install incomplete"
+! grep -q 'wineserver -k' "$base/calls.log" || fail "the payload step stops the promoted prefix"
+grep -q 'is still running and' "$base/out" || fail "an unrecognised straggler goes unreported"
+grep -qF -- "$base/runtime/bin/wineserver -k" "$base/out" \
+    || fail "the report withholds the command that ends the prefix"
+ok "an expired payload wait reports the straggler, stops nothing, and still completes"
+
+for image in AbletonPushCpl.exe tusbaudiocplapp.exe MicrosoftEdgeUpdate.exe; do
+    grep -qF "taskkill /f /im $image" "$base/calls.log" \
+        || fail "the payload step does not end $image by name"
+done
+ok "the payload step ends the images it starts, each named exactly"
+
+run_payload_install || fail "a quiet payload wait fails the install"
+! grep -q 'is still running and' "$base/out" || fail "a quiet prefix is reported as busy"
+ok "a quiet prefix after the payload reports nothing"
+
 base="$(new_env launcher-preflight)"
 mkdir -p "$base/runtime/bin" "$base/prefix"
 printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wine"

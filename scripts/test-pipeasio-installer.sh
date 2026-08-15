@@ -3022,8 +3022,8 @@ make_commit_preflight_kit()
     local base="$1" kit="$1/commit-kit"
     mkdir -p -- "$kit/scripts/lib"
     cp -- "$here/installer.sh" "$kit/scripts/"
-    cp -- "$here/lib/config.sh" "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" \
-        "$kit/scripts/lib/"
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
+        "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
     cat > "$kit/scripts/install.sh" <<'EOF'
 #!/bin/sh
 set -eu
