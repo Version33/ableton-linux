@@ -797,7 +797,9 @@ install_integration()
         echo "   preserving foreign $apps/ableton-live.desktop"
         echo "   the Live file types stay with their current application"
     else
-        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop"
+        # The launcher rewrites this generated entry after Live starts.
+        # A stale manifest digest must not stop a later install or update.
+        ableton_install_file 644 "$tmp" "$apps/ableton-live.desktop" file replace-modified
     fi
     rm -f -- "$tmp"
 

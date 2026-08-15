@@ -684,6 +684,46 @@ grep -qF '# user change' "$base/data/ableton-wine/detect-scale.sh" || fail "fail
 grep -q 'refusing to overwrite modified managed file' "$base/err" || fail "modified managed file refusal is explicit"
 ok "update refuses to overwrite a locally modified managed file"
 
+# A fresh install writes integration before it installs Live, so the desktop
+# entry has no StartupWMClass.  The launcher discovers Live on first start.  It
+# updates the name and appends the missing class after the template's final
+# field, but it leaves the ownership manifest unchanged.  The next install or
+# update must replace the entry.
+base="$(new_env modified-live-desktop)"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/first.out" 2>"$base/first.err"
+live_desktop="$base/data/applications/ableton-live.desktop"
+manifest="$base/state/ableton-wine/install-manifest.tsv"
+! grep -q '^StartupWMClass=' "$live_desktop" \
+    || fail "fresh integration guessed a Live window class before Live existed"
+mkdir -p "$base/home/.wine-ableton/drive_c/ProgramData/Ableton/Live 12 Suite/Program"
+printf 'exe\n' \
+    > "$base/home/.wine-ableton/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
+sed -i 's/^Name=.*/Name=Ableton Live 12 Suite/' "$live_desktop"
+printf 'StartupWMClass=ableton live 12 suite.exe\n' >> "$live_desktop"
+recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' "$manifest")"
+current="$(sha256sum "$live_desktop" | awk '{print $1}')"
+[ -n "$recorded" ] && [ "$recorded" != "$current" ] \
+    || fail "launcher-healed desktop fixture does not have a stale ownership digest"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "update refuses a launcher-healed managed desktop entry"; }
+grep -qxF 'Name=Ableton Live 12 Suite' "$live_desktop" \
+    || fail "update did not refresh the launcher-healed desktop name"
+grep -qxF 'StartupWMClass=ableton live 12 suite.exe' "$live_desktop" \
+    || fail "update did not refresh the launcher-healed desktop window class"
+[ "$(grep -c '^StartupWMClass=' "$live_desktop")" -eq 1 ] \
+    || fail "updated Live desktop entry contains duplicate window classes"
+wmclass_line="$(grep -n '^StartupWMClass=' "$live_desktop" | cut -d: -f1)"
+mime_line="$(grep -n '^MimeType=' "$live_desktop" | cut -d: -f1)"
+[ "$wmclass_line" -lt "$mime_line" ] \
+    || fail "updated Live desktop entry does not use canonical template order"
+recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' "$manifest")"
+current="$(sha256sum "$live_desktop" | awk '{print $1}')"
+[ "$recorded" = "$current" ] \
+    || fail "update did not refresh the Live desktop ownership digest"
+ok "update replaces a launcher-healed managed Live desktop entry"
+
 base="$(new_env link-prestate)"
 foreign_linkd="$base/data/ableton-wine/ableton-linkd"
 mkdir -p "$(dirname "$foreign_linkd")" "$base/fakebin"

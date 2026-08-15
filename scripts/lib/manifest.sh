@@ -937,8 +937,15 @@ ableton_legacy_owned_path()
 
 ableton_persist_file_prestate()
 {
-    local target="$1" source="${2:-}" manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
+    local target="$1" source="${2:-}" collision_policy="${3:-protect-modified}"
+    local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
     local index="$ABLETON_STATE_HOME/install-prestate.tsv" prestate_dir id backup expected current index_tmp
+    case "$collision_policy" in
+        protect-modified|replace-modified) ;;
+        *)
+            ableton_config_error "unknown managed-file collision policy: $collision_policy"
+            return 1 ;;
+    esac
     if [ -d "$target" ] && [ ! -L "$target" ]; then
         ableton_config_error "refusing to preserve a directory as file pre-state: $target"
         return 1
@@ -958,6 +965,7 @@ ableton_persist_file_prestate()
         if [ -n "$expected" ]; then
             current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
             [ "$current" = "$expected" ] && return 0
+            [ "$collision_policy" = replace-modified ] && return 0
             ableton_config_error "refusing to overwrite modified managed file $target"
             return 1
         fi
@@ -999,12 +1007,13 @@ ableton_persist_file_prestate()
 
 ableton_install_file()
 {
-    local mode="$1" source="$2" target="$3" kind="${4:-file}" post tmp parent
+    local mode="$1" source="$2" target="$3" kind="${4:-file}"
+    local collision_policy="${5:-protect-modified}" post tmp parent
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "refusing to replace directory with a file: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target" "$source"
+    ableton_persist_file_prestate "$target" "$source" "$collision_policy"
     ableton_txn_snapshot "$target"
     post="$(ableton_regular_source_token "$source")" || return 1
     ableton_txn_expect "$target" "$post" || return 1
