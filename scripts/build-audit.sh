@@ -15,10 +15,14 @@ readonly REQUIRED_PIPEASIO_TAIL='pipeasio/0011-controlpanel-dialog-off-the-host-
 
 check_required_series_tails()
 {
-    local manifest="${1:?series manifest required}" wine_tail pipeasio_tail
+    local manifest="${1:?series manifest required}" body wine_tail pipeasio_tail
     [ -r "$manifest" ] || fail "series manifest is missing or unreadable: $manifest"
-    wine_tail="$(awk '$2 !~ /^pipeasio\// { print $2 }' "$manifest" | sort | tail -1)"
-    pipeasio_tail="$(awk '$2 ~ /^pipeasio\// { print $2 }' "$manifest" | sort | tail -1)"
+    # Read once. Callers may pass a process substitution, and a second open of
+    # that FIFO returns EOF - which reported the PipeASIO tail as absent while
+    # every patch was present.
+    body="$(cat -- "$manifest")"
+    wine_tail="$(printf '%s\n' "$body" | awk '$2 !~ /^pipeasio\// { print $2 }' | sort | tail -1)"
+    pipeasio_tail="$(printf '%s\n' "$body" | awk '$2 ~ /^pipeasio\// { print $2 }' | sort | tail -1)"
     [ "$wine_tail" = "$REQUIRED_WINE_TAIL" ] ||
         fail "Wine series must end at $REQUIRED_WINE_TAIL (found ${wine_tail:-none})"
     [ "$pipeasio_tail" = "$REQUIRED_PIPEASIO_TAIL" ] ||
