@@ -104,9 +104,15 @@ OPTIONS:
 EOF
 }
 
+end_of_args_reached=false
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     key="$1"
+    if [[ $end_of_args_reached == true ]]; then
+        POSITIONAL+=("$1")
+        shift
+        continue
+    fi
     case $key in
         -h|--help)
             usage
@@ -120,8 +126,18 @@ while [[ $# -gt 0 ]]; do
             version
             exit 0
             ;;
+        --)
+            end_of_args_reached=true
+            shift
+            ;;
         *)
-            POSITIONAL+=("$1")
+            if [[ $1 =~ ^-.* ]]; then
+                echo "unknown flag: $1" >&2
+                usage
+                exit 1
+            else
+                POSITIONAL+=("$1")
+            fi
             shift
             ;;
     esac
