@@ -18,7 +18,7 @@ declare -F ableton_max_pids >/dev/null 2>&1 || { echo "max9: lifecycle helper is
 session_teardown()
 {
     local rc=$?
-    ableton_session_teardown || true
+    ABLETON_SESSION_LABEL="Max" ableton_session_teardown || true
     return "$rc"
 }
 trap session_teardown EXIT

@@ -176,6 +176,35 @@ ableton_prefix_holders()
     return 0
 }
 
+# A helper this project installed and started, asked by the data home rather than
+# by name so it stays right as helpers come and go.  Each carries its own exit
+# contract - learnheal.exe outlives Live deliberately, to heal the Learn View
+# pane - so one still running does not mean the session is unfinished.
+ableton_vendored_helper_image()
+{
+    [ -n "${ABLETON_DATA_HOME:-}" ] || return 1
+    [ -f "$ABLETON_DATA_HOME/$1" ]
+}
+
+# Holders that are somebody else's: a Max, a second Live, a program the user
+# started.  These are the ones worth naming.  Reads a holder list so a caller
+# that already walked /proc need not walk it again.
+ableton_foreign_holders()
+{
+    local pid image
+    while IFS="$(printf '\t')" read -r pid image; do
+        [ -n "$pid" ] || continue
+        ableton_vendored_helper_image "$image" && continue
+        printf '%s\t%s\n' "$pid" "$image"
+    done
+    return 0
+}
+
+ableton_prefix_foreign_holders()
+{
+    ableton_prefix_holders | ableton_foreign_holders
+}
+
 # Windows image name.  comm truncates at 15 characters, and argv[0] must be read
 # on its NUL boundary: split on whitespace and every C:\Program Files path is "Program".
 ableton_pid_image()
@@ -195,22 +224,35 @@ ableton_pid_image()
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    local seconds="${3:-5}" i pid image
-    seconds="$(ableton_timeout_value "$seconds" teardown-grace 1 60)" || return 2
+    local seconds="${3:-1}" pid image holders foreign=""
+    seconds="$(ableton_timeout_value "$seconds" teardown-settle 1 60)" || return 2
     # First: taskkill is itself a wine process, so on an empty prefix it would start
     # a server and services that outlive the grace period and be reported as holders.
     ableton_prefix_busy || return 0
     ableton_stop_leftover_agents "$runtime" "$prefix" || true
-    for ((i=0; i<seconds*10; i++)); do
-        ableton_prefix_busy || return 0
-        sleep 0.1
-    done
-    ableton_prefix_busy || return 0
+    # One beat for the agents just ended to go, then one look.  Not a poll: each
+    # look walks every pid on the machine, and there is nothing to wait for -
+    # Wine's own processes are already filtered out, and whatever else is here is
+    # an application, which will not leave within a grace period.
+    sleep "$seconds"
+    holders="$(ableton_prefix_holders)"
+    [ -n "$holders" ] || return 0
+    foreign="$(printf '%s\n' "$holders" | ableton_foreign_holders)"
+    # Ours alone: the session is over, the helper finishes on its own, and the
+    # server goes with it.  Said out loud because a wineserver outliving the
+    # window looks like the bug this teardown exists to prevent.
+    if [ -z "$foreign" ]; then
+        printf -- '-- %s closed; a background helper is still finishing and will quit on its own\n' \
+            "${ABLETON_SESSION_LABEL:-the session}" >&2
+        return 0
+    fi
     printf -- '-- the prefix is still in use, so its wineserver stays up for:\n' >&2
+    # Here-string, not a pipe from printf '%s': command substitution stripped the
+    # trailing newline above, and read drops an unterminated final line.
     while IFS="$(printf '\t')" read -r pid image; do
         [ -n "$pid" ] || continue
         printf '   %s (pid %s)\n' "$image" "$pid" >&2
-    done < <(ableton_prefix_holders)
+    done <<< "$foreign"
     return 1
 }
 

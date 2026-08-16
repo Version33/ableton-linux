@@ -45,7 +45,7 @@ declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecyc
 session_teardown()
 {
     local rc=$?
-    ableton_session_teardown || true
+    ABLETON_SESSION_LABEL="Ableton Live" ableton_session_teardown || true
     return "$rc"
 }
 trap session_teardown EXIT

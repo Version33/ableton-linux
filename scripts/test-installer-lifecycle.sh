@@ -782,6 +782,69 @@ grep -q 'Max\.exe (pid' "$base/err" \
     || fail "teardown names the holder by something other than its Windows image"
 ok "teardown verifies the prefix came down, and names the holder when it did not"
 
+# A helper this project installed outlives the window on purpose - learnheal.exe
+# heals the Learn View pane after Live has gone - so the launcher must hand the
+# terminal back rather than wait on one, and must not report it as a holder.
+base="$(new_env vendored-helper-holder)"
+mkdir -p "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" \
+    "$base/data/ableton-wine" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+for tool in wine wineserver wineboot; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/$tool"
+done
+printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/winepath"
+chmod +x "$base/runtime/bin/"*
+printf 'registry\n' > "$base/prefix/system.reg"
+printf 'registry\n' > "$base/prefix/user.reg"
+printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
+# The data home is what makes it ours: the image name resolves to a file we installed.
+printf 'helper\n' > "$base/data/ableton-wine/learnheal.exe"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\learnheal.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+helper_pid=$!
+sleep 0.3
+start_s=$SECONDS
+run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    ABLETON_LINK_MODE=off ABLETON_POWER=off ABLETON_RT=off ABLETON_THEME_MODE=preserve \
+    ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    bash "$here/ableton-live" >"$base/out" 2>"$base/err" || true
+kill -0 "$helper_pid" 2>/dev/null || fail "the launcher ended a helper it installed"
+! grep -q 'the prefix is still in use' "$base/err" \
+    || fail "teardown reports this project's own helper as a holder"
+grep -q 'Ableton Live closed; a background helper' "$base/err" \
+    || fail "teardown leaves a wineserver up without naming the app or saying why"
+ok "a helper we installed keeps running through a session, is not reported, and is explained"
+
+# Timed against the teardown itself, not the launcher around it: the launcher's
+# own observability wait dwarfs the grace period, so a lost early return would
+# not move the total.
+cat > "$base/time-teardown" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/config.sh"
+ableton_config_init
+. "$here/lib/lifecycle.sh"
+start=\$SECONDS
+ableton_session_teardown >/dev/null 2>&1 || true
+printf '%s\n' "\$((SECONDS - start))"
+EOF
+chmod +x "$base/time-teardown"
+helper_only_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/time-teardown")"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\some-daw.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+foreign_pid=$!
+sleep 0.3
+foreign_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/time-teardown")"
+kill "$helper_pid" "$foreign_pid" 2>/dev/null || true
+wait "$helper_pid" "$foreign_pid" 2>/dev/null || true
+# Neither case may poll: a look costs a walk of every pid on the machine, so the
+# difference between them is the report, not the wall clock.
+[ "$helper_only_s" -le 10 ] && [ "$foreign_s" -le 10 ] \
+    || fail "teardown polls instead of looking once (${helper_only_s}s, ${foreign_s}s)"
+ok "teardown looks once whoever holds the prefix (${helper_only_s}s, ${foreign_s}s)"
+
 base="$(new_env foreign-runtime)"
 mkdir -p "$base/runtime/bin"
 cp /bin/sleep "$base/runtime/bin/wine-client"

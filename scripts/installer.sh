@@ -828,7 +828,7 @@ EOF
         while IFS="$(printf '\t')" read -r holder holder_image; do
             [ -n "$holder" ] || continue
             printf '   %s (pid %s)\n' "$holder_image" "$holder"
-        done < <(ableton_prefix_holders)
+        done < <(ableton_prefix_foreign_holders)
         echo "-- nothing needs to be done. To end it anyway, close it or run:"
         printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
             "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
