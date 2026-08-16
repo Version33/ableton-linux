@@ -136,34 +136,23 @@ ableton_wait_for_pid_exit()
     return 1
 }
 
-# Windowless agents an install or a session starts and never stops, ended by
-# exact name so no application is touched.  MicrosoftEdgeUpdate.exe is Live 12's
-# WebView2 updater: under Wine its COM registration fails to validate, so it
-# cannot start an update worker and parks in Core::DoRun indefinitely, holding
-# the prefix open after everything else has gone.  A Max session leaves the same
-# process behind.  The Push images are the USB driver's tray applets.  An image
-# that is not running is a no-op, so callers need not know which apply.
+# Windowless agents Live and Max leave behind, ended by exact name so no
+# application is touched.  A name that is not running is a no-op.
 ableton_stop_leftover_agents()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    # wine builds a prefix at any path it is handed, so a caller that gave up
-    # because the runtime or prefix was missing must not create one on its way
-    # out.  Nothing is running in a prefix that does not exist either.
+    # wine builds a prefix at any path it is handed; a refusal must not create one.
     [ -x "$runtime/bin/wine" ] || return 0
     [ -f "$prefix/system.reg" ] || return 0
-    # One invocation, not one per image: taskkill takes a list, and each wine
-    # start costs a second of a user's exit - or fifteen against a prefix that
-    # has stopped answering, three times over.
+    # One invocation: taskkill takes a list, and each wine start costs exit latency.
     ableton_run_bounded 15 env WINEPREFIX="$prefix" "$runtime/bin/wine" taskkill /f \
         /im AbletonPushCpl.exe /im tusbaudiocplapp.exe /im MicrosoftEdgeUpdate.exe \
         >/dev/null 2>&1 || true
     return 0
 }
 
-# Windows image name from the command line, which carries the full path where
-# /proc/PID/comm is truncated at 15 characters - short of most of them.  argv[0]
-# is read on its own NUL boundary: every Windows path has a space in it, so
-# splitting the joined command line on whitespace yields "Program".
+# Windows image name.  comm truncates at 15 characters, and argv[0] must be read
+# on its NUL boundary: split on whitespace and every C:\Program Files path is "Program".
 ableton_pid_image()
 {
     local image
@@ -175,22 +164,16 @@ ableton_pid_image()
     printf '%s\n' "${image:-unknown}"
 }
 
-# End a session: stop the agents it leaves behind, then confirm the prefix
-# actually came down rather than assume it.  Wine's own processes exit once the
-# last client goes, so a prefix still busy after that grace period is being held
-# by something real - a Max, a second Live, or a program the user started in this
-# prefix themselves.  That is reported and left alone: at this point we cannot
-# tell a user's program from a leftover, and ending the session would take it
-# with us.  Returns non-zero when the prefix is still held.
+# End a session's agents, then confirm the prefix came down.  Whatever still holds
+# it is a Max, a second Live or the user's own program - reported, never ended,
+# since none of them is distinguishable from a leftover here.  Non-zero if held.
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
     local seconds="${3:-5}" i pid
     seconds="$(ableton_timeout_value "$seconds" teardown-grace 1 60)" || return 2
-    # Nothing to end, and nothing to wait for.  Checked first because taskkill is
-    # itself a wine process: on an empty prefix it starts a server and a pair of
-    # services that outlive the grace period below, and the teardown would then
-    # report the session it started as the thing holding the prefix.
+    # First: taskkill is itself a wine process, so on an empty prefix it would start
+    # a server and services that outlive the grace period and be reported as holders.
     ableton_prefix_busy || return 0
     ableton_stop_leftover_agents "$runtime" "$prefix" || true
     for ((i=0; i<seconds*10; i++)); do
@@ -215,17 +198,38 @@ ableton_prefix_wait()
         "$runtime/bin/wineserver" -w >/dev/null 2>&1
 }
 
+# The same wait, naming what it waits on every 15s: a silent minute in front of an
+# installer reads as a hang.  Same bounded wait, same exit code.
+ableton_prefix_wait_progress()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    local waiter rc=0 elapsed=0 names pid
+    ableton_run_bounded 60 env WINEPREFIX="$prefix" \
+        "$runtime/bin/wineserver" -w >/dev/null 2>&1 &
+    waiter=$!
+    while kill -0 "$waiter" 2>/dev/null; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        [ "$((elapsed % 15))" -eq 0 ] || continue
+        names="$(while IFS= read -r pid; do
+                     [ -n "$pid" ] || continue
+                     ableton_pid_image "$pid"
+                 done < <(ableton_prefix_pids) | sort -u | tr '\n' ' ')"
+        [ -z "${names// /}" ] \
+            || printf -- '   still waiting for the prefix to settle (%ss): %s\n' \
+                "$elapsed" "$names"
+    done
+    wait "$waiter" || rc=$?
+    return "$rc"
+}
+
 # Wait, and on timeout end every process in the prefix and wait again.  The stop is
-# indiscriminate, so this is only for a prefix the caller owns outright - a staging
-# prefix it just built, or one it is about to remove.  On a prefix the user can
-# reach, name the images to end instead and take ableton_prefix_wait's verdict as
-# advisory.  wineserver -k shuts down through SIGINT, so the registry is saved.
-# Returns 1 when a straggler survived the stop, and the wait's own exit code when
-# the wait could not run at all.
+# indiscriminate: only for a prefix the caller owns outright, never one a user can
+# reach.  Returns 1 if a straggler survived, else the wait's own exit code.
 ableton_prefix_quiesce()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}" rc=0
-    ableton_prefix_wait "$runtime" "$prefix" || rc=$?
+    ableton_prefix_wait_progress "$runtime" "$prefix" || rc=$?
     if [ "$rc" -eq 0 ]; then
         return 0
     fi

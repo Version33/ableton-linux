@@ -820,11 +820,9 @@ EOF
         rm -f -- "$seed_reg"
     fi
     ableton_stop_leftover_agents
-    # This prefix is the promoted one, so a process no agent name covered is
-    # reported and left running rather than stopped: it is the user's, and the
-    # install is complete either way. The prefix was promoted before the payload ran
-    # and nothing after this point touches it, so the wait is hygiene, not a gate.
-    if ! ableton_prefix_wait; then
+    # The promoted prefix: anything no agent name covered is the user's, and the
+    # install is complete either way.  Hygiene, not a gate.
+    if ! ableton_prefix_wait_progress; then
         echo "-- the install is complete. A program in the prefix is still running and"
         echo "   was left alone:"
         for holder in $(ableton_prefix_pids); do
