@@ -221,6 +221,8 @@ ableton_pid_image()
 # End a session's agents, then confirm the prefix came down.  Whatever still holds
 # it is a Max, a second Live or the user's own program - reported, never ended,
 # since none of them is distinguishable from a leftover here.  Non-zero if held.
+# Callers name themselves through ABLETON_SESSION_LABEL, which each launcher sets
+# on the call; unset reads as "the session".
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
@@ -266,7 +268,9 @@ ableton_prefix_wait()
 }
 
 # The same wait, naming what it waits on every 15s: a silent minute in front of an
-# installer reads as a hang.  Same bounded wait, same exit code.
+# installer reads as a hang.  Same bounded wait, same exit code.  Ticks go to
+# stdout, where the rest of the install narrative goes; the teardown's messages
+# go to stderr, being diagnostics after an application has closed.
 ableton_prefix_wait_progress()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
@@ -278,7 +282,7 @@ ableton_prefix_wait_progress()
         sleep 1
         elapsed=$((elapsed + 1))
         [ "$((elapsed % 15))" -eq 0 ] || continue
-        names="$(ableton_prefix_holders | cut -f2 | sort -u | tr '\n' ' ')"
+        names="$(ableton_prefix_foreign_holders | cut -f2 | sort -u | tr '\n' ' ')"
         [ -z "${names// /}" ] \
             || printf -- '   still waiting for the prefix to settle (%ss): %s\n' \
                 "$elapsed" "$names"
