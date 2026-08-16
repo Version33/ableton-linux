@@ -525,11 +525,9 @@ live_exe_names() {   # basenames of every Live exe installed in this prefix
 }
 
 # Shared display-scale detection and scale -> DPI block mapping (see detect-scale.sh).
-# shellcheck source=detect-scale.sh
 . "$here/detect-scale.sh"
 
 # Shared host light/dark-scheme detection (see detect-theme.sh).
-# shellcheck source=detect-theme.sh
 . "$here/detect-theme.sh"
 
 block_for_scale() {  # scale family -> calibrated block token, fails outside 100-250%
@@ -689,32 +687,15 @@ esac
 # the major parsed from the chosen zip > 12.
 live_installed() { ls "$WINEPREFIX"/drive_c/ProgramData/Ableton/*/Program/"Ableton Live"*.exe >/dev/null 2>&1; }
 installer_dir="${ABLETON_INSTALLER_DIR:-$HOME/Proprietary}"
-# Newest of several installers: Ableton names them
-# ableton_live_<edition>_<major>.<minor>.<patch>_64.zip, so the edition sits
-# BEFORE the version and a plain `sort -V` on the name ranks the edition first —
-# ableton_live_suite_12.0.1 would beat ableton_live_standard_12.5.1, and any
-# "trial" would beat every "standard". Sort on a version key cut out of the
-# basename instead, with the name as tiebreak inside one version (so the
-# alphabetically last edition wins a genuine tie, deterministically).
-# sed -n exits 0 whether or not it matches, so set -e/pipefail stay happy; a
-# name with no parsable version keys as 0 and is chosen only when it is alone.
-newest_installer() {   # <-iname glob> -> highest-versioned match, empty if none
-    local zip v
-    find "$installer_dir" -maxdepth 1 -iname "$1" \
-    | while IFS= read -r zip; do
-          v="$(basename "$zip" | sed -nE 's/^[^0-9]*_([0-9]+(\.[0-9]+)*).*$/\1/p')"
-          printf '%s\t%s\n' "${v:-0}" "$zip"
-      done \
-    | sort -t$'\t' -k1,1V -k2,2 | tail -n 1 | cut -f2-
-}
 live_zip=""
 if [ -d "$installer_dir" ]; then
     if [ -n "${ABLETON_LIVE_VERSION:-}" ]; then
         # An explicit major pin only accepts a matching installer: never
         # silently install another major into a prefix prepared for this one.
-        live_zip="$(newest_installer "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip")"
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname "ableton_live*_${ABLETON_LIVE_VERSION}.*.zip" | sort -V | tail -n 1)"
     else
-        live_zip="$(newest_installer 'ableton_live*.zip')"
+        # Newest by version-sort when several editions/versions are present.
+        live_zip="$(find "$installer_dir" -maxdepth 1 -iname 'ableton_live*.zip' | sort -V | tail -n 1)"
     fi
 fi
 live_major="${ABLETON_LIVE_VERSION:-12}"
@@ -1169,8 +1150,9 @@ fi
 ableton_pipewire_preflight "$WINE_ROOT/bin/pipewire-version-probe" "registering PipeASIO"
 ableton_pipeasio_register wine settle
 
-# Seed the driver defaults once; the file is the config surface (PIPEASIO_*
-# environment variables override it per launch, see the README).
+# Seed the driver defaults once. config.ini is the driver's only config
+# surface in PipeASIO 1.2.2 — edit it (e.g. buffer_size = 512 if you hear
+# crackles); PIPEASIO_DEBUG is the only environment variable it reads.
 pipeasio_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pipeasio/config.ini"
 if [ ! -e "$pipeasio_cfg" ] && [ ! -L "$pipeasio_cfg" ]; then
     pipeasio_tmp="$(mktemp "$transaction_dir/pipeasio.XXXXXX")"
@@ -1253,10 +1235,9 @@ strip_options_txt "-_ForceGdiBackend"
 
 echo "== [6/6] Ableton Live =="
 # Runs the USER'S OWN Ableton download — this repo ships no Live payload and
-# no license. OPT-IN ONLY (ABLETON_LIVE_AUTOINSTALL=1): a Live 12 run is
-# silent, which defers Ableton's EULA to first launch (Live 11's Burn bundle
-# has no silent mode here and opens its wizard), and a prefix refresh must
-# never execute an installer the user didn't explicitly ask it to.
+# no license. OPT-IN ONLY (ABLETON_LIVE_AUTOINSTALL=1): the automatic run is
+# silent, which defers Ableton's EULA to first launch, and a prefix refresh
+# must never execute an installer the user didn't explicitly ask it to.
 # Search dir: ~/Proprietary (the official ableton_live*.zip from ableton.com);
 # ABLETON_INSTALLER_DIR overrides. The zip candidate — and the recipe major it
 # implies — was resolved up front, before step [2/6]. The .run pins
@@ -1270,16 +1251,7 @@ elif [ "${ABLETON_LIVE_AUTOINSTALL:-}" = 0 ]; then
 elif [ "${ABLETON_LIVE_AUTOINSTALL:-0}" != 1 ]; then
     if [ -n "$live_zip" ]; then
         echo "   found $(basename "$live_zip") — rerun with ABLETON_LIVE_AUTOINSTALL=1 to install it"
-        echo "   (Live 12 installs silently: Ableton's EULA is then shown on Live's first launch, not before)"
-        # The recipe major only follows the zip when the install is opted in
-        # (see the resolution above step [1/6]) — so on this run the prefix got
-        # the Live $live_major verbs. Say so when the found zip disagrees, or a
-        # later manual Live 11 install silently misses vcrun2019/gdiplus.
-        hint_major="$(basename "$live_zip" | sed -nE 's/^[^0-9]*_([0-9]+)\.[0-9]+.*$/\1/p')"
-        if [ -n "$hint_major" ] && [ "$hint_major" != "$live_major" ]; then
-            echo "   note: this run prepared the prefix with the Live $live_major recipe; the opted-in rerun"
-            echo "   switches to the Live $hint_major verbs (or pin ABLETON_LIVE_VERSION=$hint_major yourself)"
-        fi
+        echo "   (silent install: Ableton's EULA is then shown on Live's first launch, not before)"
     else
         echo "   skipped — ABLETON_LIVE_AUTOINSTALL=1 (opt-in) installs your ableton_live*.zip from $installer_dir"
     fi
@@ -1316,12 +1288,11 @@ else
         elif [ -z "$live_exe" ]; then
             echo "!! no installer (.exe) inside that zip — is it the official ableton.com download?"
         else
-            # Live 12 ships Inno Setup, Live 11 a WiX Burn bundle, so the silent
-            # flag set is per-engine: sniffed below, the same way the .run's
-            # setup-run-header.sh does it. Default: silent install where the
-            # engine has one, with an interactive-window fallback if no install
-            # lands. ABLETON_INSTALLER_UI=1 forces the window (shows Ableton's
-            # EULA page); a silent run defers EULA acceptance to first launch.
+            # Live's installer is Inno Setup (6.x, verified from the stub), so
+            # the engine's built-in silent flags always exist. Default: silent
+            # install, with an interactive-window fallback if no install lands.
+            # ABLETON_INSTALLER_UI=1 forces the window (shows Ableton's EULA
+            # page); a silent run defers EULA acceptance to first launch/auth.
             run_installer() {   # extra installer arguments in "$@"
                 # Run from the installer's own directory so its relative
                 # payload lookups (Installer-N.bin) resolve.
@@ -1335,27 +1306,7 @@ else
                 "$WINESERVER" -k 2>/dev/null || true
                 settle
             }
-            # Which engine? Burn ignores /MERGETASKS and /SUPPRESSMSGBOXES and
-            # reads /SILENT as /quiet, so the Inno set on Live 11 installs the
-            # USB audio driver anyway and loses the wizard: Burn gets no flags
-            # and its own window instead. `.wixburn` is a PE section ~630 bytes
-            # in, so 4k settles it however big the installer is; the Inno marker
-            # sits ~680 KB in. Process substitution, not a pipe: grep -q exits
-            # early, head takes SIGPIPE, and pipefail would report 141.
-            live_flags=()
-            if ! grep -qaF '.wixburn' <(head -c 4k -- "$live_exe") \
-                 && grep -qa 'Inno Setup' <(head -c 4M -- "$live_exe"); then
-                # /MERGETASKS drops the Windows USB audio kernel driver task:
-                # Wine cannot load it, and Live's audio here is PipeASIO. The
-                # .run passes the same flag; without it the two install paths
-                # produce different prefixes from the same download.
-                live_flags=(/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
-                            '/MERGETASKS=!audiodriver')
-            fi
-            if [ "${ABLETON_INSTALLER_UI:-0}" = 1 ] || [ ${#live_flags[@]} -eq 0 ]; then
-                if [ ${#live_flags[@]} -eq 0 ]; then
-                    echo "   this installer has no silent mode Wine can drive (Live 11 ships a WiX Burn bundle)"
-                fi
+            if [ "${ABLETON_INSTALLER_UI:-0}" = 1 ]; then
                 echo "   starting the Ableton installer — from here just click through its window"
                 run_installer || echo "!! the Ableton installer exited with an error — manual install steps are printed below"
                 end_session
@@ -1365,7 +1316,7 @@ else
                 # connection even under /VERYSILENT — a headless run installs
                 # NOTHING (tested 2026-07-17); with the display it installs
                 # silently, verified end to end with Live 12 Suite 12.4.3.
-                run_installer "${live_flags[@]}" || true
+                run_installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- || true
                 end_session
                 if ! live_installed; then
                     echo "!! the silent install produced no installation — starting the installer window"

@@ -4,13 +4,9 @@ set -uo pipefail
 umask 077
 
 KIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-# shellcheck source=lib/common.sh
 source "$KIT_ROOT/lib/common.sh"
-# shellcheck source=lib/collect-linux.sh
 source "$KIT_ROOT/lib/collect-linux.sh"
-# shellcheck source=lib/fetch-installer.sh
 source "$KIT_ROOT/lib/fetch-installer.sh"
-# shellcheck source=lib/run-probes.sh
 source "$KIT_ROOT/lib/run-probes.sh"
 
 PREFIX="${ABLETON_WINEPREFIX:-$HOME/.wine-ableton}"
@@ -171,10 +167,7 @@ printf 'Requested prefix: %s\n' "$PREFIX"
 
 section "PREFIX PREPARATION"
 if [[ ! -e "$PREFIX" ]]; then
-    # umask, not `mkdir -m 700 -p`: with -p, -m applies to the deepest
-    # directory only, so an intermediate this call creates is left at the
-    # caller's umask (0755 by default) with a Live install underneath it.
-    (umask 077 && mkdir -p "$PREFIX")
+    mkdir -m 700 -p "$PREFIX"
     printf 'Created empty prefix directory: %s\n' "$PREFIX"
 elif [[ ! -d "$PREFIX" ]]; then
     record_result SETUP FAIL "Prefix path is a directory" "$PREFIX exists but is not a directory"
