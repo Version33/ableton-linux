@@ -136,6 +136,76 @@ ableton_wait_for_pid_exit()
     return 1
 }
 
+# Windowless agents an install or a session starts and never stops, ended by
+# exact name so no application is touched.  MicrosoftEdgeUpdate.exe is Live 12's
+# WebView2 updater: under Wine its COM registration fails to validate, so it
+# cannot start an update worker and parks in Core::DoRun indefinitely, holding
+# the prefix open after everything else has gone.  A Max session leaves the same
+# process behind.  The Push images are the USB driver's tray applets.  An image
+# that is not running is a no-op, so callers need not know which apply.
+ableton_stop_leftover_agents()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    # wine builds a prefix at any path it is handed, so a caller that gave up
+    # because the runtime or prefix was missing must not create one on its way
+    # out.  Nothing is running in a prefix that does not exist either.
+    [ -x "$runtime/bin/wine" ] || return 0
+    [ -f "$prefix/system.reg" ] || return 0
+    # One invocation, not one per image: taskkill takes a list, and each wine
+    # start costs a second of a user's exit - or fifteen against a prefix that
+    # has stopped answering, three times over.
+    ableton_run_bounded 15 env WINEPREFIX="$prefix" "$runtime/bin/wine" taskkill /f \
+        /im AbletonPushCpl.exe /im tusbaudiocplapp.exe /im MicrosoftEdgeUpdate.exe \
+        >/dev/null 2>&1 || true
+    return 0
+}
+
+# Windows image name from the command line, which carries the full path where
+# /proc/PID/comm is truncated at 15 characters - short of most of them.  argv[0]
+# is read on its own NUL boundary: every Windows path has a space in it, so
+# splitting the joined command line on whitespace yields "Program".
+ableton_pid_image()
+{
+    local image
+    image="$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -n 1)"
+    image="${image##*\\}"
+    image="${image##*/}"
+    # A process that exits while it is being reported leaves nothing to read.
+    [ -n "$image" ] || image="$(cat "/proc/$1/comm" 2>/dev/null || true)"
+    printf '%s\n' "${image:-unknown}"
+}
+
+# End a session: stop the agents it leaves behind, then confirm the prefix
+# actually came down rather than assume it.  Wine's own processes exit once the
+# last client goes, so a prefix still busy after that grace period is being held
+# by something real - a Max, a second Live, or a program the user started in this
+# prefix themselves.  That is reported and left alone: at this point we cannot
+# tell a user's program from a leftover, and ending the session would take it
+# with us.  Returns non-zero when the prefix is still held.
+ableton_session_teardown()
+{
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    local seconds="${3:-5}" i pid
+    seconds="$(ableton_timeout_value "$seconds" teardown-grace 1 60)" || return 2
+    # Nothing to end, and nothing to wait for.  Checked first because taskkill is
+    # itself a wine process: on an empty prefix it starts a server and a pair of
+    # services that outlive the grace period below, and the teardown would then
+    # report the session it started as the thing holding the prefix.
+    ableton_prefix_busy || return 0
+    ableton_stop_leftover_agents "$runtime" "$prefix" || true
+    for ((i=0; i<seconds*10; i++)); do
+        ableton_prefix_busy || return 0
+        sleep 0.1
+    done
+    ableton_prefix_busy || return 0
+    printf -- '-- the prefix is still in use, so its wineserver stays up for:\n' >&2
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        printf '   %s (pid %s)\n' "$(ableton_pid_image "$pid")" "$pid" >&2
+    done < <(ableton_prefix_pids)
+    return 1
+}
+
 # Wait for every process in the prefix to exit.  Bounded: a resident that outlives
 # the command that started it holds the server open indefinitely.
 ableton_prefix_wait()

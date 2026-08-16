@@ -155,6 +155,12 @@ refuse_runtime_users()
         else
             echo "!! another Wine prefix is using this runtime; close it before rollback" >&2
         fi
+        # Naming them matters here: a windowless agent left in the prefix reads
+        # as "close Live" with no Live to close, and rollback is what someone
+        # reaches for when something is already wrong.
+        for pid in $runtime_users; do
+            printf '   %s (pid %s)\n' "$(ableton_pid_image "$pid")" "$pid" >&2
+        done
         return 1
     }
 }

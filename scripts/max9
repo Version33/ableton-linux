@@ -13,6 +13,17 @@ for lib in "$here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
 done
 declare -F ableton_max_pids >/dev/null 2>&1 || { echo "max9: lifecycle helper is missing" >&2; exit 1; }
 
+# Max exits cleanly - its node.exe helpers and console host go with it - but a
+# Max session leaves WebView2's updater behind exactly as a Live session does,
+# and that one agent holds the wineserver for the rest of the login session.
+session_teardown()
+{
+    local rc=$?
+    ableton_session_teardown || true
+    return "$rc"
+}
+trap session_teardown EXIT
+
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 MAX_EXE="C:\\Program Files\\Cycling '74\\Max 9\\Max.exe"

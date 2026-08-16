@@ -1310,7 +1310,11 @@ wait "$saved_busy_pid" 2>/dev/null || true
     || fail "saved-runtime busy refusal changed the runtime layout"
 grep -Eq 'Wine client is running|another Wine prefix is using this runtime' "$base/err" \
     || fail "saved-runtime busy refusal was not explicit"
-ok "rollback refuses a process executing from the selected saved sibling"
+# "close Live" is unactionable when the holder is a windowless agent, so the
+# refusal names what it found rather than guessing at it.
+grep -q 'rollback-busy-client (pid' "$base/err" \
+    || fail "saved-runtime busy refusal does not name what holds the runtime"
+ok "rollback refuses a process executing from the selected saved sibling, and names it"
 
 base="$(new_env rollback-late-current-user)"
 make_rollback_fixture "$base"

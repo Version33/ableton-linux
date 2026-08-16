@@ -40,6 +40,19 @@ for lifecycle_lib in "$launcher_here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/l
 done
 declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecycle helper is missing" >&2; exit 1; }
 
+# Live exits cleanly - its extensions, its WebView2 processes and explorer all
+# go with it - but WebView2's updater does not, and one wedged agent keeps the
+# wineserver alive for the whole login session. Ending the agents by name lets
+# the server exit on its own, while a Max or a second Live in the same prefix
+# keeps it as it should.
+session_teardown()
+{
+    local rc=$?
+    ableton_session_teardown || true
+    return "$rc"
+}
+trap session_teardown EXIT
+
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "ableton-live: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }

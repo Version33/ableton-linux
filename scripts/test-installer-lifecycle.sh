@@ -671,7 +671,7 @@ grep -qF -- "$base/runtime/bin/wineserver -k" "$base/out" \
 ok "an expired payload wait reports the straggler, stops nothing, and still completes"
 
 for image in AbletonPushCpl.exe tusbaudiocplapp.exe MicrosoftEdgeUpdate.exe; do
-    grep -qF "taskkill /f /im $image" "$base/calls.log" \
+    grep -qF "/im $image" "$base/calls.log" \
         || fail "the payload step does not end $image by name"
 done
 ok "the payload step ends the images it starts, each named exactly"
@@ -682,18 +682,48 @@ ok "a quiet prefix after the payload reports nothing"
 
 base="$(new_env launcher-preflight)"
 mkdir -p "$base/runtime/bin" "$base/prefix"
-printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wine"
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+printf 'wine %s\n' "$*" >> "${ABLETON_TEST_LOG:?}"
+exit 0
+EOF
 printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wineserver"
 chmod +x "$base/runtime/bin/wine" "$base/runtime/bin/wineserver"
 printf 'registry\n' > "$base/prefix/system.reg"
+: > "$base/wine.log"
 if run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
-    bash "$here/ableton-live" >"$base/out" 2>"$base/err"; then
+    ABLETON_TEST_LOG="$base/wine.log" bash "$here/ableton-live" \
+    >"$base/out" 2>"$base/err"; then
     fail "launcher without Live fails"
 fi
+# taskkill is a wine process: on an empty prefix it would start a server and a
+# pair of services, which the teardown would then report as the holder.
+! grep -q 'taskkill' "$base/wine.log" || fail "teardown starts wine on a prefix with nothing in it"
 grep -q 'no Ableton Live installation' "$base/err" || fail "launcher reports missing Live"
 [ ! -e "$base/state" ] && [ ! -e "$base/data" ] && [ ! -e "$base/config" ] && [ ! -e "$base/run" ] \
     || fail "launcher preflight mutates no machine state"
 ok "launcher validates runtime, prefix, and Live before mutation"
+
+# The teardown runs on every exit, including the ones that gave up because the
+# prefix was not there.  wine builds a prefix at whatever path it is handed, so
+# a refusal must not leave one behind.
+base="$(new_env launcher-missing-prefix)"
+mkdir -p "$base/runtime/bin"
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+mkdir -p -- "${WINEPREFIX:?}/drive_c"
+printf 'registry\n' > "${WINEPREFIX:?}/system.reg"
+exit 0
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wineserver"
+chmod +x "$base/runtime/bin/wine" "$base/runtime/bin/wineserver"
+if run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/absent-prefix" bash "$here/ableton-live" \
+    >"$base/out" 2>"$base/err"; then
+    fail "launcher accepts a missing prefix"
+fi
+[ ! -e "$base/absent-prefix" ] || fail "teardown builds a prefix the launcher refused to use"
+ok "a launcher that refuses a missing prefix creates nothing on its way out"
 
 base="$(new_env max-coexist)"
 mkdir -p "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" "$base/run"
@@ -719,7 +749,10 @@ printf 'registry\n' > "$base/prefix/system.reg"
 printf 'registry\n' > "$base/prefix/user.reg"
 printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
 : > "$base/wine.log"
-env WINEPREFIX="$base/prefix" bash -c 'exec -a "C:\\Program Files\\Cycling '\''74\\Max 9\\Max.exe" "$1" 60' _ "$base/runtime/bin/wine-client" &
+# 600s, not 60: the launcher waits out its observability timeout before the
+# teardown even runs, so a short-lived stand-in expires mid-case and the
+# coexistence it is meant to prove goes untested.
+env WINEPREFIX="$base/prefix" bash -c 'exec -a "C:\\Program Files\\Cycling '\''74\\Max 9\\Max.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
 max_pid=$!
 sleep 0.1
 run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
@@ -731,6 +764,23 @@ kill "$max_pid" 2>/dev/null || true
 wait "$max_pid" 2>/dev/null || true
 ! grep -Eq 'wineserver -k|wineboot' "$base/wine.log" || fail "busy prefix avoids kill and boot"
 ok "cold Live launch neither kills Max nor boots its busy prefix"
+
+# The teardown: a session ends the agents it leaves behind, by name, so the
+# wineserver can exit on its own - and never by ending the prefix, which would
+# take a Max or a second Live with it.
+for image in AbletonPushCpl.exe tusbaudiocplapp.exe MicrosoftEdgeUpdate.exe; do
+    grep -qF "/im $image" "$base/wine.log" \
+        || fail "the launcher leaves $image running after the session"
+done
+ok "the launcher ends the agents a session leaves behind, and stops the prefix for none of them"
+
+# Teardown confirms the outcome instead of assuming it: with another program
+# still in the prefix, it reports why the wineserver stays rather than ending it.
+grep -q 'the prefix is still in use' "$base/err" \
+    || fail "teardown does not report a prefix left in use"
+grep -q 'Max\.exe (pid' "$base/err" \
+    || fail "teardown names the holder by something other than its Windows image"
+ok "teardown verifies the prefix came down, and names the holder when it did not"
 
 base="$(new_env foreign-runtime)"
 mkdir -p "$base/runtime/bin"
