@@ -180,7 +180,6 @@ RUNTIME_LINK=""
 runtime_lib="$HOME/.local/share/ableton-wine/runtime-link.sh"
 [ -r "$runtime_lib" ] || runtime_lib="$WINE_ROOT/share/ableton-wine/scripts/runtime-link.sh"
 if [ -r "$runtime_lib" ]; then
-    # shellcheck source=runtime-link.sh
     . "$runtime_lib"
     RUNTIME_LINK="$(ableton_runtime_link "$WINE_ROOT")" || RUNTIME_LINK=""
 fi
@@ -346,7 +345,6 @@ if ! ableton_live_running; then
     dpi_lib="$ABLETON_DATA_HOME/detect-scale.sh"
     # Packaged installs (nix) ship the libs under the runtime root instead of $HOME.
     [ -r "$dpi_lib" ] || dpi_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-scale.sh"
-    # shellcheck source=detect-scale.sh
     [ -r "$dpi_lib" ] && . "$dpi_lib"
     if ! declare -F ableton_dpi_block_values >/dev/null 2>&1; then
         # no (or an older) detect-scale.sh: the two legacy blocks still resolve inline
@@ -894,7 +892,6 @@ if ! ableton_live_running; then
     # even when ABLETON_THEME_MODE pins the scheme.
     theme_lib="$ABLETON_DATA_HOME/detect-theme.sh"
     [ -r "$theme_lib" ] || theme_lib="$WINE_ROOT/share/ableton-wine/scripts/detect-theme.sh"
-    # shellcheck source=detect-theme.sh
     [ -r "$theme_lib" ] && . "$theme_lib"
     theme_mode="${ABLETON_THEME_MODE:-auto}"
     if [ "$theme_mode" = auto ]; then
@@ -955,7 +952,6 @@ for f in "$ABLETON_DATA_HOME/shortcut-hold.sh" \
 done
 ableton_shortcuts_active=0
 if [ -n "$shortcut_lib" ]; then
-    # shellcheck source=shortcut-hold.sh
     . "$shortcut_lib"
     shortcut_allow_hold=0
     [ -n "$EXE" ] && shortcut_allow_hold=1

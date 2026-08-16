@@ -78,9 +78,8 @@ Flakes must be enabled, and only `x86_64-linux` is supported:
 ```bash
 # 1. Put your Ableton Live installation ZIP in ~/Proprietary.
 # 2. Build the runtime and create the Wine prefix. ABLETON_LIVE_AUTOINSTALL=1
-#    opts in to running that ZIP's installer. A Live 12 installer runs silently,
-#    so Ableton's licence appears on Live's first launch; Live 11's installer
-#    opens its own window. Leave it unset to install Live yourself.
+#    opts in to running that ZIP's installer silently, so Ableton's licence
+#    appears on Live's first launch. Leave it unset to install Live yourself.
 ABLETON_LIVE_AUTOINSTALL=1 nix run github:shibco/ableton-linux#setup-prefix
 # 3. Launch Live.
 nix run github:shibco/ableton-linux

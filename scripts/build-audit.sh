@@ -119,16 +119,10 @@ done < "$SERIES"
 # Every .patch on disk, not just the numbered ones the series globs match: a file
 # the series glob skips is applied by nothing and audited by nothing, so it has
 # to surface here rather than pass as absent.
-extras="$(
-    cd "$root/patches" || exit
-    shopt -s nullglob
-    on_disk=(*.patch pipeasio/*.patch)
-    [ "${#on_disk[@]}" -gt 0 ] || exit 0
-    printf '%s\n' "${on_disk[@]}" | grep -vxF -f <(awk '{print $2}' "$SERIES") || true
-)"
+extras="$(cd "$root/patches" && ls 00*.patch pipeasio/*.patch 2>/dev/null | grep -vxF -f <(awk '{print $2}' "$SERIES") || true)"
 [ -z "$extras" ] && ok "no unlisted patches" "" || bad "unlisted patches present" "$extras"
 # Retired numbers stay retired (renumbering would break cross-references in patch
-# titles and release history); a gap is fine if documented here, a dropped patch is not.
+# titles and notes/); a gap is fine if documented here, a dropped patch is not.
 declare -A SERIES_GAPS=(
     [0027]="retired 2026-07-14 — gitignore housekeeping, no artifact effect"
     [0044]="reserved 2026-07-24 for the issue 57 parked-pane reblit gate; shipped as 0056 instead"
