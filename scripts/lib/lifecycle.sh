@@ -151,6 +151,31 @@ ableton_stop_leftover_agents()
     return 0
 }
 
+# Wine's own processes, alive only while a client is.  Naming them in a report
+# buries the one process that is actually holding the prefix.
+ableton_wine_own_image()
+{
+    case "$1" in
+        services.exe|winedevice.exe|plugplay.exe|svchost.exe|rpcss.exe|explorer.exe|\
+        winemenubuilder.exe|start.exe|conhost.exe|wineboot.exe|rundll32.exe|wineserver)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# The prefix's processes worth reporting: everything Wine did not start itself.
+ableton_prefix_holders()
+{
+    local pid image
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        image="$(ableton_pid_image "$pid")"
+        ableton_wine_own_image "$image" && continue
+        printf '%s\t%s\n' "$pid" "$image"
+    done < <(ableton_prefix_pids)
+    return 0
+}
+
 # Windows image name.  comm truncates at 15 characters, and argv[0] must be read
 # on its NUL boundary: split on whitespace and every C:\Program Files path is "Program".
 ableton_pid_image()
@@ -170,7 +195,7 @@ ableton_pid_image()
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    local seconds="${3:-5}" i pid
+    local seconds="${3:-5}" i pid image
     seconds="$(ableton_timeout_value "$seconds" teardown-grace 1 60)" || return 2
     # First: taskkill is itself a wine process, so on an empty prefix it would start
     # a server and services that outlive the grace period and be reported as holders.
@@ -182,10 +207,10 @@ ableton_session_teardown()
     done
     ableton_prefix_busy || return 0
     printf -- '-- the prefix is still in use, so its wineserver stays up for:\n' >&2
-    while IFS= read -r pid; do
+    while IFS="$(printf '\t')" read -r pid image; do
         [ -n "$pid" ] || continue
-        printf '   %s (pid %s)\n' "$(ableton_pid_image "$pid")" "$pid" >&2
-    done < <(ableton_prefix_pids)
+        printf '   %s (pid %s)\n' "$image" "$pid" >&2
+    done < <(ableton_prefix_holders)
     return 1
 }
 
@@ -203,7 +228,7 @@ ableton_prefix_wait()
 ableton_prefix_wait_progress()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    local waiter rc=0 elapsed=0 names pid
+    local waiter rc=0 elapsed=0 names
     ableton_run_bounded 60 env WINEPREFIX="$prefix" \
         "$runtime/bin/wineserver" -w >/dev/null 2>&1 &
     waiter=$!
@@ -211,10 +236,7 @@ ableton_prefix_wait_progress()
         sleep 1
         elapsed=$((elapsed + 1))
         [ "$((elapsed % 15))" -eq 0 ] || continue
-        names="$(while IFS= read -r pid; do
-                     [ -n "$pid" ] || continue
-                     ableton_pid_image "$pid"
-                 done < <(ableton_prefix_pids) | sort -u | tr '\n' ' ')"
+        names="$(ableton_prefix_holders | cut -f2 | sort -u | tr '\n' ' ')"
         [ -z "${names// /}" ] \
             || printf -- '   still waiting for the prefix to settle (%ss): %s\n' \
                 "$elapsed" "$names"

@@ -746,7 +746,7 @@ esac
 install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
-    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg="" holder
+    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg="" holder holder_image
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
         unpack="$(mktemp -d "${TMPDIR:-/tmp}/ableton-live-installer.XXXXXX")"
@@ -825,9 +825,10 @@ EOF
     if ! ableton_prefix_wait_progress; then
         echo "-- the install is complete. A program in the prefix is still running and"
         echo "   was left alone:"
-        for holder in $(ableton_prefix_pids); do
-            printf '   %s (pid %s)\n' "$(ableton_pid_image "$holder")" "$holder"
-        done
+        while IFS="$(printf '\t')" read -r holder holder_image; do
+            [ -n "$holder" ] || continue
+            printf '   %s (pid %s)\n' "$holder_image" "$holder"
+        done < <(ableton_prefix_holders)
         echo "-- nothing needs to be done. To end it anyway, close it or run:"
         printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
             "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
