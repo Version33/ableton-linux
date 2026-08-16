@@ -280,15 +280,15 @@ ableton_prefix_wait()
 }
 
 # The same wait, naming what it waits on every 15s: a silent minute in front of an
-# installer reads as a hang.  Same bounded wait, same exit code.  Ticks go to
+# installer reads as a hang.  It is the wait above, run in the background and
+# watched, so the bound and the exit code cannot drift from it.  Ticks go to
 # stdout, where the rest of the install narrative goes; the teardown's messages
 # go to stderr, being diagnostics after an application has closed.
 ableton_prefix_wait_progress()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
     local waiter rc=0 elapsed=0 names
-    ableton_run_bounded 60 env WINEPREFIX="$prefix" \
-        "$runtime/bin/wineserver" -w >/dev/null 2>&1 &
+    ableton_prefix_wait "$runtime" "$prefix" &
     waiter=$!
     while kill -0 "$waiter" 2>/dev/null; do
         sleep 1
