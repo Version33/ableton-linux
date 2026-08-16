@@ -31,18 +31,22 @@ ableton_pid_uses_runtime()
     esac
 }
 
+# The prefix and runtime default to the configured pair, but every walker below
+# takes them, so a caller working on a prefix that is not the configured one -
+# setup-prefix.sh, inside its staging window - inspects the prefix it named
+# rather than the user's.
 ableton_pid_uses_prefix()
 {
-    ableton_pid_has_env "$1" "WINEPREFIX=$ABLETON_WINEPREFIX"
+    ableton_pid_has_env "$1" "WINEPREFIX=${2:-$ABLETON_WINEPREFIX}"
 }
 
 ableton_prefix_pids()
 {
-    local proc pid
+    local root="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}" proc pid
     for proc in /proc/[0-9]*; do
         pid="${proc#/proc/}"
-        ableton_pid_uses_runtime "$pid" || continue
-        ableton_pid_uses_prefix "$pid" || continue
+        ableton_pid_uses_runtime "$pid" "$root" || continue
+        ableton_pid_uses_prefix "$pid" "$prefix" || continue
         printf '%s\n' "$pid"
     done
     return 0
@@ -103,7 +107,7 @@ ableton_live_running()
 ableton_prefix_busy()
 {
     local pid
-    pid="$(ableton_prefix_pids | head -n 1)"
+    pid="$(ableton_prefix_pids "${1:-}" "${2:-}" | head -n 1)"
     [ -n "$pid" ]
 }
 
@@ -172,7 +176,7 @@ ableton_prefix_holders()
         image="$(ableton_pid_image "$pid")"
         ableton_wine_own_image "$image" && continue
         printf '%s\t%s\n' "$pid" "$image"
-    done < <(ableton_prefix_pids)
+    done < <(ableton_prefix_pids "${1:-}" "${2:-}")
     return 0
 }
 
@@ -189,7 +193,7 @@ ableton_vendored_helper_image()
 # Holders that are somebody else's: a Max, a second Live, a program the user
 # started.  These are the ones worth naming.  Reads a holder list so a caller
 # that already walked /proc need not walk it again.
-ableton_foreign_holders()
+ableton_unknown_holders()
 {
     local pid image
     while IFS="$(printf '\t')" read -r pid image; do
@@ -200,9 +204,9 @@ ableton_foreign_holders()
     return 0
 }
 
-ableton_prefix_foreign_holders()
+ableton_prefix_unknown_holders()
 {
-    ableton_prefix_holders | ableton_foreign_holders
+    ableton_prefix_holders "${1:-}" "${2:-}" | ableton_unknown_holders
 }
 
 # Windows image name.  comm truncates at 15 characters, and argv[0] must be read
@@ -210,7 +214,9 @@ ableton_prefix_foreign_holders()
 ableton_pid_image()
 {
     local image
-    image="$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null | head -n 1)"
+    # 2>/dev/null first: redirections are applied left to right, so with the input
+    # last the open failure is reported before stderr has been silenced.
+    image="$(tr '\0' '\n' 2>/dev/null < "/proc/$1/cmdline" | head -n 1)"
     image="${image##*\\}"
     image="${image##*/}"
     # A process that exits while it is being reported leaves nothing to read.
@@ -226,35 +232,41 @@ ableton_pid_image()
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    local seconds="${3:-1}" pid image holders foreign=""
+    local seconds="${3:-1}" pid image holders unknown=""
     seconds="$(ableton_timeout_value "$seconds" teardown-settle 1 60)" || return 2
     # First: taskkill is itself a wine process, so on an empty prefix it would start
     # a server and services that outlive the grace period and be reported as holders.
-    ableton_prefix_busy || return 0
+    ableton_prefix_busy "$runtime" "$prefix" || return 0
     ableton_stop_leftover_agents "$runtime" "$prefix" || true
     # One beat for the agents just ended to go, then one look.  Not a poll: each
     # look walks every pid on the machine, and there is nothing to wait for -
     # Wine's own processes are already filtered out, and whatever else is here is
     # an application, which will not leave within a grace period.
     sleep "$seconds"
-    holders="$(ableton_prefix_holders)"
+    holders="$(ableton_prefix_holders "$runtime" "$prefix")"
     [ -n "$holders" ] || return 0
-    foreign="$(printf '%s\n' "$holders" | ableton_foreign_holders)"
+    unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
     # Ours alone: the session is over, the helper finishes on its own, and the
     # server goes with it.  Said out loud because a wineserver outliving the
     # window looks like the bug this teardown exists to prevent.
-    if [ -z "$foreign" ]; then
+    if [ -z "$unknown" ]; then
         printf -- '-- %s closed; a background helper is still finishing and will quit on its own\n' \
             "${ABLETON_SESSION_LABEL:-the session}" >&2
         return 0
     fi
-    printf -- '-- the prefix is still in use, so its wineserver stays up for:\n' >&2
+    printf -- '-- %s closed. Other unknown processes were left running:\n' \
+        "${ABLETON_SESSION_LABEL:-the session}" >&2
     # Here-string, not a pipe from printf '%s': command substitution stripped the
     # trailing newline above, and read drops an unterminated final line.
     while IFS="$(printf '\t')" read -r pid image; do
         [ -n "$pid" ] || continue
         printf '   %s (pid %s)\n' "$image" "$pid" >&2
-    done <<< "$foreign"
+    done <<< "$unknown"
+    # Naming them is half an answer: someone who wants them gone needs the means,
+    # and the paths are the ones this session actually used.  Printed rather than
+    # run, because whether they should go is the user's call.
+    printf -- '-- Ableton-Linux helpers close themselves once the prefix is free. To kill the prefix forcefully instead:\n' >&2
+    printf -- '   WINEPREFIX=%s %s/bin/wineserver -k\n' "$prefix" "$runtime" >&2
     return 1
 }
 
@@ -282,7 +294,8 @@ ableton_prefix_wait_progress()
         sleep 1
         elapsed=$((elapsed + 1))
         [ "$((elapsed % 15))" -eq 0 ] || continue
-        names="$(ableton_prefix_foreign_holders | cut -f2 | sort -u | tr '\n' ' ')"
+        names="$(ableton_prefix_unknown_holders "$runtime" "$prefix" \
+            | cut -f2 | sort -u | tr '\n' ' ')"
         [ -z "${names// /}" ] \
             || printf -- '   still waiting for the prefix to settle (%ss): %s\n' \
                 "$elapsed" "$names"

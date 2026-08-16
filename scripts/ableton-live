@@ -48,7 +48,6 @@ session_teardown()
     ABLETON_SESSION_LABEL="Ableton Live" ableton_session_teardown || true
     return "$rc"
 }
-trap session_teardown EXIT
 
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
@@ -58,6 +57,10 @@ export WINEPREFIX="$ABLETON_WINEPREFIX"
 case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
     *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
 esac
+
+# Armed after the guards: teardown ends this prefix's agents, and a launch that
+# refused to start has no session to end - the prefix may hold someone else's.
+trap session_teardown EXIT
 
 find_live_exe()
 {

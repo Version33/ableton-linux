@@ -776,11 +776,13 @@ ok "the launcher ends the agents a session leaves behind, and stops the prefix f
 
 # Teardown confirms the outcome instead of assuming it: with another program
 # still in the prefix, it reports why the wineserver stays rather than ending it.
-grep -q 'the prefix is still in use' "$base/err" \
+grep -q 'Other unknown processes were left running' "$base/err" \
     || fail "teardown does not report a prefix left in use"
 grep -q 'Max\.exe (pid' "$base/err" \
     || fail "teardown names the holder by something other than its Windows image"
-ok "teardown verifies the prefix came down, and names the holder when it did not"
+grep -qF "wineserver -k" "$base/err" \
+    || fail "teardown names a holder without saying how to end it"
+ok "teardown verifies the prefix came down, and names the holder and the remedy"
 
 # A helper this project installed outlives the window on purpose - learnheal.exe
 # heals the Learn View pane after Live has gone - so the launcher must hand the
@@ -809,7 +811,7 @@ run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$
     ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
     bash "$here/ableton-live" >"$base/out" 2>"$base/err" || true
 kill -0 "$helper_pid" 2>/dev/null || fail "the launcher ended a helper it installed"
-! grep -q 'the prefix is still in use' "$base/err" \
+! grep -q 'unknown processes' "$base/err" \
     || fail "teardown reports this project's own helper as a holder"
 grep -q 'Ableton Live closed; a background helper' "$base/err" \
     || fail "teardown leaves a wineserver up without naming the app or saying why"
@@ -833,17 +835,88 @@ helper_only_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
     ABLETON_WINEPREFIX="$base/prefix" bash "$base/time-teardown")"
 env WINEPREFIX="$base/prefix" \
     bash -c 'exec -a "C:\\some-daw.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
-foreign_pid=$!
+unknown_pid=$!
 sleep 0.3
-foreign_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+unknown_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
     ABLETON_WINEPREFIX="$base/prefix" bash "$base/time-teardown")"
-kill "$helper_pid" "$foreign_pid" 2>/dev/null || true
-wait "$helper_pid" "$foreign_pid" 2>/dev/null || true
+kill "$helper_pid" "$unknown_pid" 2>/dev/null || true
+wait "$helper_pid" "$unknown_pid" 2>/dev/null || true
 # Neither case may poll: a look costs a walk of every pid on the machine, so the
 # difference between them is the report, not the wall clock.
-[ "$helper_only_s" -le 10 ] && [ "$foreign_s" -le 10 ] \
-    || fail "teardown polls instead of looking once (${helper_only_s}s, ${foreign_s}s)"
-ok "teardown looks once whoever holds the prefix (${helper_only_s}s, ${foreign_s}s)"
+[ "$helper_only_s" -le 10 ] && [ "$unknown_s" -le 10 ] \
+    || fail "teardown polls instead of looking once (${helper_only_s}s, ${unknown_s}s)"
+ok "teardown looks once whoever holds the prefix (${helper_only_s}s, ${unknown_s}s)"
+
+# Every walker takes the prefix, so setup-prefix.sh inside its staging window
+# reports on the prefix it named rather than on the user's.  The wait itself was
+# always right; the /proc walk behind the progress tick was not.
+base="$(new_env named-prefix-walk)"
+mkdir -p "$base/runtime/bin" "$base/prefix" "$base/staging-prefix" "$base/data/ableton-wine" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+chmod +x "$base/runtime/bin/"*
+cat > "$base/name-holders" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/config.sh"
+ableton_config_init
+. "$here/lib/lifecycle.sh"
+ableton_prefix_unknown_holders "\$@" | cut -f2 | sort | paste -sd, -
+EOF
+chmod +x "$base/name-holders"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\configured-app.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+configured_pid=$!
+env WINEPREFIX="$base/staging-prefix" \
+    bash -c 'exec -a "C:\\staging-app.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+staging_pid=$!
+sleep 0.3
+named_walk="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/name-holders" \
+    "$base/runtime" "$base/staging-prefix")"
+default_walk="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/name-holders")"
+kill "$configured_pid" "$staging_pid" 2>/dev/null || true
+wait "$configured_pid" "$staging_pid" 2>/dev/null || true
+[ "$named_walk" = 'staging-app.exe' ] \
+    || fail "a named prefix is walked as the configured one (got '$named_walk')"
+[ "$default_walk" = 'configured-app.exe' ] \
+    || fail "the configured prefix is not walked by default (got '$default_walk')"
+ok "the /proc walk follows the prefix a caller names, not the configured one"
+
+# A launcher that refuses to start has no session to end, and the prefix it
+# refused in may hold a Live the user is working in.  Teardown ends agents, so
+# the trap must arm after the guards rather than before them.
+base="$(new_env guard-abort-teardown)"
+mkdir -p "$base/runtime/bin" "$base/prefix" "$base/data/ableton-wine" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+cat > "$base/runtime/bin/wine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$base/wine.log"
+exit 0
+EOF
+for tool in wineserver wineboot winepath; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/$tool"
+done
+chmod +x "$base/runtime/bin/"*
+printf 'registry\n' > "$base/prefix/system.reg"
+: > "$base/wine.log"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\Ableton Live 12 Suite.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+live_pid=$!
+sleep 0.3
+if run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash "$here/max9" >"$base/out" 2>"$base/err"; then
+    fail "max9 started with no installation present"
+fi
+kill -0 "$live_pid" 2>/dev/null || fail "a refused launch ended a process in the prefix"
+kill "$live_pid" 2>/dev/null || true
+wait "$live_pid" 2>/dev/null || true
+grep -q 'no Max 9 installation' "$base/err" || fail "max9 does not say why it refused"
+! grep -q 'taskkill' "$base/wine.log" \
+    || fail "a refused launch ends agents in a prefix another session is using"
+! grep -q 'unknown processes' "$base/err" \
+    || fail "a refused launch reports a teardown it never performed"
+ok "a launcher that refuses to start leaves the prefix and its agents alone"
 
 base="$(new_env foreign-runtime)"
 mkdir -p "$base/runtime/bin"

@@ -21,7 +21,6 @@ session_teardown()
     ABLETON_SESSION_LABEL="Max" ableton_session_teardown || true
     return "$rc"
 }
-trap session_teardown EXIT
 
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
@@ -30,6 +29,10 @@ MAX_UNIX="$WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "max9: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
 [ -f "$WINEPREFIX/system.reg" ] || { echo "max9: Wine prefix is missing at $WINEPREFIX" >&2; exit 1; }
 [ -f "$MAX_UNIX" ] || { echo "max9: no Max 9 installation in $WINEPREFIX" >&2; exit 1; }
+
+# Armed after the guards: teardown ends this prefix's agents, and a launch that
+# refused to start has no session to end - Live may be running in this prefix.
+trap session_teardown EXIT
 
 caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
