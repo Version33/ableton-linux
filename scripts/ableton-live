@@ -1,27 +1,80 @@
 #!/usr/bin/env bash
 # Ableton Live launcher for the patched Wine stack. Runs whichever Live edition
 # (Intro/Lite/Standard/Suite/Trial, any major version) is installed in the prefix.
-# Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
-#            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
-#            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
-#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
-#            ABLETON_SHORTCUTS=take (GNOME: hold the desktop shortcuts that shadow Live
-#              bindings, Ctrl+Alt+Up/Down and for Live 11 Ctrl+Alt+Delete, while Live
-#              runs; they restore when Live exits; default preserve touches nothing),
-#            ABLETON_POWER=off (skip the session performance power-profile hold),
-#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
-#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
-#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
-#            WINE_D3D_FORCE_GPU_RENDERING=1 (offer Live's GPU renderer on Intel models its
-#              list refuses; the device name Live shows discloses the substitution),
-#            WINE_X11_SMOOTH_SCROLLING / WINE_X11_PINCH_ZOOM / WINE_X11_MIDDLE_DRAG /
-#            WINE_X11_TOUCHPAD_INERTIA / WINE_X11_MIDDLE_DRAG_THROW /
-#            WINE_X11_WHEEL_WHILE_BUTTON_HELD / WINE_X11_INERTIA_CURVE /
-#            WINE_X11_INERTIA_RATE / WINE_X11_WARP_EMULATION
-#              (pointer overrides for one launch; registry values hold the persistent
-#              settings, see notes/ABLETON-WINE-POINTER-GESTURES.md; this launcher
-#              exports none of them).
+ENV_VAR_HELP=$(
+cat <<'END_HEREDOC'
+ableton-linux can be customized by setting environment variables
+
+ABLETON-LIVE VARIABLES:
+    ABLETON_WINE_ROOT=/usr
+        stock wine
+
+    ABLETON_VDESK=2560x1600
+        virtual desktop
+
+    ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe
+        pick one install
+
+    ABLETON_LIVE_VERSION=11|12
+        restrict discovery to one major version
+
+    ABLETON_RT=off
+        skip the realtime probe; run Live under normal scheduling
+
+    ABLETON_SHORTCUTS=take
+        GNOME: hold the desktop shortcuts that shadow Live
+        bindings, Ctrl+Alt+Up/Down and for Live 11 Ctrl+Alt+Delete, while Live
+        runs; they restore when Live exits; default preserve touches nothing)
+
+    ABLETON_POWER=off
+        skip the session performance power-profile hold
+
+    ABLETON_LINKD=/path/to/ableton-linkd
+        Ableton Link session anchor override
+
+
+RUNTIME VARIABLES:
+    WINE_X11_FORCE_OFFSCREEN_CLASS=off
+        disable the M4L selection-flicker fix
+
+    WINE_WIN32_FULLSCREEN_CLASS=off
+        disable Live fullscreen normalization
+
+    WINE_WIN32_RESIZABLE_CLASS=off
+        disable the monitor-sized resizability fix
+
+    WINE_D3D_FORCE_GPU_RENDERING=1
+        offer Live's GPU renderer on Intel models it
+        list refuses; the device name Live shows discloses the substitution
+
+    WINE_X11_SMOOTH_SCROLLING
+        TODO
+
+    WINE_X11_PINCH_ZOOM
+        TODO
+
+    WINE_X11_MIDDLE_DRAG
+        TODO
+
+    WINE_X11_TOUCHPAD_INERTIA
+        TODO
+
+    WINE_X11_MIDDLE_DRAG_THROW
+        TODO
+
+    WINE_X11_WHEEL_WHILE_BUTTON_HELD
+        TODO
+
+    WINE_X11_INERTIA_CURVE
+        TODO
+
+    WINE_X11_INERTIA_RATE
+        TODO
+
+    WINE_X11_WARP_EMULATION
+        TODO
+END_HEREDOC
+)
 set -u
 
 version() {
@@ -34,13 +87,19 @@ version() {
     fi
 }
 
+env_var_help() {
+    echo "$ENV_VAR_HELP"
+}
+
 usage() {
     cat <<EOF
 ableton-linux $(version)
 
 USAGE: $0 [options] [SET]
 
+OPTIONS:
 -h  --help       show help
+-c  --config     show config environment variable help
 -V  --version    print ableton-linux version
 EOF
 }
@@ -51,6 +110,10 @@ while [[ $# -gt 0 ]]; do
     case $key in
         -h|--help)
             usage
+            exit 0
+            ;;
+        -c|--config)
+            env_var_help
             exit 0
             ;;
         -V|--version)
