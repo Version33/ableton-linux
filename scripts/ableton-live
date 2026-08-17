@@ -157,7 +157,7 @@ END_HEREDOC
 set -u
 
 version() {
-    versionfile="$HOME/.local/share/ableton-wine/VERSION"
+    versionfile="${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/VERSION"
     if [ -f "$versionfile" ]; then
         cat "$versionfile"
     else
