@@ -1,28 +1,228 @@
 #!/usr/bin/env bash
 # Ableton Live launcher for the patched Wine stack. Runs whichever Live edition
 # (Intro/Lite/Standard/Suite/Trial, any major version) is installed in the prefix.
-# Overrides: ABLETON_WINE_ROOT=/usr (stock wine), ABLETON_VDESK=2560x1600 (virtual desktop),
-#            ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe (pick one install),
-#            ABLETON_LIVE_VERSION=11|12 (restrict discovery to one major version),
-#            ABLETON_RT=off (skip the realtime probe; run Live under normal scheduling),
-#            ABLETON_SHORTCUTS=take (GNOME: hold the desktop shortcuts that shadow Live
-#              bindings, Ctrl+Alt+Up/Down and for Live 11 Ctrl+Alt+Delete, while Live
-#              runs; they restore when Live exits; default preserve touches nothing),
-#            ABLETON_POWER=off (skip the session performance power-profile hold),
-#            ABLETON_LINKD=/path/to/ableton-linkd (Ableton Link session anchor override),
-#            WINE_X11_FORCE_OFFSCREEN_CLASS=off (disable the M4L selection-flicker fix),
-#            WINE_WIN32_FULLSCREEN_CLASS=off (disable Live fullscreen normalization),
-#            WINE_WIN32_RESIZABLE_CLASS=off (disable the monitor-sized resizability fix),
-#            WINE_D3D_FORCE_GPU_RENDERING=1 (offer Live's GPU renderer on Intel models its
-#              list refuses; the device name Live shows discloses the substitution),
-#            WINE_X11_SMOOTH_SCROLLING / WINE_X11_PINCH_ZOOM / WINE_X11_MIDDLE_DRAG /
-#            WINE_X11_TOUCHPAD_INERTIA / WINE_X11_MIDDLE_DRAG_THROW /
-#            WINE_X11_WHEEL_WHILE_BUTTON_HELD / WINE_X11_INERTIA_CURVE /
-#            WINE_X11_INERTIA_RATE / WINE_X11_WARP_EMULATION
-#              (pointer overrides for one launch; registry values hold the persistent
-#              settings, see notes/ABLETON-WINE-POINTER-GESTURES.md; this launcher
-#              exports none of them).
+ENV_VAR_HELP=$(
+cat <<'END_HEREDOC'
+ableton-linux reads these environment variables at launch
+
+ABLETON-LIVE VARIABLES:
+    ABLETON_WINE_ROOT=/usr
+        run Live under the Wine installed at this root; /usr selects
+        the distribution's stock Wine; the default is the patched
+        runtime under ~/.local/opt
+
+    ABLETON_WINEPREFIX=/path
+        run Live from this Wine prefix; default ~/.wine-ableton
+
+    ABLETON_VDESK=2560x1600
+        run Live inside a Wine virtual desktop of this size; unset by
+        default, so Live gets a native window
+
+    ABLETON_LIVE_EXE=/path/into/prefix/.../Ableton Live NN Edition.exe
+        launch exactly this Live executable; required when more than
+        one edition is installed in the prefix
+
+    ABLETON_LIVE_VERSION=11|12
+        only look for installs of this major version
+
+    ABLETON_RT=off
+        skip the realtime probe and run Live under normal scheduling;
+        by default the launcher runs Live under SCHED_RR wherever
+        realtime rights exist
+
+    ABLETON_POWER=off
+        skip the performance power-profile hold for this launch; by
+        default the launcher holds the "performance" profile while
+        Live runs and releases it on exit
+
+    ABLETON_SHORTCUTS=take
+        GNOME only: hold the desktop shortcuts that shadow Live
+        bindings (Ctrl+Alt+Up/Down, and Ctrl+Alt+Delete on Live 11)
+        while Live runs; they restore when Live exits; the default,
+        preserve, touches nothing
+
+    ABLETON_LAUNCH_TIMEOUT=90
+        seconds the launcher waits for Live to appear in the prefix
+        before it reports a failed launch; 5 to 600
+
+    ABLETON_WINEBOOT_TIMEOUT=60
+        seconds allowed for the prefix cold boot before launch
+
+    ABLETON_DPI_MODE=100|fractional|dpi<N>|preserve
+        override the per-launch DPI recalibration; the default, auto,
+        matches the detected desktop scale; preserve keeps the
+        prefix's current values
+
+    ABLETON_THEME_MODE=auto|dark|light|preserve
+        pin the light or dark scheme Live's "Follow system" theme
+        sees; the default, auto, mirrors the desktop scheme; preserve
+        touches nothing
+
+    ABLETON_TOPBAR_MODE=live|system|preserve|'#RRGGBB #RRGGBB'
+        colour Live's window chrome; the default, live, follows
+        Live's active theme, system follows the desktop, a hex pair
+        sets bar and text colours, preserve touches nothing
+
+    ABLETON_TEXT_SMOOTHING=subpixel|grayscale|preserve
+        text antialiasing written into the prefix before launch;
+        default subpixel
+
+    ABLETON_UI_FONT=auto|preserve|off|<family>
+        the font Live's dialogs and window chrome use; preserve
+        touches nothing, off restores Wine's stock font; default auto
+
+    ABLETON_DCOMP=off
+        disable DirectComposition for one launch; exists for A/B runs
+        against the Learn View flicker fix
+
+    ABLETON_LINK_MODE=off|session|always
+        whether the launcher starts the Ableton Link session anchor;
+        default off
+
+    ABLETON_LINKD=/path/to/ableton-linkd
+        start this binary as the Ableton Link session anchor instead
+        of the installed one
+
+    ABLETON_LINKD_LINGER=900
+        seconds the Link anchor stays alive with no peers before it
+        exits; 0 keeps it running
+
+AUDIO VARIABLES:
+    PIPEASIO_PREFERRED_BUFFERSIZE=512
+        audio buffer size for one launch; raise it if audio crackles;
+        ~/.config/pipeasio/config.ini holds the persistent settings
+
+RUNTIME VARIABLES:
+    WINE_X11_FORCE_OFFSCREEN_CLASS=off
+        disable the Max for Live selection-flicker fix
+
+    WINE_WIN32_FULLSCREEN_CLASS=off
+        disable Live fullscreen normalisation
+
+    WINE_WIN32_RESIZABLE_CLASS=off
+        disable the monitor-sized resizability fix
+
+    WINE_D3D_FORCE_GPU_RENDERING=1
+        offer Live's GPU renderer on Intel models its list refuses;
+        the device name Live shows discloses the substitution
+
+    The pointer variables below override the saved pointer setting
+    for one launch; the launcher exports none of them, and registry
+    values hold the persistent settings. Values ignore letter case;
+    off and 0 mean disabled. Details:
+    notes/ABLETON-WINE-POINTER-GESTURES.md.
+
+    WINE_X11_SMOOTH_SCROLLING=disabled|precise|notched
+        fine scrolling; precise keeps fractional wheel motion, notched
+        rounds it to whole steps, disabled restores stock scrolling;
+        default precise
+
+    WINE_X11_PINCH_ZOOM=disabled|legacy-wheel
+        pinch zoom; legacy-wheel turns a touchpad pinch into zoom,
+        disabled ignores pinches; default legacy-wheel
+
+    WINE_X11_MIDDLE_DRAG=disabled|navigate|navigate-notched
+        middle-button drag navigation that moves content with the
+        pointer; default navigate
+
+    WINE_X11_TOUCHPAD_INERTIA=disabled|auto|enabled
+        scrolling keeps moving after a quick release; disabled stops
+        scrolling with the input; auto currently behaves like
+        disabled on X11; default enabled
+
+    WINE_X11_MIDDLE_DRAG_THROW=disabled|enabled
+        content keeps moving after you release a moving middle-button
+        drag; disabled stops it at release; default enabled
+
+    WINE_X11_WHEEL_WHILE_BUTTON_HELD=disabled|enabled
+        the mouse wheel keeps working while another button is held,
+        except during middle-button navigation; default enabled
+
+    WINE_X11_INERTIA_CURVE=exponential|linear
+        how continued movement slows down; default exponential
+
+    WINE_X11_INERTIA_RATE=0.5..16.0
+        how quickly continued movement stops; lower values keep it
+        going longer; default 4.0
+
+    WINE_X11_WARP_EMULATION=disabled|auto|enabled
+        XWayland correction for fader and knob drags; auto engages
+        only after Wine sees failed pointer warps; default auto
+
+    WINE_X11_POINTER_FEATURES=disabled
+        master switch: turns every pointer feature above off and
+        restores stock pointer behaviour
+END_HEREDOC
+)
 set -u
+
+version() {
+    versionfile="${XDG_DATA_HOME:-$HOME/.local/share}/ableton-wine/VERSION"
+    if [ -f "$versionfile" ]; then
+        cat "$versionfile"
+    else
+        echo "version file \"$versionfile\" not found" >&2
+        exit 1
+    fi
+}
+
+env_var_help() {
+    echo "$ENV_VAR_HELP"
+}
+
+usage() {
+    cat <<EOF
+ableton-linux $(version)
+
+USAGE: $0 [options] [SET]
+
+OPTIONS:
+-h  --help       show help
+-c  --config     show config environment variable help
+-V  --version    print ableton-linux version
+EOF
+}
+
+end_of_args_reached=false
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    if [[ $end_of_args_reached == true ]]; then
+        POSITIONAL+=("$1")
+        shift
+        continue
+    fi
+    case $key in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -c|--config)
+            env_var_help
+            exit 0
+            ;;
+        -V|--version)
+            version
+            exit 0
+            ;;
+        --)
+            end_of_args_reached=true
+            shift
+            ;;
+        *)
+            if [[ $1 =~ ^-.* ]]; then
+                echo "unknown flag: $1" >&2
+                usage
+                exit 1
+            else
+                POSITIONAL+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+# set $@ back to what it was so launch code works as it did before
+set -- "${POSITIONAL[@]}"
 
 # Immutable preflight.  Nothing above the success boundary below creates a
 # directory, boots Wine, writes registry state, repairs MIME handlers, or starts
