@@ -24,6 +24,48 @@
 #              exports none of them).
 set -u
 
+version() {
+    versionfile="$HOME/.local/share/ableton-wine/VERSION"
+    if [ -f "$versionfile" ]; then
+        cat "$versionfile"
+    else
+        echo "version file \"$versionfile\" not found" >&2
+        exit 1
+    fi
+}
+
+usage() {
+    cat <<EOF
+ableton-linux $(version)
+
+USAGE: $0 [options] [SET]
+
+-h  --help       show help
+-V  --version    print ableton-linux version
+EOF
+}
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -V|--version)
+            version
+            exit 0
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+# set $@ back to what it was so launch code works as it did before
+set -- "${POSITIONAL[@]}"
+
 # Immutable preflight.  Nothing above the success boundary below creates a
 # directory, boots Wine, writes registry state, repairs MIME handlers, or starts
 # a helper.  A runtime-only installation therefore fails cleanly when Live is
