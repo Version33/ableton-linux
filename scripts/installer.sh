@@ -748,19 +748,41 @@ install_live_payload()
     local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg=""
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
-        unpack="$(dirname "$installer")/ableton-live-installer.d"
-        if [ -e "$unpack/.extracted" ]; then
+        unpack="${ABLETON_PAYLOAD_UNPACK_DIR:-$(dirname "$installer")}/ableton-live-installer.d"
+        # Fingerprint the *source* zip (name + byte size) so a leftover payload
+        # from a different zip can't be reused. Reusing a stale dir used to
+        # resolve e.g. a Lite zip to "Ableton Live 12 Suite Installer.exe".
+        zip_name="$(basename "$installer")"
+        zip_bytes="$(stat -c %s -- "$installer" 2>/dev/null || wc -c < "$installer" 2>/dev/null || echo 0)"
+        zip_fingerprint="$zip_name $zip_bytes"
+        if [ -f "$unpack/.extracted" ] && [ "$(cat "$unpack/.extracted" 2>/dev/null)" = "$zip_fingerprint" ]; then
             echo "-- reusing the Live installer payload already extracted at $unpack"
         else
             live_unpack="$unpack"; cleanup_live_unpack || return 1
-            mkdir -p -- "$unpack"
+            mkdir -p -- "$unpack" || { echo "!! cannot create $unpack" >&2; return 1; }
+            if [ ! -w "$unpack" ]; then
+                echo "!! $unpack is not writable; set ABLETON_PAYLOAD_UNPACK_DIR to a writable location" >&2
+                return 1
+            fi
+            # Need headroom: the unpacked payload can exceed the zip's own size.
+            if command -v df >/dev/null 2>&1; then
+                zip_kb=$(( zip_bytes / 1024 )); need_kb=$(( zip_kb * 3 / 2 ))
+                avail_kb="$(df -Pk -- "$unpack" 2>/dev/null | awk 'NR==2{print $4}')"
+                case "$avail_kb" in
+                    ''|*[!0-9]*) ;; # no usable df figure; skip the guard
+                    *) [ "$avail_kb" -ge "$need_kb" ] || {
+                        echo "!! only $((avail_kb/1024)) MB free at $unpack; unpacking a $((zip_kb/1024)) MB zip needs ~$((need_kb/1024)) MB" >&2
+                        return 1; } ;;
+                esac
+            fi
             extract_timeout="$(ableton_timeout_value "${ABLETON_PAYLOAD_EXTRACT_TIMEOUT:-900}" ABLETON_PAYLOAD_EXTRACT_TIMEOUT 60 7200)"
             echo "-- extracting Live installer payload (bounded to ${extract_timeout}s; extracted filenames show progress)"
-            if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip "$installer" -d "$unpack"
-            elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack"
-            elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack"
+            # -o + </dev/null stop unzip hanging on a "replace? (y/n)" prompt.
+            if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip -o "$installer" -d "$unpack" </dev/null
+            elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack" </dev/null
+            elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack" </dev/null
             else echo "!! unzip, bsdtar, or python3 is required for a ZIP payload" >&2; return 1; fi
-            : > "$unpack/.extracted"
+            printf '%s\n' "$zip_fingerprint" > "$unpack/.extracted"
         fi
         live_unpack="$unpack"
         mapfile -t payload_exes < <(find "$unpack" -type f -iname '*.exe' -print | sort -V)
