@@ -965,7 +965,12 @@ ableton_persist_file_prestate()
         if [ -n "$expected" ]; then
             current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
             [ "$current" = "$expected" ] && return 0
-            [ "$collision_policy" = replace-modified ] && return 0
+            # A symlinked target is a user arrangement, never launcher wear;
+            # it stays under the refusal even for replace-modified callers.
+            if [ "$collision_policy" = replace-modified ] && [ ! -L "$target" ]; then
+                echo "replacing modified managed file $target"
+                return 0
+            fi
             ableton_config_error "refusing to overwrite modified managed file $target"
             return 1
         fi
@@ -1013,7 +1018,7 @@ ableton_install_file()
         ableton_config_error "refusing to replace directory with a file: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target" "$source" "$collision_policy"
+    ableton_persist_file_prestate "$target" "$source" "$collision_policy" || return 1
     ableton_txn_snapshot "$target"
     post="$(ableton_regular_source_token "$source")" || return 1
     ableton_txn_expect "$target" "$post" || return 1

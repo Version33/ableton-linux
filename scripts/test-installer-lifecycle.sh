@@ -722,7 +722,67 @@ recorded="$(awk -F '\t' -v p="$live_desktop" '$1=="file" && $2==p { print $3 }' 
 current="$(sha256sum "$live_desktop" | awk '{print $1}')"
 [ "$recorded" = "$current" ] \
     || fail "update did not refresh the Live desktop ownership digest"
+grep -qF "replacing modified managed file $live_desktop" "$base/out" \
+    || fail "desktop entry replacement is not announced"
 ok "update replaces a launcher-healed managed Live desktop entry"
+
+# Uninstall must accept the same launcher-healed entry: the digest mismatch is
+# normal wear, and the entry still routes through the launcher being removed.
+base="$(new_env uninstall-healed-desktop)"
+mkdir -p "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/first.out" 2>"$base/first.err"
+live_desktop="$base/data/applications/ableton-live.desktop"
+sed -i 's/^Name=.*/Name=Ableton Live 12 Suite/' "$live_desktop"
+printf 'StartupWMClass=ableton live 12 suite.exe\n' >> "$live_desktop"
+run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/out" 2>"$base/err" \
+    || { sed -n '1,40p' "$base/err" >&2; fail "uninstall refuses a launcher-healed managed desktop entry"; }
+[ ! -e "$live_desktop" ] || fail "uninstall left the launcher-healed desktop entry behind"
+grep -qF "removed $live_desktop" "$base/out" \
+    || fail "healed desktop entry removal is not reported"
+ok "uninstall removes a launcher-healed managed Live desktop entry"
+
+# The allowance holds only while the Exec line routes through this project's
+# launcher; one re-pointed at another program is hand-made and stays kept,
+# even when a leftover comment still mentions the launcher path.
+base="$(new_env uninstall-repointed-desktop)"
+mkdir -p "$base/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$base/fakebin/systemctl"
+chmod +x "$base/fakebin/systemctl"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/first.out" 2>"$base/first.err"
+live_desktop="$base/data/applications/ableton-live.desktop"
+orig_exec="$(grep '^Exec=' "$live_desktop")"
+sed -i 's|^Exec=.*|Exec=/usr/bin/other-app %f|' "$live_desktop"
+printf '# was: %s\n' "$orig_exec" >> "$live_desktop"
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" bash "$here/uninstall.sh" \
+    --keep-prefix --yes >"$base/out" 2>"$base/err"; then
+    fail "uninstall removed a desktop entry re-pointed away from the launcher"
+fi
+[ -e "$live_desktop" ] || fail "uninstall removed the re-pointed desktop entry"
+grep -qF "kept modified file $live_desktop" "$base/err" \
+    || fail "kept re-pointed desktop entry is not reported"
+ok "uninstall keeps a desktop entry re-pointed away from the launcher"
+
+# A symlinked entry is a user arrangement, never launcher wear; the
+# replace-modified allowance must keep refusing it.
+base="$(new_env symlinked-live-desktop)"
+run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/first.out" 2>"$base/first.err"
+live_desktop="$base/data/applications/ableton-live.desktop"
+mv "$live_desktop" "$base/home/live-entry-copy.desktop"
+ln -s "$base/home/live-entry-copy.desktop" "$live_desktop"
+if run_isolated "$base" bash "$here/install.sh" --integration-only \
+    >"$base/out" 2>"$base/err"; then
+    fail "update replaced a user-symlinked managed desktop entry"
+fi
+[ -L "$live_desktop" ] || fail "failed update did not keep the symlinked desktop entry"
+grep -q 'refusing to overwrite modified managed file' "$base/err" \
+    || fail "symlinked desktop entry refusal is not explicit"
+ok "update keeps a user-symlinked managed Live desktop entry"
 
 base="$(new_env link-prestate)"
 foreign_linkd="$base/data/ableton-wine/ableton-linkd"

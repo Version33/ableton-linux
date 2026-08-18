@@ -494,6 +494,24 @@ if [ -e "$shortcut_state" ] || [ -e "$legacy_shortcut_state" ]; then
     fi
 fi
 
+# The launcher heals the managed Live desktop entry on each cold start (name,
+# icon, window class) and leaves the ownership digest stale, so a mismatch
+# there is normal.  Accept only the shape the shared recogniser pins: template
+# lines intact and Exec still routing through this project's launcher, with
+# the healed fields free to differ.  Anything else is hand-made and stays
+# kept.  The path guard keeps every other manifest row on the digest gate.
+live_entry_launcher_updated()
+{
+    local path="$1"
+    case "$path" in
+        */applications/ableton-live.desktop) ;;
+        *) return 1 ;;
+    esac
+    [ -f "$path" ] || return 1
+    [ ! -L "$path" ] || return 1
+    ableton_legacy_owned_path "$path"
+}
+
 remove_owned_manifest_files()
 {
     local kind path digest current backup backup_digest backup_expected backup_count
@@ -538,7 +556,7 @@ remove_owned_manifest_files()
                     continue
                 fi
                 current="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
-                if [ "$current" = "$digest" ]; then
+                if [ "$current" = "$digest" ] || live_entry_launcher_updated "$path"; then
                     if [ -n "$backup" ]; then
                         if ! ableton_atomic_restore_object "$backup" "$path" \
                            || [ "$(ableton_manifest_digest "$path" 2>/dev/null || true)" != "$backup_digest" ]; then
