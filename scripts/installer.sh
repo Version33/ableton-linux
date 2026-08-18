@@ -748,14 +748,21 @@ install_live_payload()
     local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg=""
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
-        unpack="$(mktemp -d "${TMPDIR:-/tmp}/ableton-live-installer.XXXXXX")"
+        unpack="$(dirname "$installer")/ableton-live-installer.d"
+        if [ -e "$unpack/.extracted" ]; then
+            echo "-- reusing the Live installer payload already extracted at $unpack"
+        else
+            live_unpack="$unpack"; cleanup_live_unpack || return 1
+            mkdir -p -- "$unpack"
+            extract_timeout="$(ableton_timeout_value "${ABLETON_PAYLOAD_EXTRACT_TIMEOUT:-900}" ABLETON_PAYLOAD_EXTRACT_TIMEOUT 60 7200)"
+            echo "-- extracting Live installer payload (bounded to ${extract_timeout}s; extracted filenames show progress)"
+            if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip "$installer" -d "$unpack"
+            elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack"
+            elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack"
+            else echo "!! unzip, bsdtar, or python3 is required for a ZIP payload" >&2; return 1; fi
+            : > "$unpack/.extracted"
+        fi
         live_unpack="$unpack"
-        extract_timeout="$(ableton_timeout_value "${ABLETON_PAYLOAD_EXTRACT_TIMEOUT:-900}" ABLETON_PAYLOAD_EXTRACT_TIMEOUT 60 7200)"
-        echo "-- extracting Live installer payload (bounded to ${extract_timeout}s; extracted filenames show progress)"
-        if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip "$installer" -d "$unpack"
-        elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack"
-        elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack"
-        else echo "!! unzip, bsdtar, or python3 is required for a ZIP payload" >&2; return 1; fi
         mapfile -t payload_exes < <(find "$unpack" -type f -iname '*.exe' -print | sort -V)
         [ "${#payload_exes[@]}" -eq 1 ] || {
             echo "!! expected exactly one installer executable in the ZIP, found ${#payload_exes[@]}" >&2; return 1; }
