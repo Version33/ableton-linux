@@ -684,6 +684,21 @@ grep -qF '# user change' "$base/data/ableton-wine/detect-scale.sh" || fail "fail
 grep -q 'refusing to overwrite modified managed file' "$base/err" || fail "modified managed file refusal is explicit"
 ok "update refuses to overwrite a locally modified managed file"
 
+# install.sh installs the version stamp inside an "if !" condition, which
+# suppresses set -e, so ableton_install_file must return non-zero for the
+# refusal to stop the run.
+base="$(new_env modified-version-stamp)"
+run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/first.out" 2>"$base/first.err"
+printf 'tampered\n' > "$base/data/ableton-wine/VERSION"
+if run_isolated "$base" bash "$here/install.sh" --integration-only >"$base/out" 2>"$base/err"; then
+    fail "integration overwrites a modified version stamp"
+fi
+grep -qxF tampered "$base/data/ableton-wine/VERSION" \
+    || fail "failed update lost the version stamp modification"
+grep -q 'refusing to overwrite modified managed file' "$base/err" \
+    || fail "modified version stamp refusal is explicit"
+ok "update refuses to overwrite a locally modified version stamp"
+
 # A fresh install writes integration before it installs Live, so the desktop
 # entry has no StartupWMClass.  The launcher discovers Live on first start.  It
 # updates the name and appends the missing class after the template's final
