@@ -90,6 +90,11 @@ unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH WINEESYNC WINEFSYNC
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 export PATH="$WINE_ROOT/bin:$PATH"
+# The kit bin beside scripts/ carries kit-private tools: the .run kit's static
+# cabextract, the nix package's cabextract and unzip symlinks.
+if [ -d "$here/../bin" ]; then
+    PATH="$(cd "$here/../bin" && pwd):$PATH"
+fi
 export WINEDEBUG=-all
 export WINESERVER="$WINE_ROOT/bin/wineserver"
 # Mesa prints "radv is not a conformant Vulkan implementation" once per wine
