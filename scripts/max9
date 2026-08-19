@@ -13,6 +13,22 @@ for lib in "$here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/lifecycle.sh"; do
 done
 declare -F ableton_max_pids >/dev/null 2>&1 || { echo "max9: lifecycle helper is missing" >&2; exit 1; }
 
+# Max exits cleanly, but a Max session leaves the same updater behind as a Live
+# one, and it holds the wineserver for the rest of the login session.
+# The trap sits below the guards, and the gate is what makes that sufficient: the
+# refusals are spread through the launcher rather than gathered above one line,
+# and the one that matters most - the bring-up lock held by a sibling launcher -
+# is among the last of them.  A refusal must not reach into a prefix another
+# session is already using.
+session_started=""
+session_teardown()
+{
+    local rc=$?
+    [ -n "$session_started" ] || return "$rc"
+    ABLETON_SESSION_LABEL="Max" ableton_session_teardown || true
+    return "$rc"
+}
+
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 MAX_EXE="C:\\Program Files\\Cycling '74\\Max 9\\Max.exe"
@@ -20,6 +36,10 @@ MAX_UNIX="$WINEPREFIX/drive_c/Program Files/Cycling '74/Max 9/Max.exe"
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "max9: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
 [ -f "$WINEPREFIX/system.reg" ] || { echo "max9: Wine prefix is missing at $WINEPREFIX" >&2; exit 1; }
 [ -f "$MAX_UNIX" ] || { echo "max9: no Max 9 installation in $WINEPREFIX" >&2; exit 1; }
+
+# Armed after the guards: teardown ends this prefix's agents, and a launch that
+# refused to start has no session to end - Live may be running in this prefix.
+trap session_teardown EXIT
 
 caller_winedlloverrides="${WINEDLLOVERRIDES:-}"
 unset WINELOADER WINEDLLPATH WINEDLLOVERRIDES WINEARCH
@@ -38,6 +58,8 @@ if ! flock -n 9; then
     exit 1
 fi
 printf 'max %s\n' "$$" >&9
+# This launcher owns the session from here: every wine invocation is below.
+session_started=1
 
 run=("$WINE_ROOT/bin/wine")
 if [ "${ABLETON_RT:-on}" != off ] && command -v chrt >/dev/null 2>&1 \

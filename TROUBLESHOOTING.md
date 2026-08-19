@@ -70,17 +70,11 @@ sh ~/Downloads/install-ableton-latest.run update
 
 ### The Ableton installer window never progresses or shows graphical corruption on Hyprland
 
-We've received reports that the Ableton Live installation will display 
-significant graphical corruption or fail to progress at all on Hyprland.
-This appears to be an issue across Wine for Hyprland, and we have not yet
-found a fix for it.
+We have had reports that Ableton's own installer window shows heavy graphical corruption, or never advances, under Hyprland. It affects Wine on Hyprland generally rather than anything specific to this project, and we do not have a fix.
 
-Unfortunately, to fix this you will need to temporarily log in to a GNOME or KDE 
-session and run the installer there. Once the installer is complete, you can
-return to Hyprland afterwards. 
+Log in to a GNOME or KDE session, run the installer there, and return to Hyprland once it finishes. Nothing about the installed result depends on the session you installed from.
 
-If you find a Hyprland setting that fixes this,
-[open an issue](https://github.com/shibco/ableton-linux/issues) and tell us.
+If you find a Hyprland setting that fixes this, [open an issue](https://github.com/shibco/ableton-linux/issues) and tell us.
 
 ### The installer says PipeWire is too old
 

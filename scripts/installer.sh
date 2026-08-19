@@ -11,6 +11,7 @@ if [ -d "$here/../bin" ]; then
     export PATH="$kit_bin:$PATH"
 fi
 . "$here/lib/config.sh"
+. "$here/lib/lifecycle.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
 
@@ -746,7 +747,8 @@ install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
     local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg=""
-    local zip_name zip_bytes zip_fingerprint zip_kb need_kb avail_kb stop_answer=""
+    local zip_name zip_bytes zip_fingerprint zip_kb need_kb avail_kb
+    local stop_answer="" holders="" unknown="" holder holder_image
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
         unpack="${ABLETON_PAYLOAD_UNPACK_DIR:-$(dirname "$installer")}/ableton-live-installer.d"
@@ -849,23 +851,56 @@ EOF
         rm -f -- "$seed_reg"
     fi
     # The prefix is promoted and nothing below opens it again, so the install is
-    # complete from here and this step never fails it.  The wait catches an agent
-    # the Live installer left behind: WebView2's MicrosoftEdgeUpdate.exe on Live 12,
-    # the driver tray applet on Live 11, sometimes under an 8.3 name no image list
-    # matches.  Each holds the wineserver, and a later update or rollback refuses
-    # while one does.  Ending the prefix is what reaches an agent we cannot name,
-    # and setup-prefix.sh already refused a busy prefix, so anything alive is ours.
-    if ! ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-            "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1; then
-        if [ "$assume_yes" -ne 1 ] && [ -t 0 ]; then
-            printf 'Background programs from the Live installer are still running. Close them? [Y/n] ' >&2
-            read -r -t 60 stop_answer || stop_answer=""
+    # complete from here and this step never fails it.
+    #
+    # The agents an install leaves behind are ended by name first, because that is
+    # what removes the cause: Live 12's WebView2 updater cannot validate its COM
+    # registration under Wine, so it parks in Core::DoRun and holds the wineserver
+    # for the rest of the login session, and Live 11 leaves the Push driver's tray
+    # applet from a Startup shortcut.  Wine resolves a process to its long image
+    # name, so the list matches the applet through its 8.3 path too.  Wine's own
+    # processes exit once the last client goes, so the server needs no signal.
+    ableton_stop_leftover_agents
+    if ! ableton_prefix_wait_progress; then
+        # Name what is left before deciding anything: an image name is the whole
+        # lead on a report of this - the WebView2 updater was identified from one -
+        # and once the prefix is ended there is nothing left to name.
+        holders="$(ableton_prefix_holders)"
+        unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
+        if [ -n "$holders" ]; then
+            echo "-- the install is complete. A program in the prefix is still running:"
+            while IFS="$(printf '\t')" read -r holder holder_image; do
+                [ -n "$holder" ] || continue
+                printf '   %s (pid %s)\n' "$holder_image" "$holder"
+            done <<< "$holders"
+        else
+            echo "-- the install is complete. The prefix has not settled yet:"
         fi
-        case "$stop_answer" in
-            [nN]*) echo "-- left them running; the next update may ask you to close them" ;;
-            *) ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-                   "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true ;;
-        esac
+        # Asked only about a program this project did not start.  Our own helpers
+        # carry their own exit contract and quit once the prefix is free, and a
+        # wait that expired with nothing to name has nothing to offer ending.
+        # --yes covers the install, not the prefix: it answers for what the
+        # installer does to its own files, and a program the user is running is not
+        # that.  A prefix a Max may be sharing is never ended without an answer, so
+        # where there is nobody to ask the install completes and says how by hand.
+        if [ -z "$unknown" ] || [ "$assume_yes" -eq 1 ] || [ ! -t 0 ]; then
+            echo "-- nothing needs to be done. To end it anyway, close it or run:"
+            printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
+                "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
+        else
+            # Default no, and a timed read that falls back to it: pressing return or
+            # walking away leaves the prefix as it is.
+            printf 'End every program in the prefix now? [y/N] ' >&2
+            read -r -t 60 stop_answer || stop_answer=""
+            case "$stop_answer" in
+                [yY]*)
+                    ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+                        "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true
+                    echo "-- ended the programs in the prefix" ;;
+                *)
+                    echo "-- left them running; the next update may ask you to close them" ;;
+            esac
+        fi
     fi
     [ -z "$unpack" ] || cleanup_live_unpack
 }

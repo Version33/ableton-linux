@@ -67,9 +67,7 @@ For best results, double-check the name of the Ableton installer you have downlo
 
 Once started, this is a mostly automated process.
 
-Near the end, the installer may ask whether to close a background program that
-Ableton's installer left running. Press Enter to close it. Live is already
-installed by then, so either answer keeps it.
+Near the end, the installer may name a program still running in the Wine prefix and ask whether to close it. Pressing Enter leaves it running, which is the safe answer if you also have Max or another Wine program open. Live is already installed by that point, so either answer keeps it.
 
 ### Running Live
 

@@ -445,13 +445,15 @@ wineboot()
 {
     ableton_run_bounded "$wine_command_timeout" "$WINE_ROOT/bin/wineboot" "$@"
 }
+# WINEPREFIX moves from the staging path to the final one partway through, so
+# both helpers name the prefix in force rather than the configured one.
 ableton_wineserver_wait()
 {
-    ableton_run_bounded 60 "$WINESERVER" -w
+    ableton_prefix_wait "$WINE_ROOT" "$WINEPREFIX"
 }
-ableton_wineserver_kill()
+ableton_wineserver_quiesce()
 {
-    ableton_run_bounded 20 "$WINESERVER" -k
+    ableton_prefix_quiesce "$WINE_ROOT" "$WINEPREFIX"
 }
 
 # DPI blocks: a detected scale maps to a calibrated set by compositor family (see
@@ -660,21 +662,18 @@ for startup_root in "$WINEPREFIX/drive_c/users" "$WINEPREFIX/drive_c/ProgramData
     find "$startup_root" -ipath '*Start Menu/Programs/Startup/*' \
         \( -iname '*ableton*' -o -iname '*push*' -o -iname '*tusbaudio*' \) -delete 2>/dev/null || true
 done
-# Bounded, because any resident wineboot started parks this barrier forever: the agent
-# under a name the taskkill missed, or WebView2's MicrosoftEdgeUpdate.exe, whose scheduled
-# task fires about two minutes after a boot and has no window (the --update half of issue
-# #111 is exactly this wait). On timeout, end every process in the prefix and continue -
-# the boot's registry writes are persisted when the server exits. The second wait stays
-# bounded too, in case a straggler survives even SIGKILL.
+# Any resident wineboot started parks this barrier forever: the agent under a name the
+# taskkill missed, or WebView2's MicrosoftEdgeUpdate.exe, whose scheduled task fires about
+# two minutes after a boot and has no window (the --update half of issue #111 is exactly
+# this wait). The boot's registry writes are persisted when the server exits, so a
+# straggler that survives the stop does not block the setup that follows.
 boot_wait_rc=0
-ableton_wineserver_wait || boot_wait_rc=$?
-if [ "$boot_wait_rc" -eq 124 ] || [ "$boot_wait_rc" -eq 137 ]; then
-    echo "-- a leftover background program is holding the prefix open; stopping it"
-    ableton_wineserver_kill 2>/dev/null || true
-    ableton_wineserver_wait 2>/dev/null || true
-elif [ "$boot_wait_rc" -ne 0 ]; then
-    exit "$boot_wait_rc"
-fi
+ableton_wineserver_quiesce || boot_wait_rc=$?
+# 3 is a straggler that outlived the stop, which the setup below tolerates.  A wait
+# that failed for any other reason - an unreadable prefix, a wineserver that would
+# not run - means the boot did not complete, and the winetricks step must not run
+# against a prefix in that state.
+[ "$boot_wait_rc" -eq 0 ] || [ "$boot_wait_rc" -eq 3 ] || exit "$boot_wait_rc"
 
 if [ "$refresh" -eq 1 ]; then
     echo "== [2/5] winetricks: skipped (--refresh keeps the installed fonts/runtimes) =="
