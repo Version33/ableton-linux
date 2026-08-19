@@ -3,7 +3,8 @@
 ![Ableton Live running on Linux](screenshot.png)
 
 Produce and perform with Ableton Live on a self-sovereign, open-source
-stack. This project makes the popular Berlin-based DAW and its ecosystem of products a first-class Linux citizen, with zero compromises.
+stack. This project makes the popular Berlin-based DAW and its ecosystem of 
+products a first-class Linux citizen, with zero compromises.
 
 It is also absolutely **not affiliated with or endorsed in any way by Ableton
 AG** and respects the Ableton terms of service.
@@ -43,10 +44,13 @@ Additionally, you need:
 - your installation files and activation details from Ableton
 
 For most people, a modern and up-to-date Linux distribution, such as SteamOS,
-Ubuntu, CachyOS, or Arch, will already fulfil these requirements. Debian 12,
-Linux Mint, and Pop!_OS 24.04 and earlier ship an older PipeWire, so see
-[getting PipeWire 1.4.2](TROUBLESHOOTING.md#the-installer-says-pipewire-is-too-old)
-before you install.
+Ubuntu, CachyOS, or Arch, will already fulfil these requirements. 
+
+Some distros - such as Debian 12, Linux Mint, and Pop!_OS 24.04 and earlier - 
+ship an older version of the Linux audio system, Pipewire. If you are running
+one of these distros, you will need to update Pipewire before installing Ableton Live 
+on Linux. [We have a guide for doing this](TROUBLESHOOTING.md#the-installer-says-pipewire-is-too-old),
+to help you get going.
 
 ### Getting started
 
@@ -55,23 +59,34 @@ straightforward:
 
 1. Download the Ableton Live installation ZIP from Ableton.com.
 2. Download [the latest version of our installer](https://github.com/shibco/ableton-linux/releases/latest/download/install-ableton-latest.run).
-3. From a terminal, run this command:
+3. Double-click the `install-ableton-latest.run` file.
+
+You can also run the installer from the terminal.
+
+   ```bash
+   sh ~/Downloads/install-ableton-latest.run install
+   ```
+
+If you have a few different Ableton Live installers on your computer, you
+can specify one to install by pointing the installer at it with the `--live-installer`
+flag:
 
    ```bash
    sh ~/Downloads/install-ableton-latest.run install \
-     --live-installer "$HOME/Downloads/Ableton Live 12 Installer.zip" \
-     --link=session
+     --live-installer "$HOME/Downloads/Ableton Live 12 Installer.zip"
    ```
 
-For best results, double-check the name of the Ableton installer you have downloaded. If you run the installer by itself without explicitly pointing to an Ableton Live archive, the installer will try to find one in the same directory.
+For best results, double-check the name of the Ableton installer you have downloaded. 
+If you run the installer by itself without explicitly pointing to an Ableton Live archive, 
+the installer will try to find one in the same directory.
 
-Once started, this is a mostly automated process.
+Once started, the install is mostly automatic.
 
 ### Running Live
 
 Start Ableton Live the way you normally start applications on your Linux OS.
 
-You can also start Live from the applications menu or via the command line:
+You can also start Live from the command line. Open a new terminal window, and run this command:
 
 ```bash
 ableton-live
@@ -83,7 +98,15 @@ You can also specify a Live Set to quickly open on launch:
 ableton-live "/path/to/Your Set.als"
 ```
 
-For Live 11, follow the [Live 11 instructions](#live-11).
+The `ableton-live` command accepts a number of options (called _environment variables_) that change
+how it behaves. [We document each of them and their effects](ENVIRONMENT_VARIABLES.md), but you can 
+also read about them like this:
+
+```bash
+ableton-live --help
+```
+
+For more details on how to run Live 11, follow the [Live 11 instructions](#live-11).
 
 ### First launch
 
@@ -105,18 +128,25 @@ sh ~/Downloads/install-ableton-latest.run update
 
 The update process will install new fixes and features listed in the release notes 
 to your Live Linux environment. Your Live installation, authorization, and projects will
-be preserved, but anything related to the Runtime (and Live's settings) may be updated.
+be preserved, but anything related to the Runtime (and Live's settings) may be changed.
 
 ### Uninstalling
 
 To remove this project's runtime and desktop integration while keeping Live and
-its authorization:
+its authorization, just run:
+
+```bash
+sh ~/Downloads/install-ableton-latest.run uninstall
+```
+
+If you're really nervous, you can ensure your copy of Live and all of your VSTs remain
+by adding the extra (redundant) flag: 
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall --keep-prefix
 ```
 
-By default, this will not delete your copy of Live and any VSTs. To get rid of everything, including Live, its authorization, and any third-party plugins:
+To get rid of everything, including Live, its authorization, and any third-party plugins:
 
 ```bash
 sh ~/Downloads/install-ableton-latest.run uninstall --delete-prefix
