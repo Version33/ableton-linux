@@ -862,9 +862,9 @@ EOF
     # processes exit once the last client goes, so the server needs no signal.
     ableton_stop_leftover_agents
     if ! ableton_prefix_wait_progress; then
-        # Name what is left before deciding anything: an image name is the whole
-        # lead on a report of this - the WebView2 updater was identified from one -
-        # and once the prefix is ended there is nothing left to name.
+        # Named before anything is decided: once the prefix is ended there is no
+        # process left to read an image name from, and the image name is the only
+        # part of this a bug report can carry.
         holders="$(ableton_prefix_holders)"
         unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
         if [ -n "$holders" ]; then
@@ -876,13 +876,13 @@ EOF
         else
             echo "-- the install is complete. The prefix has not settled yet:"
         fi
-        # Asked only about a program this project did not start.  Our own helpers
-        # carry their own exit contract and quit once the prefix is free, and a
-        # wait that expired with nothing to name has nothing to offer ending.
+        # The question is asked only when a program this project did not install is
+        # holding the prefix.  A helper this project installed exits once the prefix
+        # is free, and an expired wait that named nothing has no process to end.
         # --yes covers the install, not the prefix: it answers for what the
         # installer does to its own files, and a program the user is running is not
-        # that.  A prefix a Max may be sharing is never ended without an answer, so
-        # where there is nobody to ask the install completes and says how by hand.
+        # one of those.  A prefix a Max may be sharing is not ended without an
+        # answer, so with nobody to ask the install completes and prints the command.
         if [ -z "$unknown" ] || [ "$assume_yes" -eq 1 ] || [ ! -t 0 ]; then
             echo "-- nothing needs to be done. To end it anyway, close it or run:"
             printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
