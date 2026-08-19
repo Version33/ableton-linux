@@ -141,6 +141,20 @@ ableton_agent_image()
     return 1
 }
 
+# Holders whose image this teardown ends by name.  Kept separate from the unknown
+# set because the two need opposite handling: one is on its way out, the other did
+# not go when it was told to.
+ableton_agent_holders()
+{
+    local pid image
+    while IFS="$(printf '\t')" read -r pid image; do
+        [ -n "$pid" ] || continue
+        ableton_agent_image "$image" || continue
+        printf '%s\t%s\n' "$pid" "$image"
+    done
+    return 0
+}
+
 # True while a holder list still names an agent this teardown ends by name.
 ableton_holders_include_agent()
 {
@@ -161,8 +175,11 @@ ableton_stop_leftover_agents()
     [ -f "$prefix/system.reg" ] || return 0
     for image in $ABLETON_LEFTOVER_AGENTS; do args+=(/im "$image"); done
     # One invocation: taskkill takes a list, and each wine start costs exit latency.
+    # 9>&- as every other launcher-side wine invocation does: this runs from the
+    # EXIT trap, where the flock'd bring-up lock can still be open, and wine would
+    # inherit it and hold it for as long as it lives.
     ableton_run_bounded 15 env WINEPREFIX="$prefix" "$runtime/bin/wine" taskkill /f \
-        "${args[@]}" >/dev/null 2>&1 || true
+        "${args[@]}" >/dev/null 2>&1 9>&- || true
     return 0
 }
 
@@ -247,7 +264,7 @@ ableton_pid_image()
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    local seconds="${3:-5}" pid image holders unknown="" deadline
+    local seconds="${3:-5}" pid image holders unknown="" deadline stuck="" stuck_agents=""
     seconds="$(ableton_timeout_value "$seconds" teardown-settle 1 60)" || return 2
     # First: taskkill is itself a wine process, so on an empty prefix it would start
     # a server and services that outlive the grace period and be reported as holders.
@@ -259,18 +276,36 @@ ableton_session_teardown()
     # not waited for, since none of them leaves within a grace period, and each
     # look walks every pid on the machine.
     deadline=$((SECONDS + seconds))
+    stuck=""
     while :; do
         holders="$(ableton_prefix_holders "$runtime" "$prefix")"
         ableton_holders_include_agent "$holders" || break
-        [ "$SECONDS" -lt "$deadline" ] || break
+        # The grace ran out with one still there, so the stop did not take.
+        [ "$SECONDS" -lt "$deadline" ] || { stuck=1; break; }
         sleep 0.2
     done
     [ -n "$holders" ] || return 0
     unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
+    [ -z "$stuck" ] || stuck_agents="$(printf '%s\n' "$holders" | ableton_agent_holders)"
+    # An agent that outlived the stop is the exact failure this teardown exists to
+    # prevent: MicrosoftEdgeUpdate.exe holds the wineserver for the rest of the
+    # login session.  It is named, never folded into the helpers below, because
+    # "it will quit on its own" is the one thing that is not true of it.
+    if [ -n "$stuck_agents" ]; then
+        printf -- '-- %s closed, but a background program did not stop and is holding the prefix:\n' \
+            "${ABLETON_SESSION_LABEL:-the session}" >&2
+        while IFS="$(printf '\t')" read -r pid image; do
+            [ -n "$pid" ] || continue
+            printf '   %s (pid %s)\n' "$image" "$pid" >&2
+        done <<< "$stuck_agents"
+        printf -- '   it will not leave on its own.  To end the prefix:\n' >&2
+        printf -- '   WINEPREFIX=%s %s/bin/wineserver -k\n' "$prefix" "$runtime" >&2
+    fi
     # Ours alone: the session is over, the helper finishes on its own, and the
     # server goes with it.  Said out loud because a wineserver outliving the
     # window looks like the bug this teardown exists to prevent.
     if [ -z "$unknown" ]; then
+        [ -z "$stuck_agents" ] || return 1
         printf -- '-- %s closed; a background helper is still finishing and will quit on its own\n' \
             "${ABLETON_SESSION_LABEL:-the session}" >&2
         return 0

@@ -700,7 +700,7 @@ kill -0 "$payload_holder" 2>/dev/null || fail "the payload step ended a program 
 kill "$payload_holder" 2>/dev/null || true
 wait "$payload_holder" 2>/dev/null || true
 grep -q 'some-daw.exe (pid' "$base/out" || fail "the payload step does not name what holds the prefix"
-! grep -q 'wineserver -k prefix' "$base/calls.log" \
+! grep -q 'wineserver -k' "$base/calls.log" \
     || fail "--yes ends a program the user is running in the prefix"
 ! grep -q 'End every program' "$base/out" "$base/err" \
     || fail "--yes is treated as an answer about the prefix"
@@ -843,11 +843,21 @@ run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$
     >"$base/out" 2>"$base/err" || true
 kill "$agent_pid" 2>/dev/null || true
 wait "$agent_pid" 2>/dev/null || true
-# The stub wine cannot actually end it, so the wait runs out and it is reported -
-# but it must be reported as an agent still going, never as the user's program.
-! grep -q 'AbletonAudioCpl.exe (pid' "$base/err" \
+# The stub wine ends nothing, so the grace runs out with the agent still there.
+# That is the failure this teardown exists to prevent, so it must be named as an
+# agent that did not stop - never as the user's own program, and never excused as
+# a helper that "will quit on its own", which is the one thing it does not do.
+! grep -q 'Other unknown processes' "$base/err" \
     || fail "an agent the teardown just ended is reported as the user's own program"
-ok "an agent the teardown ended is waited for, not reported as a user program"
+! grep -q 'will quit on its own' "$base/err" \
+    || fail "an agent that outlived the stop is excused as a helper that leaves"
+grep -q 'did not stop and is holding the prefix' "$base/err" \
+    || fail "an agent that outlived the stop goes unreported"
+grep -q 'AbletonAudioCpl.exe (pid' "$base/err" \
+    || fail "the stuck agent is not named"
+grep -qF -- "$base/runtime/bin/wineserver -k" "$base/err" \
+    || fail "the stuck agent is named without saying how to end it"
+ok "an agent that outlived the stop is named as stuck, not excused and not blamed on the user"
 
 # A helper this project installed outlives the window on purpose - learnheal.exe
 # heals the Learn View pane after Live has gone - so the launcher must hand the

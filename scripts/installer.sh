@@ -867,14 +867,16 @@ EOF
         # part of this a bug report can carry.
         holders="$(ableton_prefix_holders)"
         unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
-        if [ -n "$holders" ]; then
+        # The unknown set, not every holder: naming an agent the step just ended
+        # and then saying nothing needs to be done reads as a contradiction.
+        if [ -n "$unknown" ]; then
             echo "-- the install is complete. A program in the prefix is still running:"
             while IFS="$(printf '\t')" read -r holder holder_image; do
                 [ -n "$holder" ] || continue
                 printf '   %s (pid %s)\n' "$holder_image" "$holder"
-            done <<< "$holders"
+            done <<< "$unknown"
         else
-            echo "-- the install is complete. The prefix has not settled yet:"
+            echo "-- the install is complete; a background program is still finishing."
         fi
         # The question is asked only when a program this project did not install is
         # holding the prefix.  A helper this project installed exits once the prefix

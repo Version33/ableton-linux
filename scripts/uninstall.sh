@@ -461,8 +461,14 @@ mime_partial=0
 # cleanup and the runtime removal below.  The stop is best-effort; the gates that
 # follow decide what a straggler is allowed to block.
 if ableton_prefix_busy "$safe_runtime" "$safe_prefix"; then
-    ableton_stop_prefix "$safe_runtime" "$safe_prefix" \
-        || echo "-- a program in the prefix outlived the stop; continuing" >&2
+    # A surviving process is recorded, not just announced.  The gate below exits
+    # before any rm -rf, so marking the uninstall partial is what stops a live
+    # client having its runtime - and, under --delete-prefix, its prefix - removed
+    # from underneath it.  None of the deletion sites re-check for processes.
+    ableton_stop_prefix "$safe_runtime" "$safe_prefix" || {
+        echo "!! a program in the prefix outlived the stop; keeping the runtime and prefix" >&2
+        uninstall_partial=1
+    }
 fi
 
 # A retained prefix must not keep a CLSID pointing into a runtime that is about
