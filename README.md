@@ -67,6 +67,8 @@ For best results, double-check the name of the Ableton installer you have downlo
 
 Once started, this is a mostly automated process.
 
+Near the end, the installer may name a program still running in the Wine prefix and ask whether to close it. Pressing Enter leaves it running, which is the safe answer if you also have Max or another Wine program open. Live is already installed by that point, so either answer keeps it.
+
 ### Running Live
 
 Start Ableton Live the way you normally start applications on your Linux OS.

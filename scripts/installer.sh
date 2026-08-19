@@ -11,6 +11,7 @@ if [ -d "$here/../bin" ]; then
     export PATH="$kit_bin:$PATH"
 fi
 . "$here/lib/config.sh"
+. "$here/lib/lifecycle.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
 
@@ -745,7 +746,9 @@ esac
 install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
-    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg=""
+    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg=""
+    local zip_name zip_bytes zip_fingerprint zip_kb need_kb avail_kb
+    local stop_answer="" holders="" unknown="" holder holder_image
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
         unpack="${ABLETON_PAYLOAD_UNPACK_DIR:-$(dirname "$installer")}/ableton-live-installer.d"
@@ -847,13 +850,60 @@ EOF
         done
         rm -f -- "$seed_reg"
     fi
-    for tray in AbletonPushCpl.exe tusbaudiocplapp.exe; do
-        ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-            "$ABLETON_WINE_ROOT/bin/wine" taskkill /f /im "$tray" >/dev/null 2>&1 || true
-    done
-    ableton_run_bounded 60 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-        "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1 || {
-            echo "!! post-installer prefix wait timed out" >&2; return 1; }
+    # The prefix is promoted and nothing below opens it again, so the install is
+    # complete from here and this step never fails it.
+    #
+    # The agents an install leaves behind are ended by name first, because that is
+    # what removes the cause: Live 12's WebView2 updater cannot validate its COM
+    # registration under Wine, so it parks in Core::DoRun and holds the wineserver
+    # for the rest of the login session, and Live 11 leaves the Push driver's tray
+    # applet from a Startup shortcut.  Wine resolves a process to its long image
+    # name, so the list matches the applet through its 8.3 path too.  Wine's own
+    # processes exit once the last client goes, so the server needs no signal.
+    ableton_stop_leftover_agents
+    if ! ableton_prefix_wait_progress; then
+        # Named before anything is decided: once the prefix is ended there is no
+        # process left to read an image name from, and the image name is the only
+        # part of this a bug report can carry.
+        holders="$(ableton_prefix_holders)"
+        unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
+        # The unknown set, not every holder: naming an agent the step just ended
+        # and then saying nothing needs to be done reads as a contradiction.
+        if [ -n "$unknown" ]; then
+            echo "-- the install is complete. A program in the prefix is still running:"
+            while IFS="$(printf '\t')" read -r holder holder_image; do
+                [ -n "$holder" ] || continue
+                printf '   %s (pid %s)\n' "$holder_image" "$holder"
+            done <<< "$unknown"
+        else
+            echo "-- the install is complete; a background program is still finishing."
+        fi
+        # The question is asked only when a program this project did not install is
+        # holding the prefix.  A helper this project installed exits once the prefix
+        # is free, and an expired wait that named nothing has no process to end.
+        # --yes covers the install, not the prefix: it answers for what the
+        # installer does to its own files, and a program the user is running is not
+        # one of those.  A prefix a Max may be sharing is not ended without an
+        # answer, so with nobody to ask the install completes and prints the command.
+        if [ -z "$unknown" ] || [ "$assume_yes" -eq 1 ] || [ ! -t 0 ]; then
+            echo "-- nothing needs to be done. To end it anyway, close it or run:"
+            printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
+                "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
+        else
+            # Default no, and a timed read that falls back to it: pressing return or
+            # walking away leaves the prefix as it is.
+            printf 'End every program in the prefix now? [y/N] ' >&2
+            read -r -t 60 stop_answer || stop_answer=""
+            case "$stop_answer" in
+                [yY]*)
+                    ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+                        "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true
+                    echo "-- ended the programs in the prefix" ;;
+                *)
+                    echo "-- left them running; the next update may ask you to close them" ;;
+            esac
+        fi
+    fi
     [ -z "$unpack" ] || cleanup_live_unpack
 }
 

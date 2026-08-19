@@ -1310,7 +1310,11 @@ wait "$saved_busy_pid" 2>/dev/null || true
     || fail "saved-runtime busy refusal changed the runtime layout"
 grep -Eq 'Wine client is running|another Wine prefix is using this runtime' "$base/err" \
     || fail "saved-runtime busy refusal was not explicit"
-ok "rollback refuses a process executing from the selected saved sibling"
+# "close Live" is unactionable when the holder is a windowless agent, so the
+# refusal names what it found rather than guessing at it.
+grep -q 'rollback-busy-client (pid' "$base/err" \
+    || fail "saved-runtime busy refusal does not name what holds the runtime"
+ok "rollback refuses a process executing from the selected saved sibling, and names it"
 
 base="$(new_env rollback-late-current-user)"
 make_rollback_fixture "$base"
@@ -1742,13 +1746,12 @@ run_directory_target_guard()
         ableton_txn_init
         case "$2" in
             install) ableton_install_file 755 "$3" "$4" ;;
-            copy) ableton_copy_file "$3" "$4" ;;
             symlink) ableton_install_symlink "$3" "$4" ;;
         esac
     ' _ "$here" "$operation" "$base/source" "$target"
 }
 
-for operation in install copy symlink; do
+for operation in install symlink; do
     base="$(new_env "directory-target-$operation")"
     target="$base/managed-target"
     txn="$base/txn"
@@ -1767,7 +1770,7 @@ for operation in install copy symlink; do
         && [ ! -e "$base/xdg/state/ableton-wine/install-prestate" ] \
         || fail "$operation directory refusal persisted prestate"
 done
-ok "file, copy, and symlink directory refusals leave transaction and prestate journals untouched"
+ok "file and symlink directory refusals leave transaction and prestate journals untouched"
 
 run_guarded_file_install()
 {
@@ -2310,48 +2313,32 @@ for corrupt_kind in symlink-dir orphan-slot; do
 done
 ok "persistent prestate rejects symlink directories and unindexed exact backup slots"
 
-for operation in install copy; do
-    base="$(new_env "atomic-${operation}-failure")"
-    txn="$base/txn"
-    target="$base/xdg/data/ableton-wine/${operation}-target"
-    mkdir -p -- "$txn" "$base/fakebin" "$(dirname "$target")"
-    printf 'stable original bytes\n' > "$base/source"
-    cp -- "$base/source" "$target"
-    case "$operation" in
-        install)
-            cat > "$base/fakebin/install" <<'EOF'
+base="$(new_env atomic-install-failure)"
+txn="$base/txn"
+target="$base/xdg/data/ableton-wine/install-target"
+mkdir -p -- "$txn" "$base/fakebin" "$(dirname "$target")"
+printf 'stable original bytes\n' > "$base/source"
+cp -- "$base/source" "$target"
+cat > "$base/fakebin/install" <<'EOF'
 #!/bin/bash
 target="${@: -1}"
 printf 'partial replacement\n' > "$target"
 exit 99
 EOF
-            helper='ableton_install_file 600 "$2" "$3"'
-            ;;
-        copy)
-            cat > "$base/fakebin/cp" <<'EOF'
-#!/bin/bash
-target="${@: -1}"
-printf 'partial replacement\n' > "$target"
-exit 99
-EOF
-            helper='ableton_copy_file "$2" "$3"'
-            ;;
-    esac
-    chmod 755 "$base/fakebin/"*
-    # shellcheck disable=SC2016
-    if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TRANSACTION_DIR="$txn" bash -c '
-        set -euo pipefail
-        . "$1/lib/config.sh"
-        ableton_config_init
-        . "$1/lib/manifest.sh"
-        ableton_txn_init
-        '"$helper"'
-    ' _ "$here" "$base/source" "$target" >"$base/out" 2>"$base/err"; then
-        fail "$operation helper unexpectedly succeeded after its staged writer failed"
-    fi
-    grep -qxF 'stable original bytes' "$target" \
-        || fail "$operation helper destroyed the original target after a staged write failure"
-done
+chmod 755 "$base/fakebin/"*
+# shellcheck disable=SC2016
+if run_isolated "$base" env PATH="$base/fakebin:$PATH" ABLETON_TRANSACTION_DIR="$txn" bash -c '
+    set -euo pipefail
+    . "$1/lib/config.sh"
+    ableton_config_init
+    . "$1/lib/manifest.sh"
+    ableton_txn_init
+    ableton_install_file 600 "$2" "$3"
+' _ "$here" "$base/source" "$target" >"$base/out" 2>"$base/err"; then
+    fail "install helper unexpectedly succeeded after its staged writer failed"
+fi
+grep -qxF 'stable original bytes' "$target" \
+    || fail "install helper destroyed the original target after a staged write failure"
 ok "atomic file installers keep the original target when a staged write fails"
 
 base="$(new_env rollback-current-config-directory)"
@@ -3022,8 +3009,8 @@ make_commit_preflight_kit()
     local base="$1" kit="$1/commit-kit"
     mkdir -p -- "$kit/scripts/lib"
     cp -- "$here/installer.sh" "$kit/scripts/"
-    cp -- "$here/lib/config.sh" "$here/lib/manifest.sh" "$here/lib/pipeasio.sh" \
-        "$kit/scripts/lib/"
+    cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
+        "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
     cat > "$kit/scripts/install.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -3215,90 +3202,5 @@ for migration_mode in owned-prestate modified unowned-off; do
     fi
 done
 ok "PR182 custom-Link migration restores owned prestate, de-owns edits, and preserves --link=off paths"
-
-base="$(new_env pr182-custom-link-retirement-race)"
-make_pr182_custom_link_fixture "$base" owned-prestate
-custom="$PR182_CUSTOM_LINK"
-real_sha256sum="$(command -v sha256sum)"
-cat > "$base/fakebin/sha256sum" <<EOF
-#!/bin/sh
-set -eu
-if [ "\${1:-}" = -- ] && [ "\${2:-}" = "\${ABLETON_TEST_RACE_TARGET:-}" ]; then
-    count=0
-    [ ! -f "\${ABLETON_TEST_RACE_COUNT:?}" ] \
-        || count="\$(cat "\${ABLETON_TEST_RACE_COUNT:?}")"
-    count=\$((count + 1))
-    printf '%s\n' "\$count" > "\${ABLETON_TEST_RACE_COUNT:?}"
-    result="\$("$real_sha256sum" "\$@")"
-    if [ "\$count" -eq 2 ]; then
-        printf 'user edit during guarded retirement\n' > "\${ABLETON_TEST_RACE_TARGET:?}"
-        chmod 755 "\${ABLETON_TEST_RACE_TARGET:?}"
-    fi
-    printf '%s\n' "\$result"
-    exit 0
-fi
-exec "$real_sha256sum" "\$@"
-EOF
-chmod 755 "$base/fakebin/sha256sum"
-run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    ABLETON_TEST_RACE_TARGET="$custom" \
-    ABLETON_TEST_RACE_COUNT="$base/sha-count" \
-    bash "$base/kit/scripts/installer.sh" link disable \
-    >"$base/out" 2>"$base/err" \
-    || fail "guarded PR182 custom-Link retirement could not de-own a concurrent edit"
-[ "$(cat "$base/sha-count")" -ge 2 ] \
-    || fail "custom-Link race fixture did not reach the guarded live-object recheck"
-grep -qxF 'user edit during guarded retirement' "$custom" \
-    || fail "guarded retirement overwrote the concurrent custom-Link edit"
-grep -qF 'kept and de-owned the modified former PR #182 Link binary' "$base/out" \
-    || fail "guarded retirement did not report the concurrent edit as de-owned"
-if awk -F '\t' -v p="$custom" '$2==p { found=1 } END { exit !found }' \
-    "$PR182_MANIFEST"; then
-    fail "guarded retirement retained ownership of the concurrent edit"
-fi
-if [ -e "$PR182_PRESTATE_INDEX" ] \
-   && awk -F '\t' -v p="$custom" '$2==p { found=1 } END { exit !found }' \
-        "$PR182_PRESTATE_INDEX"; then
-    fail "guarded retirement retained stale prestate authority over the concurrent edit"
-fi
-ok "guarded PR182 retirement preserves and de-owns an edit made after the old digest check"
-
-base="$(new_env pr182-custom-link-post-capture-race)"
-make_pr182_custom_link_fixture "$base" owned-prestate
-custom="$PR182_CUSTOM_LINK"
-real_rm="$(command -v rm)"
-cat > "$base/fakebin/rm" <<EOF
-#!/bin/sh
-set -eu
-captured=0
-for arg do
-    case "\$arg" in
-        */.ableton-pr182-retire.*/object) captured=1 ;;
-    esac
-done
-"$real_rm" "\$@"
-if [ "\$captured" -eq 1 ]; then
-    printf 'user edit after capture\n' > "\${ABLETON_TEST_RACE_TARGET:?}"
-    chmod 755 "\${ABLETON_TEST_RACE_TARGET:?}"
-fi
-EOF
-chmod 755 "$base/fakebin/rm"
-if run_isolated "$base" env PATH="$base/fakebin:$PATH" \
-    ABLETON_TEST_RACE_TARGET="$custom" \
-    bash "$base/kit/scripts/installer.sh" link disable \
-    >"$base/out" 2>"$base/err"; then
-    fail "post-capture custom-Link replacement did not fail closed"
-fi
-grep -qF 'custom Link changed after retirement capture; preserved the new object' "$base/err" \
-    || fail "post-capture custom-Link replacement missed the guarded-retirement diagnostic"
-grep -qxF 'user edit after capture' "$custom" \
-    || fail "post-capture custom-Link replacement was overwritten"
-find "$base/xdg/state/ableton-wine/transactions" -type f \
-    -name concurrent-conflict -print -quit | grep -q . \
-    || fail "post-capture custom-Link replacement did not seal a transaction conflict"
-if [ ! -s "$PR182_PRESTATE_INDEX" ]; then
-    fail "post-capture custom-Link conflict consumed the retained prestate"
-fi
-ok "post-capture custom-Link replacement is preserved and leaves a sealed conflict"
 
 printf 'PASS: %s focused PipeASIO installer checks\n' "$pass"

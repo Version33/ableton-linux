@@ -455,7 +455,21 @@ uninstall_partial=0
 # this folds it into uninstall_partial only at the final gate.
 mime_partial=0
 "$here/setup-link.sh" disable
-ableton_prefix_busy && ableton_stop_prefix
+# Not "busy && stop": under set -euo pipefail a straggler that survives the stop
+# makes the compound fail, and the script exits here - after the trap is cleared,
+# silently, skipping the PipeASIO unregister, the shortcut restore, the MIME
+# cleanup and the runtime removal below.  The stop is best-effort; the gates that
+# follow decide what a straggler is allowed to block.
+if ableton_prefix_busy "$safe_runtime" "$safe_prefix"; then
+    # A surviving process is recorded, not just announced.  The gate below exits
+    # before any rm -rf, so marking the uninstall partial is what stops a live
+    # client having its runtime - and, under --delete-prefix, its prefix - removed
+    # from underneath it.  None of the deletion sites re-check for processes.
+    ableton_stop_prefix "$safe_runtime" "$safe_prefix" || {
+        echo "!! a program in the prefix outlived the stop; keeping the runtime and prefix" >&2
+        uninstall_partial=1
+    }
+fi
 
 # A retained prefix must not keep a CLSID pointing into a runtime that is about
 # to disappear.  Refuse the runtime deletion unless both exact PipeASIO keys
@@ -472,7 +486,7 @@ if [ "$delete_prefix" -eq 0 ] && [ -f "$safe_prefix/system.reg" ]; then
     }
     uninstall_wineserver_wait()
     {
-        ableton_run_bounded 60 "$safe_runtime/bin/wineserver" -w
+        ableton_prefix_wait "$safe_runtime" "$safe_prefix"
     }
     echo "== unregister PipeASIO from the retained prefix =="
     ableton_pipeasio_unregister uninstall_wine uninstall_wineserver_wait
