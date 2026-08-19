@@ -58,13 +58,6 @@ ableton_runtime_pids()
     return 0
 }
 
-ableton_runtime_busy()
-{
-    local root="${1:-$ABLETON_WINE_ROOT}" pid
-    pid="$(ableton_runtime_pids "$root" | head -n 1)"
-    [ -n "$pid" ]
-}
-
 ableton_pid_cmdline()
 {
     tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || true
@@ -111,17 +104,6 @@ ableton_lifecycle_runtime_dir()
     local base="${XDG_RUNTIME_DIR:-$ABLETON_STATE_HOME/run}" key
     key="$(printf '%s\0%s' "$ABLETON_WINE_ROOT" "$ABLETON_WINEPREFIX" | sha256sum | awk '{print substr($1,1,16)}')"
     printf '%s/ableton-wine/%s\n' "$base" "$key"
-}
-
-ableton_wait_for_live()
-{
-    local seconds="${1:-60}" i
-    seconds="$(ableton_timeout_value "$seconds" ABLETON_LAUNCH_TIMEOUT 1 600)" || return 2
-    for ((i=0; i<seconds*10; i++)); do
-        ableton_live_running && return 0
-        sleep 0.1
-    done
-    return 1
 }
 
 ableton_wait_for_pid_exit()

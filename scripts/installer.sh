@@ -745,7 +745,8 @@ esac
 install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
-    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg=""
+    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg=""
+    local zip_name zip_bytes zip_fingerprint zip_kb need_kb avail_kb stop_answer=""
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
         unpack="${ABLETON_PAYLOAD_UNPACK_DIR:-$(dirname "$installer")}/ableton-live-installer.d"
@@ -847,13 +848,25 @@ EOF
         done
         rm -f -- "$seed_reg"
     fi
-    for tray in AbletonPushCpl.exe tusbaudiocplapp.exe; do
-        ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-            "$ABLETON_WINE_ROOT/bin/wine" taskkill /f /im "$tray" >/dev/null 2>&1 || true
-    done
-    ableton_run_bounded 60 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-        "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1 || {
-            echo "!! post-installer prefix wait timed out" >&2; return 1; }
+    # The prefix is promoted and nothing below opens it again, so the install is
+    # complete from here and this step never fails it.  The wait catches an agent
+    # the Live installer left behind: WebView2's MicrosoftEdgeUpdate.exe on Live 12,
+    # the driver tray applet on Live 11, sometimes under an 8.3 name no image list
+    # matches.  Each holds the wineserver, and a later update or rollback refuses
+    # while one does.  Ending the prefix is what reaches an agent we cannot name,
+    # and setup-prefix.sh already refused a busy prefix, so anything alive is ours.
+    if ! ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+            "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1; then
+        if [ "$assume_yes" -ne 1 ] && [ -t 0 ]; then
+            printf 'Background programs from the Live installer are still running. Close them? [Y/n] ' >&2
+            read -r -t 60 stop_answer || stop_answer=""
+        fi
+        case "$stop_answer" in
+            [nN]*) echo "-- left them running; the next update may ask you to close them" ;;
+            *) ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+                   "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true ;;
+        esac
+    fi
     [ -z "$unpack" ] || cleanup_live_unpack
 }
 

@@ -973,14 +973,21 @@ install_link_assets()
         ableton_install_file 644 "$here/lib/$tool" "$data/lib/$tool"
     done
     if [ -n "$legacy_custom" ]; then
+        # Seal the proof first and keep it: the VERSION write below stops the live
+        # recogniser matching, and the sealed copy is what authorises this path for
+        # the rest of the transaction.  Then dispose of it the way every other
+        # relinquished managed file is disposed of.  An unmodified object is removed
+        # and any pre-install file it displaced comes back; a changed one is left
+        # exactly where it is and only the ownership claim is dropped.
         ableton_txn_authorize_pr182_custom_link "$legacy_custom" || {
             echo "!! legacy custom Link ownership could not be verified" >&2
             return 1
         }
-        ableton_retire_pr182_custom_link "$legacy_custom" || return 1
-        if [ "$ABLETON_PR182_RETIREMENT" = retired ]; then
+        if ableton_pr182_custom_link_owned "$legacy_custom"; then
+            ableton_remove_managed_file "$legacy_custom" || return 1
             echo "   retired the PR #182 custom Link binary ownership"
         else
+            ableton_abandon_managed_file "$legacy_custom" || return 1
             echo "   kept and de-owned the modified former PR #182 Link binary"
         fi
     fi

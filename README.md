@@ -67,6 +67,10 @@ For best results, double-check the name of the Ableton installer you have downlo
 
 Once started, this is a mostly automated process.
 
+Near the end, the installer may ask whether to close a background program that
+Ableton's installer left running. Press Enter to close it. Live is already
+installed by then, so either answer keeps it.
+
 ### Running Live
 
 Start Ableton Live the way you normally start applications on your Linux OS.
