@@ -274,9 +274,13 @@ stdenv.mkDerivation {
         # setup path as the tarball install; the Live 12 verbs need no network.
         install -m755 ${../vendor/winetricks}       $out/share/ableton-wine/vendor/winetricks
         cp -a ${../vendor/winetricks-cache}         $out/share/ableton-wine/vendor/winetricks-cache
-        # cabextract: winetricks corefonts; unzip: setup-prefix's Live installer step.
-        ln -s ${cabextract}/bin/cabextract   $out/bin/cabextract
-        ln -s ${lib.getBin unzip}/bin/unzip  $out/bin/unzip
+        # cabextract: winetricks corefonts; unzip: setup-prefix's Live installer
+        # step. Kit bin, not $out/bin — setup-prefix.sh resolves these via its
+        # kit-bin PATH prepend; $out/bin is merged onto user PATHs by profile
+        # installs.
+        mkdir -p $out/share/ableton-wine/bin
+        ln -s ${cabextract}/bin/cabextract   $out/share/ableton-wine/bin/cabextract
+        ln -s ${lib.getBin unzip}/bin/unzip  $out/share/ableton-wine/bin/unzip
 
         # -- Max for Live font fallback (Bitstream Vera) --
         # MaxPlug's fallback chain terminates at the three Vera families, so a
@@ -487,6 +491,12 @@ stdenv.mkDerivation {
     # Live's UI on a missing typeface.
     [ -f $out/share/ableton-wine/vendor/winetricks ] \
       || { echo "vendor/winetricks moved — setup-prefix.sh's kit root no longer resolves here"; exit 1; }
+    for tool in cabextract unzip; do
+      [ -x $out/share/ableton-wine/bin/$tool ] \
+        || { echo "$tool is not staged in the kit bin — prefix setup would depend on a host install"; exit 1; }
+      [ ! -e $out/bin/$tool ] \
+        || { echo "bin/$tool would collide with the $tool package in a profile install"; exit 1; }
+    done
     for f in Vera VeraBd VeraIt VeraBI VeraMono VeraMoBd VeraMoIt VeraMoBI VeraSe VeraSeBd; do
       [ -s $out/share/ableton-wine/vendor/fonts/bitstream-vera/$f.ttf ] \
         || { echo "$f.ttf is not staged where setup-prefix.sh looks for the M4L fallback fonts"; exit 1; }

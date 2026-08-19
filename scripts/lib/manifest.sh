@@ -155,6 +155,7 @@ ableton_managed_path_allowed()
         "$ABLETON_DATA_HOME/wine-protocol-ableton.desktop"|\
         "$ABLETON_DATA_HOME/wine-extension-auz.desktop"|"$ABLETON_DATA_HOME/ableton-linkctl"|\
         "$ABLETON_DATA_HOME/setup-link.sh"|"$ABLETON_DATA_HOME/ableton-linkd.service"|\
+        "$ABLETON_DATA_HOME/runtime-link.sh"|\
         "$ABLETON_DATA_HOME/VERSION"|"$ABLETON_DATA_HOME/ableton-linkd"|\
         "$ABLETON_BIN_HOME/ableton-live"|"$ABLETON_BIN_HOME/max9"|\
         "$ABLETON_BIN_HOME/pipeasio-settings"|\
@@ -275,30 +276,6 @@ ableton_txn_target_allowed()
     return 1
 }
 
-# A transaction that observed a concurrent replacement must never fall back to
-# digest-only rollback/commit checks: another object can have identical bytes.
-# Publish a durable fail-closed marker so every later transaction preflight
-# refuses until a person inspects the retained transaction.
-ableton_txn_mark_concurrent_conflict()
-{
-    local path="$1" marker="${ABLETON_TRANSACTION_DIR:-}/concurrent-conflict" tmp
-    [ -n "${ABLETON_TRANSACTION_DIR:-}" ] || return 1
-    ableton_manifest_path_ok "$path" || return 1
-    if [ -e "$marker" ] || [ -L "$marker" ]; then
-        [ -f "$marker" ] && [ ! -L "$marker" ] && [ -r "$marker" ]
-        return
-    fi
-    tmp="$(mktemp "$ABLETON_TRANSACTION_DIR/.concurrent-conflict.XXXXXX")" || return 1
-    if ! printf 'format=1\npath=%s\n' "$path" > "$tmp" \
-       || ! chmod 600 "$tmp" \
-       || ! mv -T -n -- "$tmp" "$marker" \
-       || [ -e "$tmp" ] \
-       || [ ! -f "$marker" ] || [ -L "$marker" ]; then
-        rm -f -- "$tmp"
-        return 1
-    fi
-}
-
 ableton_txn_validate_files()
 {
     local txn="$1" journal="$1/files.tsv" status path backup post extra index=0 expected digest
@@ -307,10 +284,6 @@ ableton_txn_validate_files()
         ableton_config_error "transaction directory is missing or unsafe"
         return 1
     }
-    if [ -e "$txn/concurrent-conflict" ] || [ -L "$txn/concurrent-conflict" ]; then
-        ableton_config_error "file transaction has a recorded concurrent-object conflict"
-        return 1
-    fi
     if [ ! -e "$journal" ] && [ ! -L "$journal" ]; then return 0; fi
     if ! { [ -f "$journal" ] && [ ! -L "$journal" ] && [ -r "$journal" ] \
            && ableton_file_has_no_nul "$journal"; }; then
@@ -509,51 +482,6 @@ ableton_txn_snapshot()
         unset 'ABLETON_TXN_SEEN[$path]'
         return 1
     fi
-}
-
-# Record an object that has already been atomically moved out of its live path.
-# This closes the check/remove gap for the one historical external path that
-# PR #182 briefly owned: the journal backup is copied from the exact claimed
-# object, while the live destination remains absent until its disposition is
-# decided.
-ableton_txn_snapshot_captured()
-{
-    local path="$1" captured="$2" id backup journal_tmp existing
-    [ -n "${ABLETON_TRANSACTION_DIR:-}" ] || return 1
-    [ ! -e "$path" ] && [ ! -L "$path" ] || return 1
-    { [ -f "$captured" ] || [ -L "$captured" ]; } \
-        && [ -n "$(ableton_manifest_digest "$captured" 2>/dev/null || true)" ] || return 1
-    ableton_txn_init || return 1
-    existing="$(awk -F '\t' -v p="$path" '$2==p { n++ } END { print n+0 }' \
-        "$ABLETON_TRANSACTION_DIR/files.tsv")" || return 1
-    [ "$existing" -eq 0 ] || {
-        ableton_config_error "captured transaction path was already journaled: $path"
-        return 1
-    }
-    id="$(awk 'END { print NR+0 }' "$ABLETON_TRANSACTION_DIR/files.tsv")" || return 1
-    backup="$ABLETON_TRANSACTION_DIR/files/$id"
-    [ ! -e "$backup" ] && [ ! -L "$backup" ] || {
-        ableton_config_error "transaction backup slot is already occupied: $backup"
-        return 1
-    }
-    ableton_atomic_restore_object "$captured" "$backup" || return 1
-    ableton_txn_target_allowed present "$path" "$backup" || {
-        rm -f -- "$backup"
-        ableton_config_error "captured transaction target is outside the allowed lifecycle scope: $path"
-        return 1
-    }
-    journal_tmp="$(mktemp "$ABLETON_TRANSACTION_DIR/.files.tsv.XXXXXX")" || {
-        rm -f -- "$backup"
-        return 1
-    }
-    if ! cp -- "$ABLETON_TRANSACTION_DIR/files.tsv" "$journal_tmp" \
-       || ! printf 'present\t%s\t%s\tabsent\n' "$path" "$backup" >> "$journal_tmp" \
-       || ! chmod 600 "$journal_tmp" \
-       || ! mv -f -- "$journal_tmp" "$ABLETON_TRANSACTION_DIR/files.tsv"; then
-        rm -f -- "$journal_tmp" "$backup"
-        return 1
-    fi
-    ABLETON_TXN_SEEN["$path"]=1
 }
 
 ableton_txn_expect()
@@ -937,8 +865,15 @@ ableton_legacy_owned_path()
 
 ableton_persist_file_prestate()
 {
-    local target="$1" source="${2:-}" manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
+    local target="$1" source="${2:-}" collision_policy="${3:-protect-modified}"
+    local manifest="$ABLETON_STATE_HOME/install-manifest.tsv"
     local index="$ABLETON_STATE_HOME/install-prestate.tsv" prestate_dir id backup expected current index_tmp
+    case "$collision_policy" in
+        protect-modified|replace-modified) ;;
+        *)
+            ableton_config_error "unknown managed-file collision policy: $collision_policy"
+            return 1 ;;
+    esac
     if [ -d "$target" ] && [ ! -L "$target" ]; then
         ableton_config_error "refusing to preserve a directory as file pre-state: $target"
         return 1
@@ -958,6 +893,12 @@ ableton_persist_file_prestate()
         if [ -n "$expected" ]; then
             current="$(ableton_manifest_digest "$target" 2>/dev/null || true)"
             [ "$current" = "$expected" ] && return 0
+            # A symlinked target is a user arrangement, never launcher wear;
+            # it stays under the refusal even for replace-modified callers.
+            if [ "$collision_policy" = replace-modified ] && [ ! -L "$target" ]; then
+                echo "replacing modified managed file $target"
+                return 0
+            fi
             ableton_config_error "refusing to overwrite modified managed file $target"
             return 1
         fi
@@ -999,12 +940,13 @@ ableton_persist_file_prestate()
 
 ableton_install_file()
 {
-    local mode="$1" source="$2" target="$3" kind="${4:-file}" post tmp parent
+    local mode="$1" source="$2" target="$3" kind="${4:-file}"
+    local collision_policy="${5:-protect-modified}" post tmp parent
     [ ! -d "$target" ] || [ -L "$target" ] || {
         ableton_config_error "refusing to replace directory with a file: $target"
         return 1
     }
-    ableton_persist_file_prestate "$target" "$source"
+    ableton_persist_file_prestate "$target" "$source" "$collision_policy" || return 1
     ableton_txn_snapshot "$target"
     post="$(ableton_regular_source_token "$source")" || return 1
     ableton_txn_expect "$target" "$post" || return 1
@@ -1012,30 +954,6 @@ ableton_install_file()
     mkdir -p -- "$parent"
     tmp="$(mktemp "$parent/.ableton-install.XXXXXX")" || return 1
     if ! install -m "$mode" -- "$source" "$tmp" \
-       || [ "$(ableton_object_token "$tmp" 2>/dev/null || true)" != "$post" ] \
-       || ! mv -T -f -- "$tmp" "$target"; then
-        rm -f -- "$tmp"
-        return 1
-    fi
-    ableton_record_owned "$target" "$kind"
-}
-
-ableton_copy_file()
-{
-    local source="$1" target="$2" kind="${3:-file}" post tmp parent
-    [ ! -d "$target" ] || [ -L "$target" ] || {
-        ableton_config_error "refusing to replace directory with a file: $target"
-        return 1
-    }
-    ableton_persist_file_prestate "$target" "$source"
-    ableton_txn_snapshot "$target"
-    post="$(ableton_object_token "$source")" || return 1
-    ableton_txn_expect "$target" "$post" || return 1
-    parent="$(dirname "$target")"
-    mkdir -p -- "$parent"
-    tmp="$(mktemp "$parent/.ableton-copy.XXXXXX")" || return 1
-    rm -f -- "$tmp" || return 1
-    if ! cp -a -- "$source" "$tmp" \
        || [ "$(ableton_object_token "$tmp" 2>/dev/null || true)" != "$post" ] \
        || ! mv -T -f -- "$tmp" "$target"; then
         rm -f -- "$tmp"
@@ -1204,224 +1122,6 @@ ableton_abandon_managed_file()
         fi
     fi
     ableton_record_deowned "$target"
-}
-
-# Retire the narrowly authenticated PR #182 custom Link object without a
-# check-then-delete window. The live object is claimed by an atomic same-dir
-# rename, journaled from that exact object, and only then compared with the
-# immutable proof. A changed object is restored and de-owned; it is never
-# replaced by the historical prestate.
-ableton_retire_pr182_custom_link()
-{
-    local target="$1" proof="$ABLETON_TRANSACTION_DIR/pr182-custom-link"
-    local metadata="$proof/metadata" expected_digest expected_token
-    local index="$ABLETON_STATE_HOME/install-prestate.tsv" id prestate_backup="" prestate_token=""
-    local row_count=0 parent claim_dir capture captured_token captured_identity
-    local stage_dir="" staged="" staged_token="" staged_identity="" final_token=absent
-    local current_token current_identity
-    ABLETON_PR182_RETIREMENT=""
-    export ABLETON_PR182_RETIREMENT
-    ableton_txn_pr182_custom_link_authorized "$target" || return 1
-    ableton_validate_install_state_journals || return 1
-    expected_digest="$(sed -n '3s/^recorded_digest=//p' "$metadata")"
-    [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
-    expected_token="file:$expected_digest"
-
-    id="$(printf '%s' "$target" | sha256sum | awk '{print $1}')" || return 1
-    if [ -r "$index" ]; then
-        row_count="$(awk -F '\t' -v p="$target" '$2==p { n++ } END { print n+0 }' "$index")"
-        if [ "$row_count" -eq 1 ]; then
-            prestate_backup="$(awk -F '\t' -v p="$target" '$1=="present" && $2==p { print $3 }' "$index")"
-            [ "$prestate_backup" = "$ABLETON_STATE_HOME/install-prestate/$id" ] \
-                && { [ -f "$prestate_backup" ] || [ -L "$prestate_backup" ]; } || return 1
-            prestate_token="$(ableton_object_token "$prestate_backup")" || return 1
-        elif [ "$row_count" -ne 0 ]; then
-            return 1
-        fi
-    fi
-
-    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
-        ableton_abandon_managed_file "$target" || return 1
-        ABLETON_PR182_RETIREMENT=deowned
-        return 0
-    fi
-    { [ -f "$target" ] || [ -L "$target" ]; } && [ ! -d "$target" ] || {
-        ableton_config_error "historical custom Link path has an unsafe object: $target"
-        return 1
-    }
-
-    # This read is intentionally non-authoritative. It proves the live object
-    # is readable, but only the subsequently renamed capture decides whether
-    # it is the historical managed object or a user replacement.
-    current_token="$(ableton_object_token "$target" 2>/dev/null || true)"
-    [ -n "$current_token" ] || return 1
-
-    parent="$(dirname "$target")"
-    claim_dir="$(mktemp -d "$parent/.ableton-pr182-retire.XXXXXX")" || return 1
-    capture="$claim_dir/object"
-
-    # Keep the captured object reachable until its position-bound journal row
-    # is durable. A replacement that appears in this short window is preserved
-    # alongside the capture and makes the whole transaction fail closed.
-    trap '' INT TERM
-    if ! mv -T -n -- "$target" "$capture"; then
-        trap 'exit 130' INT
-        trap 'exit 143' TERM
-        rmdir -- "$claim_dir" 2>/dev/null || true
-        ableton_config_error "could not atomically claim the historical custom Link object"
-        return 1
-    fi
-    if { [ ! -f "$capture" ] && [ ! -L "$capture" ]; }; then
-        trap 'exit 130' INT
-        trap 'exit 143' TERM
-        rmdir -- "$claim_dir" 2>/dev/null || true
-        ableton_config_error "could not atomically claim the historical custom Link object"
-        return 1
-    fi
-    if [ -e "$target" ] || [ -L "$target" ]; then
-        ableton_txn_mark_concurrent_conflict "$target" || true
-        trap 'exit 130' INT
-        trap 'exit 143' TERM
-        ableton_config_error "custom Link changed during retirement; preserved capture at $capture"
-        return 1
-    fi
-    if ! ableton_txn_snapshot_captured "$target" "$capture"; then
-        if [ ! -e "$target" ] && [ ! -L "$target" ]; then
-            mv -T -n -- "$capture" "$target" >/dev/null 2>&1 || true
-        fi
-        trap 'exit 130' INT
-        trap 'exit 143' TERM
-        if [ -e "$capture" ] || [ -L "$capture" ]; then
-            ableton_config_error "could not journal the historical custom Link object; preserved capture at $capture"
-        else
-            rmdir -- "$claim_dir" 2>/dev/null || true
-            ableton_config_error "could not journal the historical custom Link object"
-        fi
-        return 1
-    fi
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
-    captured_token="$(ableton_object_token "$capture" 2>/dev/null || true)"
-    captured_identity="$(stat -c '%d:%i' -- "$capture" 2>/dev/null || true)"
-    if [ -z "$captured_token" ] || [ -z "$captured_identity" ]; then
-        ableton_txn_mark_concurrent_conflict "$target" || true
-        ableton_config_error "captured custom Link object became unreadable; transaction retained"
-        return 1
-    fi
-
-    if [ "$captured_token" != "$expected_token" ]; then
-        # Preserve the exact changed object. If another replacement appeared
-        # during the claim, retain both objects and fail rather than choosing
-        # one or overwriting either.
-        if [ -e "$target" ] || [ -L "$target" ] \
-           || ! mv -T -n -- "$capture" "$target" \
-           || [ -e "$capture" ] || [ -L "$capture" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "custom Link changed during retirement; preserved capture at $capture"
-            return 1
-        fi
-        current_token="$(ableton_object_token "$target" 2>/dev/null || true)"
-        current_identity="$(stat -c '%d:%i' -- "$target" 2>/dev/null || true)"
-        if [ "$current_token" != "$captured_token" ] \
-           || [ "$current_identity" != "$captured_identity" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "custom Link changed while its ownership was being relinquished"
-            return 1
-        fi
-        ableton_txn_expect "$target" "$captured_token" || return 1
-        ableton_abandon_managed_file "$target" || return 1
-        current_token="$(ableton_object_token "$target" 2>/dev/null || true)"
-        current_identity="$(stat -c '%d:%i' -- "$target" 2>/dev/null || true)"
-        if [ "$current_token" != "$captured_token" ] \
-           || [ "$current_identity" != "$captured_identity" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "custom Link changed while its ownership was being relinquished"
-            return 1
-        fi
-        rmdir -- "$claim_dir" || return 1
-        ABLETON_PR182_RETIREMENT=deowned
-        return 0
-    fi
-
-    # If a new object appeared after the owned object was captured, preserve
-    # both objects and fail closed. The transaction journal correctly holds the
-    # captured prior object; reporting success here would let a later outer
-    # rollback overwrite the concurrently created object with that backup.
-    if [ -e "$target" ] || [ -L "$target" ]; then
-        ableton_txn_mark_concurrent_conflict "$target" || true
-        ableton_config_error "custom Link changed during retirement; preserved capture at $capture"
-        return 1
-    fi
-
-    if [ -n "$prestate_backup" ]; then
-        stage_dir="$(mktemp -d "$parent/.ableton-pr182-prestate.XXXXXX")" || return 1
-        staged="$stage_dir/object"
-        if ! cp -a -- "$prestate_backup" "$staged"; then
-            rmdir -- "$stage_dir" 2>/dev/null || true
-            return 1
-        fi
-        staged_token="$(ableton_object_token "$staged" 2>/dev/null || true)"
-        staged_identity="$(stat -c '%d:%i' -- "$staged" 2>/dev/null || true)"
-        if [ "$staged_token" != "$prestate_token" ] || [ -z "$staged_identity" ] \
-           || [ -e "$target" ] || [ -L "$target" ] \
-           || ! mv -T -n -- "$staged" "$target" \
-           || [ -e "$staged" ] || [ -L "$staged" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "custom Link changed before its previous file could be restored; preserved capture at $capture"
-            return 1
-        fi
-        rmdir -- "$stage_dir" || return 1
-        current_token="$(ableton_object_token "$target" 2>/dev/null || true)"
-        current_identity="$(stat -c '%d:%i' -- "$target" 2>/dev/null || true)"
-        if [ "$current_token" != "$prestate_token" ] \
-           || [ "$current_identity" != "$staged_identity" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "restored custom Link prestate changed during retirement"
-            return 1
-        fi
-        final_token="$prestate_token"
-        ableton_txn_expect "$target" "$final_token" || return 1
-    else
-        ableton_txn_expect "$target" absent || return 1
-    fi
-
-    # The captured historical object is no longer needed after the known final
-    # state is published. Recheck immediately after deletion, then consume only
-    # metadata. A wrapper/racer that creates a new object during this deletion
-    # is preserved and makes the transaction permanently conflicting.
-    rm -f -- "$capture" || return 1
-    current_token="$(ableton_object_token "$target" 2>/dev/null || true)"
-    if [ "$current_token" != "$final_token" ]; then
-        ableton_txn_mark_concurrent_conflict "$target" || true
-        ableton_config_error "custom Link changed after retirement capture; preserved the new object"
-        return 1
-    fi
-    if [ "$final_token" != absent ]; then
-        current_identity="$(stat -c '%d:%i' -- "$target" 2>/dev/null || true)"
-        if [ "$current_identity" != "$staged_identity" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "custom Link object identity changed after prestate restoration"
-            return 1
-        fi
-    fi
-    ableton_abandon_managed_file "$target" || return 1
-    current_token="$(ableton_object_token "$target" 2>/dev/null || true)"
-    if [ "$current_token" != "$final_token" ]; then
-        ableton_txn_mark_concurrent_conflict "$target" || true
-        ableton_config_error "custom Link changed while its historical ownership was being removed"
-        return 1
-    fi
-    if [ "$final_token" != absent ]; then
-        current_identity="$(stat -c '%d:%i' -- "$target" 2>/dev/null || true)"
-        if [ "$current_identity" != "$staged_identity" ]; then
-            ableton_txn_mark_concurrent_conflict "$target" || true
-            ableton_config_error "custom Link object identity changed while ownership was being removed"
-            return 1
-        fi
-        printf '   restored your previous %s\n' "$target"
-    fi
-    rmdir -- "$claim_dir" || return 1
-    ABLETON_PR182_RETIREMENT=retired
 }
 
 ableton_write_ownership_manifest()
