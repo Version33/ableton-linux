@@ -155,6 +155,10 @@ refuse_runtime_users()
         else
             echo "!! another Wine prefix is using this runtime; close it before rollback" >&2
         fi
+        # "close Live" is unactionable when the holder is a windowless agent.
+        for pid in $runtime_users; do
+            printf '   %s (pid %s)\n' "$(ableton_pid_image "$pid")" "$pid" >&2
+        done
         return 1
     }
 }
@@ -201,7 +205,7 @@ rollback_wine()
 }
 rollback_wineserver_wait()
 {
-    ableton_run_bounded 60 "$runtime/bin/wineserver" -w
+    ableton_prefix_wait "$runtime"
 }
 
 move_runtime_to_empty()

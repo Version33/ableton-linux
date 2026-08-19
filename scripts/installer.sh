@@ -11,6 +11,7 @@ if [ -d "$here/../bin" ]; then
     export PATH="$kit_bin:$PATH"
 fi
 . "$here/lib/config.sh"
+. "$here/lib/lifecycle.sh"
 . "$here/lib/pipeasio.sh"
 . "$here/lib/manifest.sh"
 
@@ -745,17 +746,48 @@ esac
 install_live_payload()
 {
     [ -n "$live_payload" ] || return 0
-    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 tray seed_reg=""
+    local installer="$live_payload" unpack="" lower flags=() timeout_secs extract_timeout status=0 seed_reg=""
+    local zip_name zip_bytes zip_fingerprint zip_kb need_kb avail_kb
+    local stop_answer="" holders="" unknown="" holder holder_image
     lower="$(basename "$installer" | tr '[:upper:]' '[:lower:]')"
     if [[ "$lower" = *.zip ]]; then
-        unpack="$(mktemp -d "${TMPDIR:-/tmp}/ableton-live-installer.XXXXXX")"
+        unpack="${ABLETON_PAYLOAD_UNPACK_DIR:-$(dirname "$installer")}/ableton-live-installer.d"
+        # Fingerprint the *source* zip (name + byte size) so a leftover payload
+        # from a different zip can't be reused. Reusing a stale dir used to
+        # resolve e.g. a Lite zip to "Ableton Live 12 Suite Installer.exe".
+        zip_name="$(basename "$installer")"
+        zip_bytes="$(stat -c %s -- "$installer" 2>/dev/null || wc -c < "$installer" 2>/dev/null || echo 0)"
+        zip_fingerprint="$zip_name $zip_bytes"
+        if [ -f "$unpack/.extracted" ] && [ "$(cat "$unpack/.extracted" 2>/dev/null)" = "$zip_fingerprint" ]; then
+            echo "-- reusing the Live installer payload already extracted at $unpack"
+        else
+            live_unpack="$unpack"; cleanup_live_unpack || return 1
+            mkdir -p -- "$unpack" || { echo "!! cannot create $unpack" >&2; return 1; }
+            if [ ! -w "$unpack" ]; then
+                echo "!! $unpack is not writable; set ABLETON_PAYLOAD_UNPACK_DIR to a writable location" >&2
+                return 1
+            fi
+            # Need headroom: the unpacked payload can exceed the zip's own size.
+            if command -v df >/dev/null 2>&1; then
+                zip_kb=$(( zip_bytes / 1024 )); need_kb=$(( zip_kb * 3 / 2 ))
+                avail_kb="$(df -Pk -- "$unpack" 2>/dev/null | awk 'NR==2{print $4}')"
+                case "$avail_kb" in
+                    ''|*[!0-9]*) ;; # no usable df figure; skip the guard
+                    *) [ "$avail_kb" -ge "$need_kb" ] || {
+                        echo "!! only $((avail_kb/1024)) MB free at $unpack; unpacking a $((zip_kb/1024)) MB zip needs ~$((need_kb/1024)) MB" >&2
+                        return 1; } ;;
+                esac
+            fi
+            extract_timeout="$(ableton_timeout_value "${ABLETON_PAYLOAD_EXTRACT_TIMEOUT:-900}" ABLETON_PAYLOAD_EXTRACT_TIMEOUT 60 7200)"
+            echo "-- extracting Live installer payload (bounded to ${extract_timeout}s; extracted filenames show progress)"
+            # -o + </dev/null stop unzip hanging on a "replace? (y/n)" prompt.
+            if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip -o "$installer" -d "$unpack" </dev/null
+            elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack" </dev/null
+            elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack" </dev/null
+            else echo "!! unzip, bsdtar, or python3 is required for a ZIP payload" >&2; return 1; fi
+            printf '%s\n' "$zip_fingerprint" > "$unpack/.extracted"
+        fi
         live_unpack="$unpack"
-        extract_timeout="$(ableton_timeout_value "${ABLETON_PAYLOAD_EXTRACT_TIMEOUT:-900}" ABLETON_PAYLOAD_EXTRACT_TIMEOUT 60 7200)"
-        echo "-- extracting Live installer payload (bounded to ${extract_timeout}s; extracted filenames show progress)"
-        if command -v unzip >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" unzip "$installer" -d "$unpack"
-        elif command -v bsdtar >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" bsdtar -xvf "$installer" -C "$unpack"
-        elif command -v python3 >/dev/null 2>&1; then ableton_run_bounded "$extract_timeout" python3 -m zipfile -e "$installer" "$unpack"
-        else echo "!! unzip, bsdtar, or python3 is required for a ZIP payload" >&2; return 1; fi
         mapfile -t payload_exes < <(find "$unpack" -type f -iname '*.exe' -print | sort -V)
         [ "${#payload_exes[@]}" -eq 1 ] || {
             echo "!! expected exactly one installer executable in the ZIP, found ${#payload_exes[@]}" >&2; return 1; }
@@ -818,13 +850,60 @@ EOF
         done
         rm -f -- "$seed_reg"
     fi
-    for tray in AbletonPushCpl.exe tusbaudiocplapp.exe; do
-        ableton_run_bounded 15 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-            "$ABLETON_WINE_ROOT/bin/wine" taskkill /f /im "$tray" >/dev/null 2>&1 || true
-    done
-    ableton_run_bounded 60 env WINEPREFIX="$ABLETON_WINEPREFIX" \
-        "$ABLETON_WINE_ROOT/bin/wineserver" -w >/dev/null 2>&1 || {
-            echo "!! post-installer prefix wait timed out" >&2; return 1; }
+    # The prefix is promoted and nothing below opens it again, so the install is
+    # complete from here and this step never fails it.
+    #
+    # The agents an install leaves behind are ended by name first, because that is
+    # what removes the cause: Live 12's WebView2 updater cannot validate its COM
+    # registration under Wine, so it parks in Core::DoRun and holds the wineserver
+    # for the rest of the login session, and Live 11 leaves the Push driver's tray
+    # applet from a Startup shortcut.  Wine resolves a process to its long image
+    # name, so the list matches the applet through its 8.3 path too.  Wine's own
+    # processes exit once the last client goes, so the server needs no signal.
+    ableton_stop_leftover_agents
+    if ! ableton_prefix_wait_progress; then
+        # Named before anything is decided: once the prefix is ended there is no
+        # process left to read an image name from, and the image name is the only
+        # part of this a bug report can carry.
+        holders="$(ableton_prefix_holders)"
+        unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
+        # The unknown set, not every holder: naming an agent the step just ended
+        # and then saying nothing needs to be done reads as a contradiction.
+        if [ -n "$unknown" ]; then
+            echo "-- the install is complete. A program in the prefix is still running:"
+            while IFS="$(printf '\t')" read -r holder holder_image; do
+                [ -n "$holder" ] || continue
+                printf '   %s (pid %s)\n' "$holder_image" "$holder"
+            done <<< "$unknown"
+        else
+            echo "-- the install is complete; a background program is still finishing."
+        fi
+        # The question is asked only when a program this project did not install is
+        # holding the prefix.  A helper this project installed exits once the prefix
+        # is free, and an expired wait that named nothing has no process to end.
+        # --yes covers the install, not the prefix: it answers for what the
+        # installer does to its own files, and a program the user is running is not
+        # one of those.  A prefix a Max may be sharing is not ended without an
+        # answer, so with nobody to ask the install completes and prints the command.
+        if [ -z "$unknown" ] || [ "$assume_yes" -eq 1 ] || [ ! -t 0 ]; then
+            echo "-- nothing needs to be done. To end it anyway, close it or run:"
+            printf '   WINEPREFIX=%s %s/bin/wineserver -k\n' \
+                "$ABLETON_WINEPREFIX" "$ABLETON_WINE_ROOT"
+        else
+            # Default no, and a timed read that falls back to it: pressing return or
+            # walking away leaves the prefix as it is.
+            printf 'End every program in the prefix now? [y/N] ' >&2
+            read -r -t 60 stop_answer || stop_answer=""
+            case "$stop_answer" in
+                [yY]*)
+                    ableton_run_bounded 20 env WINEPREFIX="$ABLETON_WINEPREFIX" \
+                        "$ABLETON_WINE_ROOT/bin/wineserver" -k >/dev/null 2>&1 || true
+                    echo "-- ended the programs in the prefix" ;;
+                *)
+                    echo "-- left them running; the next update may ask you to close them" ;;
+            esac
+        fi
+    fi
     [ -z "$unpack" ] || cleanup_live_unpack
 }
 

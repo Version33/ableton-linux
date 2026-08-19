@@ -1,0 +1,176 @@
+Subject: ntdll: grow the reserved pool instead of falling back to unordered mmap
+
+The preloader reserves a fixed set of areas and a large application exhausts
+them. After that anonymous views are placed by the host with no ordering, and
+the reserved-area path serves only what fits in holes freed since. How much it
+recovers depends on what the application releases: a failing set load fell
+through 5203 times against 414 later hits from the pool. Code that caches an
+image base from its first allocation and encodes later ones as unsigned 32-bit
+offsets from it fails once its allocations land either side of the boundary.
+LLVM's RuntimeDyld does this for IMAGE_REL_AMD64_ADDR32NB, so a Max for Live
+gen~ device aborts a set load when its slabs do.
+
+Reserve further arenas above the highest view served from the pool and retry,
+so views keep ascending and stay on the binary-searched reserved-area path.
+Adjacency matters as much as ordering: an ADDR32NB target must also lie within
+UINT32_MAX of the cached image base, so an arena opened several GB above the
+area a JIT began in fails the same way as one below it. A reserved-area end is
+the wrong anchor, because the reserved set includes the main image range and
+leaves exactly that gap.
+
+Growth respects both ends of the caller's address range. Without the limit_high
+test a request carrying zero_bits, or any 32-bit process under WoW64, reserves
+an arena above the range it may use; without the limit_low test a WoW64 thread
+stack, or an image based above 4 GB, reserves one below it. Either way once per
+failed request: a bare wineboot reserves 76 arenas it never uses, 17 GiB.
+
+The highest preloader area is documented as serving top-down allocations and
+ends at the address space limit, leaving no free space above it, so bottom-up
+requests no longer consume it.
+
+---
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -2140,6 +2140,111 @@
+  * Try to map some space inside a reserved area.
+  * virtual_mutex must be held by caller.
+  */
++/* The preloader's highest reserved area is documented as serving top-down
++ * allocations, and it ends at the address space limit, so nothing can be
++ * reserved above it. Bottom-up allocations that consume it therefore have
++ * nowhere left to grow and fall through to unordered mmap for as long as the
++ * pool stays full. Keep it for the top-down requests it is meant for, and let
++ * grow_reserved_arena() extend the bottom-up pool instead. The threshold sits
++ * below that area's base at 0x7ffffe000000; nothing is reserved between it and
++ * the area below, which ends at 0x7fff0000, so it selects only that area. */
++#define ARENA_TOPDOWN_BASE  ((void *)0x7ffff0000000)
++#define ARENA_SIZE          (256 * 1024 * 1024)
++
++static void *arena_next;        /* next address to try for a new arena */
++static void *alloc_high_water;  /* end of the highest view served from the pool */
++
++/* Advance the mark a grown arena is anchored to. Both call sites are
++ * reserved-area paths, so a host-placed view never reaches this. The address
++ * test excludes the preloader's top-down area: a view there sits far above the
++ * pool, and anchoring the next arena to it would open exactly the gap this
++ * mark exists to prevent. */
++static inline void note_pool_high_water( void *ptr, size_t size )
++{
++    if (!is_win64) return;
++    if (ptr >= ARENA_TOPDOWN_BASE) return;
++    if ((char *)ptr + size > (char *)alloc_high_water)
++        alloc_high_water = (char *)ptr + size;
++}
++
++/***********************************************************************
++ *           grow_reserved_arena
++ *
++ * Reserve another chunk of address space for bottom-up allocation, above every
++ * chunk reserved so far, so successive views keep ascending once the preloader's
++ * areas are used up. virtual_mutex must be held by caller.
++ */
++static BOOL grow_reserved_arena( size_t size, void *limit_low, void *limit_high )
++{
++    size_t arena_size = max( (size_t)ARENA_SIZE, ROUND_SIZE( 0, size, granularity_mask ) );
++    int attempt;
++
++    if (!is_win64) return FALSE;
++    /* The caller may be restricted to part of the address space - a 32-bit
++     * process under WoW64, or any request carrying zero_bits. An arena outside
++     * that range can never satisfy the request, and reserving one per failed
++     * request consumes address space without effect. */
++    if ((char *)limit_high - (char *)limit_low < arena_size) return FALSE;
++
++    /* Anchor just above the highest view served from the pool. Ascending
++     * placement alone is not sufficient: a 32-bit image-base-relative
++     * relocation also requires its target within UINT32_MAX of the base, so an
++     * arena opened several GB above the area a JIT began in fails the same way
++     * as one below it. A reserved-area end is the wrong anchor, because the
++     * reserved set includes the main image's range, which sits above the pool
++     * and leaves exactly that gap. */
++    if (alloc_high_water > arena_next) arena_next = alloc_high_water;
++    if (!arena_next)
++    {
++        struct reserved_area *area;
++
++        LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
++        {
++            void *area_end = (char *)area->base + area->size;
++
++            if (area->base >= ARENA_TOPDOWN_BASE) break;
++            /* skip the image's own reserve; it is not part of the pool */
++            if (preload_reserve_end > preload_reserve_start &&
++                area->base <= preload_reserve_start && area_end >= preload_reserve_end)
++                continue;
++            if (area_end > arena_next) arena_next = area_end;
++        }
++        if (!arena_next) return FALSE;
++    }
++
++    /* arena_next is not raised to limit_low. It is static and only increases,
++     * so a single caller with a high lower bound would move it there for every
++     * later allocation, each of which then probes back down the address space.
++     * Return FALSE instead, so such a caller takes the same path as on stock;
++     * the lower bound within an arena is applied by the search in
++     * map_reserved_area. */
++    for (attempt = 0; attempt < 64; attempt++)
++    {
++        void *ptr;
++
++        if (is_beyond_limit( arena_next, arena_size, ARENA_TOPDOWN_BASE )) return FALSE;
++        /* stop before reserving anything the caller could not be given: above
++         * limit_high, or wholly below limit_low. WoW64 thread stacks and
++         * images based above 4 GB pass limit_4g as limit_low, and an arena
++         * under it can never serve them. */
++        if (is_beyond_limit( arena_next, arena_size, limit_high )) return FALSE;
++        if (limit_low && (char *)arena_next + arena_size <= (char *)limit_low) return FALSE;
++        ptr = anon_mmap_tryfixed( arena_next, arena_size, PROT_NONE, MAP_NORESERVE );
++        if (ptr != MAP_FAILED)
++        {
++            TRACE( "reserved new arena %p-%p\n", ptr, (char *)ptr + arena_size );
++            mmap_add_reserved_area( ptr, arena_size );
++            arena_next = (char *)ptr + arena_size;
++            return TRUE;
++        }
++        if (errno != EEXIST) return FALSE;
++        /* something is already mapped there; step over it and try again */
++        arena_next = (char *)arena_next + arena_size;
++    }
++    return FALSE;
++}
++
++
+ static void *map_reserved_area( void *limit_low, void *limit_high, size_t size, int top_down,
+                                 int unix_prot, size_t align_mask )
+ {
+@@ -2170,6 +2275,9 @@
+ 
+             if (start >= limit_high) return NULL;
+             if (end <= limit_low) continue;
++            /* Reserve this area for top-down requests. Serving bottom-up ones
++             * from it leaves the pool with no free address space above it. */
++            if (is_win64 && start >= ARENA_TOPDOWN_BASE) return NULL;
+             if (start < limit_low) start = (void *)ROUND_SIZE( 0, limit_low, host_page_mask );
+             if (end > limit_high) end = ROUND_ADDR( limit_high, host_page_mask );
+             ptr = find_reserved_free_area_outside_preloader( start, end, size, top_down, align_mask );
+@@ -2305,6 +2413,20 @@
+         if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
+         {
+             TRACE( "got mem in reserved area %p-%p\n", ptr, (char *)ptr + size );
++            note_pool_high_water( ptr, host_size );
++            goto done;
++        }
++
++        /* The preloader's areas are finite and a large application exhausts
++         * them; while they stay full every later view is placed by the host
++         * with no ordering. Extend the pool upward instead and retry,
++         * which keeps successive views ascending and keeps them on the
++         * binary-searched reserved-area path. */
++        if (!top_down && grow_reserved_arena( host_size, start, end ) &&
++            (ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
++        {
++            TRACE( "got mem in grown arena %p-%p\n", ptr, (char *)ptr + size );
++            note_pool_high_water( ptr, host_size );
+             goto done;
+         }
+ 

@@ -455,7 +455,21 @@ uninstall_partial=0
 # this folds it into uninstall_partial only at the final gate.
 mime_partial=0
 "$here/setup-link.sh" disable
-ableton_prefix_busy && ableton_stop_prefix
+# Not "busy && stop": under set -euo pipefail a straggler that survives the stop
+# makes the compound fail, and the script exits here - after the trap is cleared,
+# silently, skipping the PipeASIO unregister, the shortcut restore, the MIME
+# cleanup and the runtime removal below.  The stop is best-effort; the gates that
+# follow decide what a straggler is allowed to block.
+if ableton_prefix_busy "$safe_runtime" "$safe_prefix"; then
+    # A surviving process is recorded, not just announced.  The gate below exits
+    # before any rm -rf, so marking the uninstall partial is what stops a live
+    # client having its runtime - and, under --delete-prefix, its prefix - removed
+    # from underneath it.  None of the deletion sites re-check for processes.
+    ableton_stop_prefix "$safe_runtime" "$safe_prefix" || {
+        echo "!! a program in the prefix outlived the stop; keeping the runtime and prefix" >&2
+        uninstall_partial=1
+    }
+fi
 
 # A retained prefix must not keep a CLSID pointing into a runtime that is about
 # to disappear.  Refuse the runtime deletion unless both exact PipeASIO keys
@@ -472,7 +486,7 @@ if [ "$delete_prefix" -eq 0 ] && [ -f "$safe_prefix/system.reg" ]; then
     }
     uninstall_wineserver_wait()
     {
-        ableton_run_bounded 60 "$safe_runtime/bin/wineserver" -w
+        ableton_prefix_wait "$safe_runtime" "$safe_prefix"
     }
     echo "== unregister PipeASIO from the retained prefix =="
     ableton_pipeasio_unregister uninstall_wine uninstall_wineserver_wait
@@ -493,6 +507,24 @@ if [ -e "$shortcut_state" ] || [ -e "$legacy_shortcut_state" ]; then
         uninstall_partial=1
     fi
 fi
+
+# The launcher heals the managed Live desktop entry on each cold start (name,
+# icon, window class) and leaves the ownership digest stale, so a mismatch
+# there is normal.  Accept only the shape the shared recogniser pins: template
+# lines intact and Exec still routing through this project's launcher, with
+# the healed fields free to differ.  Anything else is hand-made and stays
+# kept.  The path guard keeps every other manifest row on the digest gate.
+live_entry_launcher_updated()
+{
+    local path="$1"
+    case "$path" in
+        */applications/ableton-live.desktop) ;;
+        *) return 1 ;;
+    esac
+    [ -f "$path" ] || return 1
+    [ ! -L "$path" ] || return 1
+    ableton_legacy_owned_path "$path"
+}
 
 remove_owned_manifest_files()
 {
@@ -538,7 +570,7 @@ remove_owned_manifest_files()
                     continue
                 fi
                 current="$(ableton_manifest_digest "$path" 2>/dev/null || true)"
-                if [ "$current" = "$digest" ]; then
+                if [ "$current" = "$digest" ] || live_entry_launcher_updated "$path"; then
                     if [ -n "$backup" ]; then
                         if ! ableton_atomic_restore_object "$backup" "$path" \
                            || [ "$(ableton_manifest_digest "$path" 2>/dev/null || true)" != "$backup_digest" ]; then
