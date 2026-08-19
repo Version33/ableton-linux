@@ -680,7 +680,7 @@ grep -qF -- "$base/runtime/bin/wineserver -k" "$base/out" \
     || fail "a non-interactive install offers to end the prefix"
 ok "an expired payload wait reports the straggler, stops nothing, and still completes"
 
-for image in AbletonPushCpl.exe tusbaudiocplapp.exe MicrosoftEdgeUpdate.exe; do
+for image in AbletonPushCpl.exe tusbaudiocplapp.exe AbletonAudioCpl.exe MicrosoftEdgeUpdate.exe; do
     grep -qF "/im $image" "$base/calls.log" \
         || fail "the payload step does not end $image by name"
 done
@@ -798,7 +798,7 @@ ok "cold Live launch neither kills Max nor boots its busy prefix"
 # The teardown: a session ends the agents it leaves behind, by name, so the
 # wineserver can exit on its own - and never by ending the prefix, which would
 # take a Max or a second Live with it.
-for image in AbletonPushCpl.exe tusbaudiocplapp.exe MicrosoftEdgeUpdate.exe; do
+for image in AbletonPushCpl.exe tusbaudiocplapp.exe AbletonAudioCpl.exe MicrosoftEdgeUpdate.exe; do
     grep -qF "/im $image" "$base/wine.log" \
         || fail "the launcher leaves $image running after the session"
 done
@@ -813,6 +813,41 @@ grep -q 'Max\.exe (pid' "$base/err" \
 grep -qF "wineserver -k" "$base/err" \
     || fail "teardown names a holder without saying how to end it"
 ok "teardown verifies the prefix came down, and names the holder and the remedy"
+
+# An agent the teardown just ended is not a program the user is running.
+# taskkill returns before its targets exit, so a fixed pause classifies one that
+# is still on its way out as an unknown holder and tells the user to end their
+# own prefix.  The stand-in holds one of the agent names and outlives the stop.
+base="$(new_env teardown-agent-settle)"
+mkdir -p "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+cat > "$base/runtime/bin/wine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$base/wine.log"
+exit 0
+EOF
+for tool in wineserver wineboot winepath; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/$tool"
+done
+chmod +x "$base/runtime/bin/"*
+printf 'registry\n' > "$base/prefix/system.reg"
+: > "$base/wine.log"
+env WINEPREFIX="$base/prefix" bash -c \
+    'exec -a "C:\\Program Files\\Ableton\\USB Audio Driver\\x64\\AbletonAudioCpl.exe" "$1" 20' \
+    _ "$base/runtime/bin/wine-client" &
+agent_pid=$!
+sleep 0.1
+run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash -c ". \"$here/lib/config.sh\"; ableton_config_init; . \"$here/lib/lifecycle.sh\"; \
+        ableton_session_teardown \"$base/runtime\" \"$base/prefix\" 1" \
+    >"$base/out" 2>"$base/err" || true
+kill "$agent_pid" 2>/dev/null || true
+wait "$agent_pid" 2>/dev/null || true
+# The stub wine cannot actually end it, so the wait runs out and it is reported -
+# but it must be reported as an agent still going, never as the user's program.
+! grep -q 'AbletonAudioCpl.exe (pid' "$base/err" \
+    || fail "an agent the teardown just ended is reported as the user's own program"
+ok "an agent the teardown ended is waited for, not reported as a user program"
 
 # A helper this project installed outlives the window on purpose - learnheal.exe
 # heals the Learn View pane after Live has gone - so the launcher must hand the

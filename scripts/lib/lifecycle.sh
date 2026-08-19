@@ -130,16 +130,39 @@ ableton_wait_for_pid_exit()
 
 # Windowless agents Live and Max leave behind, ended by exact name so no
 # application is touched.  A name that is not running is a no-op.
+# AbletonAudioCpl.exe is the USB Audio Driver's applet, started from a Startup
+# shortcut when the installer's "Install USB Audio Driver" task is left checked,
+# which is its default.
+ABLETON_LEFTOVER_AGENTS="AbletonPushCpl.exe tusbaudiocplapp.exe AbletonAudioCpl.exe MicrosoftEdgeUpdate.exe"
+
+ableton_agent_image()
+{
+    case " $ABLETON_LEFTOVER_AGENTS " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# True while a holder list still names an agent this teardown ends by name.
+ableton_holders_include_agent()
+{
+    local pid image
+    while IFS="$(printf '\t')" read -r pid image; do
+        [ -n "$image" ] || continue
+        ableton_agent_image "$image" && return 0
+    done <<< "$1"
+    return 1
+}
+
 ableton_stop_leftover_agents()
 {
-    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
+    local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}" image
+    local args=()
     # wine builds a prefix at any path it is handed; a refusal must not create one.
     [ -x "$runtime/bin/wine" ] || return 0
     [ -f "$prefix/system.reg" ] || return 0
+    for image in $ABLETON_LEFTOVER_AGENTS; do args+=(/im "$image"); done
     # One invocation: taskkill takes a list, and each wine start costs exit latency.
     ableton_run_bounded 15 env WINEPREFIX="$prefix" "$runtime/bin/wine" taskkill /f \
-        /im AbletonPushCpl.exe /im tusbaudiocplapp.exe /im MicrosoftEdgeUpdate.exe \
-        >/dev/null 2>&1 || true
+        "${args[@]}" >/dev/null 2>&1 || true
     return 0
 }
 
@@ -181,11 +204,15 @@ ableton_vendored_helper_image()
 # Holders that are somebody else's: a Max, a second Live, a program the user
 # started.  These are the ones worth naming.  Reads a holder list so a caller
 # that already walked /proc need not walk it again.
+# An image the teardown ends by name is never one of these, however long it
+# takes to go: taskkill returns before its targets exit, and naming one here
+# would tell a user to end their own prefix over a process we ended ourselves.
 ableton_unknown_holders()
 {
     local pid image
     while IFS="$(printf '\t')" read -r pid image; do
         [ -n "$pid" ] || continue
+        ableton_agent_image "$image" && continue
         ableton_vendored_helper_image "$image" && continue
         printf '%s\t%s\n' "$pid" "$image"
     done
@@ -220,18 +247,24 @@ ableton_pid_image()
 ableton_session_teardown()
 {
     local runtime="${1:-$ABLETON_WINE_ROOT}" prefix="${2:-$ABLETON_WINEPREFIX}"
-    local seconds="${3:-1}" pid image holders unknown=""
+    local seconds="${3:-5}" pid image holders unknown="" deadline
     seconds="$(ableton_timeout_value "$seconds" teardown-settle 1 60)" || return 2
     # First: taskkill is itself a wine process, so on an empty prefix it would start
     # a server and services that outlive the grace period and be reported as holders.
     ableton_prefix_busy "$runtime" "$prefix" || return 0
     ableton_stop_leftover_agents "$runtime" "$prefix" || true
-    # One beat for the agents just ended to go, then one look.  Not a poll: each
-    # look walks every pid on the machine, and there is nothing to wait for -
-    # Wine's own processes are already filtered out, and whatever else is here is
-    # an application, which will not leave within a grace period.
-    sleep "$seconds"
-    holders="$(ableton_prefix_holders "$runtime" "$prefix")"
+    # taskkill returns before the processes it signalled have exited, so a flat
+    # pause misreports one of them as a program the user is running.  Wait only
+    # while an agent this teardown just ended is still there: applications are
+    # not waited for, since none of them leaves within a grace period, and each
+    # look walks every pid on the machine.
+    deadline=$((SECONDS + seconds))
+    while :; do
+        holders="$(ableton_prefix_holders "$runtime" "$prefix")"
+        ableton_holders_include_agent "$holders" || break
+        [ "$SECONDS" -lt "$deadline" ] || break
+        sleep 0.2
+    done
     [ -n "$holders" ] || return 0
     unknown="$(printf '%s\n' "$holders" | ableton_unknown_holders)"
     # Ours alone: the session is over, the helper finishes on its own, and the
