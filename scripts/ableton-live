@@ -240,6 +240,22 @@ for lifecycle_lib in "$launcher_here/lib/lifecycle.sh" "$ABLETON_DATA_HOME/lib/l
 done
 declare -F ableton_live_running >/dev/null 2>&1 || { echo "ableton-live: lifecycle helper is missing" >&2; exit 1; }
 
+# Live exits cleanly; WebView2's updater does not, and one wedged agent keeps the
+# wineserver alive for the whole login session.
+# The trap sits below the guards, and the gate is what makes that sufficient: the
+# refusals are spread through the launcher rather than gathered above one line,
+# and the one that matters most - the bring-up lock held by a sibling launcher -
+# is among the last of them.  A refusal must not reach into a prefix another
+# session is already using.
+session_started=""
+session_teardown()
+{
+    local rc=$?
+    [ -n "$session_started" ] || return "$rc"
+    ABLETON_SESSION_LABEL="Ableton Live" ableton_session_teardown || true
+    return "$rc"
+}
+
 WINE_ROOT="$ABLETON_WINE_ROOT"
 export WINEPREFIX="$ABLETON_WINEPREFIX"
 [ -x "$WINE_ROOT/bin/wine" ] || { echo "ableton-live: Wine runtime is missing at $WINE_ROOT" >&2; exit 1; }
@@ -248,6 +264,10 @@ export WINEPREFIX="$ABLETON_WINEPREFIX"
 case "${ABLETON_LIVE_VERSION:-}" in ''|11|12) ;;
     *) echo "ableton-live: ABLETON_LIVE_VERSION must be 11 or 12" >&2; exit 2 ;;
 esac
+
+# Armed after the guards: teardown ends this prefix's agents, and a launch that
+# refused to start has no session to end - the prefix may hold someone else's.
+trap session_teardown EXIT
 
 find_live_exe()
 {
@@ -470,6 +490,9 @@ if ! ableton_live_running; then
     fi
     launch_lock_held=1
     printf 'live %s\n' "$$" >&9
+    # This launcher owns the session from here: every wine invocation is below.
+    # launch_lock_held cannot serve as the gate - it is cleared once Live appears.
+    session_started=1
 fi
 
 # Keep the menu entry tracking the installed edition: install.sh renders it

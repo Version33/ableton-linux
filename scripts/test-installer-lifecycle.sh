@@ -527,20 +527,233 @@ grep -q 'appears to be Live 11' "$base/err" || fail "payload mismatch is explici
 [ ! -e "$base/runtime" ] && [ ! -e "$base/prefix" ] && [ ! -e "$base/config" ] || fail "payload mismatch mutates no installation state"
 ok "Live payload major is validated before installation"
 
+base="$(new_env prefix-quiesce)"
+mkdir -p "$base/runtime/bin" "$base/prefix"
+# 124 is timeout's TERM verdict, so the stub reports an expired wait without the
+# suite spending the wait's wall clock on it.
+cat > "$base/runtime/bin/wineserver" <<'EOF'
+#!/usr/bin/env bash
+printf '%s prefix=%s\n' "$1" "${WINEPREFIX-unset}" >> "${ABLETON_TEST_LOG:?}"
+case "$1" in
+    -w)
+        [ "${ABLETON_TEST_WAIT_EXIT:-0}" -eq 0 ] || exit "${ABLETON_TEST_WAIT_EXIT}"
+        [ ! -e "${ABLETON_TEST_BUSY:?}" ] || exit 124
+        exit 0 ;;
+    -k)
+        [ "${ABLETON_TEST_UNKILLABLE:-0}" -eq 1 ] || rm -f -- "${ABLETON_TEST_BUSY:?}"
+        exit 0 ;;
+esac
+exit 2
+EOF
+cat > "$base/run-quiesce" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/lifecycle.sh"
+ableton_config_init
+status=0
+ableton_prefix_quiesce "\$@" || status=\$?
+printf 'rc=%s\n' "\$status"
+EOF
+chmod +x "$base/runtime/bin/wineserver" "$base/run-quiesce"
+quiesce_calls()
+{
+    awk '{print $1}' "$base/log" | tr '\n' ' '
+}
+run_quiesce()
+{
+    local assignments=()
+    while [ "$#" -gt 0 ] && [[ "$1" = *=* ]]; do assignments+=("$1"); shift; done
+    : > "$base/log"
+    run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+        ABLETON_TEST_LOG="$base/log" ABLETON_TEST_BUSY="$base/busy" "${assignments[@]}" \
+        bash "$base/run-quiesce" "$@" >"$base/out" 2>"$base/err"
+}
+
+rm -f "$base/busy"
+run_quiesce
+grep -qx 'rc=0' "$base/out" || fail "a quiet prefix reports success"
+[ "$(quiesce_calls)" = "-w " ] || fail "a quiet prefix is waited for exactly once"
+grep -qx -- "-w prefix=$base/prefix" "$base/log" || fail "the wait names the configured prefix"
+ok "a quiet prefix is waited for once and never stopped"
+
+: > "$base/busy"
+run_quiesce
+grep -qx 'rc=0' "$base/out" || fail "a stopped straggler reports success"
+[ "$(quiesce_calls)" = "-w -k -w " ] || fail "a held prefix is stopped and waited for again"
+grep -q 'holding the prefix open' "$base/out" || fail "stopping the prefix is reported"
+ok "a straggler holding the prefix open is stopped, not made fatal"
+
+: > "$base/busy"
+run_quiesce ABLETON_TEST_UNKILLABLE=1
+grep -qx 'rc=3' "$base/out" || fail "a surviving straggler is reported as still busy"
+[ "$(quiesce_calls)" = "-w -k -w " ] || fail "a surviving straggler is not waited for a third time"
+ok "a straggler that survives the stop is reported, and the wait stays bounded"
+
+# setup-prefix.sh continues past a straggler and must stop on a wait that could not
+# run, so the two cannot share an exit code.
+rm -f "$base/busy"
+run_quiesce ABLETON_TEST_WAIT_EXIT=1
+grep -qx 'rc=1' "$base/out" || fail "a wait that failed keeps its own exit code"
+[ "$(quiesce_calls)" = "-w " ] || fail "a failed wait does not stop the prefix"
+ok "a failed wait is distinguishable from a straggler that survived the stop"
+
+rm -f "$base/busy"
+run_quiesce ABLETON_TEST_WAIT_EXIT=127
+grep -qx 'rc=127' "$base/out" || fail "a wait that cannot run keeps its exit code"
+[ "$(quiesce_calls)" = "-w " ] || fail "a wait that cannot run does not stop the prefix"
+ok "only an expired wait stops the prefix; any other failure is passed back"
+
+# setup-prefix.sh waits on its staging prefix, which is not the configured one.
+: > "$base/busy"
+run_quiesce "$base/runtime" "$base/staging-prefix"
+grep -qx 'rc=0' "$base/out" || fail "an explicitly named prefix is quiesced"
+grep -qx -- "-k prefix=$base/staging-prefix" "$base/log" || fail "the stop names the prefix it was given"
+! grep -q -- "prefix=$base/prefix\$" "$base/log" || fail "a named prefix displaces the configured one"
+ok "the runtime and prefix a caller names override the configured pair"
+
+# The payload step's own wait, on the promoted prefix.  Every sub-script is stubbed
+# so install_live_payload is reached with a wineserver whose -w never returns.
+base="$(new_env payload-wait)"
+kit="$base/kit"
+mkdir -p "$kit/scripts/lib" "$kit/bin" "$base/runtime/bin"
+cp -- "$here/installer.sh" "$kit/scripts/"
+cp -- "$here/lib/config.sh" "$here/lib/lifecycle.sh" "$here/lib/manifest.sh" \
+    "$here/lib/pipeasio.sh" "$kit/scripts/lib/"
+cat > "$kit/bin/pipewire-version-probe" <<'EOF'
+#!/bin/sh
+printf 'client=1.4.2\ndaemon=1.4.2\n'
+EOF
+cat > "$kit/scripts/install.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'component %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+exit 0
+EOF
+cat > "$kit/scripts/setup-prefix.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'prefix %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+case " $* " in
+    *' --preflight-commit '*|*' --commit '*|*' --preflight-rollback '*|*' --rollback '*) exit 0 ;;
+esac
+mkdir -p -- "${ABLETON_WINEPREFIX:?}"
+printf 'registry\n' > "${ABLETON_WINEPREFIX}/system.reg"
+EOF
+cat > "$kit/scripts/setup-link.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'link %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+EOF
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+printf 'wine %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+EOF
+cat > "$base/runtime/bin/wineserver" <<'EOF'
+#!/bin/sh
+printf 'wineserver %s\n' "$*" >> "${ABLETON_TEST_CALL_LOG:?}"
+case "${1:-}" in
+    -w) exit "${ABLETON_TEST_WAIT_EXIT:-0}" ;;
+esac
+EOF
+chmod 755 "$kit/scripts/"*.sh "$kit/bin/pipewire-version-probe" "$base/runtime/bin/"*
+printf 'Ableton Live 12 Suite Installer\n' > "$base/Ableton Live 12 Suite Installer.exe"
+
+run_payload_install()
+{
+    : > "$base/calls.log"
+    rm -rf -- "$base/prefix" "$base/config" "$base/state" "$base/data"
+    run_isolated "$base" env ABLETON_TEST_CALL_LOG="$base/calls.log" "$@" \
+        bash "$kit/scripts/installer.sh" install \
+            --live-installer "$base/Ableton Live 12 Suite Installer.exe" \
+            --link=off --runtime-root "$base/runtime" --prefix "$base/prefix" --yes \
+        >"$base/out" 2>"$base/err"
+}
+
+# 124 is timeout's TERM verdict: the wait ran out with a process still in the prefix.
+run_payload_install ABLETON_TEST_WAIT_EXIT=124 || fail "an expired payload wait fails the install"
+grep -q 'OK: install completed' "$base/out" || fail "an expired payload wait leaves the install incomplete"
+! grep -q 'wineserver -k' "$base/calls.log" || fail "the payload step stops the promoted prefix"
+grep -q 'the install is complete' "$base/out" || fail "an expired payload wait goes unreported"
+grep -qF -- "$base/runtime/bin/wineserver -k" "$base/out" \
+    || fail "the report withholds the command that ends the prefix"
+! grep -q 'End every program' "$base/out" "$base/err" \
+    || fail "a non-interactive install offers to end the prefix"
+ok "an expired payload wait reports the straggler, stops nothing, and still completes"
+
+for image in AbletonPushCpl.exe tusbaudiocplapp.exe AbletonAudioCpl.exe MicrosoftEdgeUpdate.exe; do
+    grep -qF "/im $image" "$base/calls.log" \
+        || fail "the payload step does not end $image by name"
+done
+ok "the payload step ends the images it starts, each named exactly"
+
+# A program the user is running in the promoted prefix: named, never ended, and
+# never ended by --yes either.  --yes answers for the installer's own files, and
+# a Max sharing this prefix is not one of them.
+cp /bin/sleep "$base/runtime/bin/wine-client"
+env WINEPREFIX="$base/prefix" bash -c \
+    'exec -a "C:\\some-daw.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+payload_holder=$!
+sleep 0.2
+run_payload_install ABLETON_TEST_WAIT_EXIT=124 \
+    || fail "an expired payload wait fails the install with a holder present"
+kill -0 "$payload_holder" 2>/dev/null || fail "the payload step ended a program in the prefix"
+kill "$payload_holder" 2>/dev/null || true
+wait "$payload_holder" 2>/dev/null || true
+grep -q 'some-daw.exe (pid' "$base/out" || fail "the payload step does not name what holds the prefix"
+! grep -q 'wineserver -k' "$base/calls.log" \
+    || fail "--yes ends a program the user is running in the prefix"
+! grep -q 'End every program' "$base/out" "$base/err" \
+    || fail "--yes is treated as an answer about the prefix"
+ok "a program in the prefix is named at the end of an install, and --yes does not end it"
+
+run_payload_install || fail "a quiet payload wait fails the install"
+! grep -q 'the install is complete\.' "$base/out" || fail "a quiet prefix is reported as busy"
+ok "a quiet prefix after the payload reports nothing"
+
 base="$(new_env launcher-preflight)"
 mkdir -p "$base/runtime/bin" "$base/prefix"
-printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wine"
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+printf 'wine %s\n' "$*" >> "${ABLETON_TEST_LOG:?}"
+exit 0
+EOF
 printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wineserver"
 chmod +x "$base/runtime/bin/wine" "$base/runtime/bin/wineserver"
 printf 'registry\n' > "$base/prefix/system.reg"
+: > "$base/wine.log"
 if run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
-    bash "$here/ableton-live" >"$base/out" 2>"$base/err"; then
+    ABLETON_TEST_LOG="$base/wine.log" bash "$here/ableton-live" \
+    >"$base/out" 2>"$base/err"; then
     fail "launcher without Live fails"
 fi
+# taskkill is a wine process: on an empty prefix it would start a server and a
+# pair of services, which the teardown would then report as the holder.
+! grep -q 'taskkill' "$base/wine.log" || fail "teardown starts wine on a prefix with nothing in it"
 grep -q 'no Ableton Live installation' "$base/err" || fail "launcher reports missing Live"
 [ ! -e "$base/state" ] && [ ! -e "$base/data" ] && [ ! -e "$base/config" ] && [ ! -e "$base/run" ] \
     || fail "launcher preflight mutates no machine state"
 ok "launcher validates runtime, prefix, and Live before mutation"
+
+# The teardown runs on every exit, including the ones that gave up because the
+# prefix was not there.  wine builds a prefix at whatever path it is handed, so
+# a refusal must not leave one behind.
+base="$(new_env launcher-missing-prefix)"
+mkdir -p "$base/runtime/bin"
+cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+mkdir -p -- "${WINEPREFIX:?}/drive_c"
+printf 'registry\n' > "${WINEPREFIX:?}/system.reg"
+exit 0
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wineserver"
+chmod +x "$base/runtime/bin/wine" "$base/runtime/bin/wineserver"
+if run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/absent-prefix" bash "$here/ableton-live" \
+    >"$base/out" 2>"$base/err"; then
+    fail "launcher accepts a missing prefix"
+fi
+[ ! -e "$base/absent-prefix" ] || fail "teardown builds a prefix the launcher refused to use"
+ok "a launcher that refuses a missing prefix creates nothing on its way out"
 
 base="$(new_env max-coexist)"
 mkdir -p "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" "$base/run"
@@ -566,7 +779,10 @@ printf 'registry\n' > "$base/prefix/system.reg"
 printf 'registry\n' > "$base/prefix/user.reg"
 printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
 : > "$base/wine.log"
-env WINEPREFIX="$base/prefix" bash -c 'exec -a "C:\\Program Files\\Cycling '\''74\\Max 9\\Max.exe" "$1" 60' _ "$base/runtime/bin/wine-client" &
+# 600s, not 60: the launcher waits out its observability timeout before the
+# teardown even runs, so a short-lived stand-in expires mid-case and the
+# coexistence it is meant to prove goes untested.
+env WINEPREFIX="$base/prefix" bash -c 'exec -a "C:\\Program Files\\Cycling '\''74\\Max 9\\Max.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
 max_pid=$!
 sleep 0.1
 run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
@@ -578,6 +794,238 @@ kill "$max_pid" 2>/dev/null || true
 wait "$max_pid" 2>/dev/null || true
 ! grep -Eq 'wineserver -k|wineboot' "$base/wine.log" || fail "busy prefix avoids kill and boot"
 ok "cold Live launch neither kills Max nor boots its busy prefix"
+
+# The teardown: a session ends the agents it leaves behind, by name, so the
+# wineserver can exit on its own - and never by ending the prefix, which would
+# take a Max or a second Live with it.
+for image in AbletonPushCpl.exe tusbaudiocplapp.exe AbletonAudioCpl.exe MicrosoftEdgeUpdate.exe; do
+    grep -qF "/im $image" "$base/wine.log" \
+        || fail "the launcher leaves $image running after the session"
+done
+ok "the launcher ends the agents a session leaves behind, and stops the prefix for none of them"
+
+# Teardown confirms the outcome instead of assuming it: with another program
+# still in the prefix, it reports why the wineserver stays rather than ending it.
+grep -q 'Other unknown processes were left running' "$base/err" \
+    || fail "teardown does not report a prefix left in use"
+grep -q 'Max\.exe (pid' "$base/err" \
+    || fail "teardown names the holder by something other than its Windows image"
+grep -qF "wineserver -k" "$base/err" \
+    || fail "teardown names a holder without saying how to end it"
+ok "teardown verifies the prefix came down, and names the holder and the remedy"
+
+# An agent the teardown just ended is not a program the user is running.
+# taskkill returns before its targets exit, so a fixed pause classifies one that
+# is still on its way out as an unknown holder and tells the user to end their
+# own prefix.  The stand-in holds one of the agent names and outlives the stop.
+base="$(new_env teardown-agent-settle)"
+mkdir -p "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+cat > "$base/runtime/bin/wine" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$base/wine.log"
+exit 0
+EOF
+for tool in wineserver wineboot winepath; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/$tool"
+done
+chmod +x "$base/runtime/bin/"*
+printf 'registry\n' > "$base/prefix/system.reg"
+: > "$base/wine.log"
+env WINEPREFIX="$base/prefix" bash -c \
+    'exec -a "C:\\Program Files\\Ableton\\USB Audio Driver\\x64\\AbletonAudioCpl.exe" "$1" 20' \
+    _ "$base/runtime/bin/wine-client" &
+agent_pid=$!
+sleep 0.1
+run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    bash -c ". \"$here/lib/config.sh\"; ableton_config_init; . \"$here/lib/lifecycle.sh\"; \
+        ableton_session_teardown \"$base/runtime\" \"$base/prefix\" 1" \
+    >"$base/out" 2>"$base/err" || true
+kill "$agent_pid" 2>/dev/null || true
+wait "$agent_pid" 2>/dev/null || true
+# The stub wine ends nothing, so the grace runs out with the agent still there.
+# That is the failure this teardown exists to prevent, so it must be named as an
+# agent that did not stop - never as the user's own program, and never excused as
+# a helper that "will quit on its own", which is the one thing it does not do.
+! grep -q 'Other unknown processes' "$base/err" \
+    || fail "an agent the teardown just ended is reported as the user's own program"
+! grep -q 'will quit on its own' "$base/err" \
+    || fail "an agent that outlived the stop is excused as a helper that leaves"
+grep -q 'did not stop and is holding the prefix' "$base/err" \
+    || fail "an agent that outlived the stop goes unreported"
+grep -q 'AbletonAudioCpl.exe (pid' "$base/err" \
+    || fail "the stuck agent is not named"
+grep -qF -- "$base/runtime/bin/wineserver -k" "$base/err" \
+    || fail "the stuck agent is named without saying how to end it"
+ok "an agent that outlived the stop is named as stuck, not excused and not blamed on the user"
+
+# A helper this project installed outlives the window on purpose - learnheal.exe
+# heals the Learn View pane after Live has gone - so the launcher must hand the
+# terminal back rather than wait on one, and must not report it as a holder.
+base="$(new_env vendored-helper-holder)"
+mkdir -p "$base/runtime/bin" "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program" \
+    "$base/data/ableton-wine" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+for tool in wine wineserver wineboot; do
+    printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/$tool"
+done
+printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/winepath"
+chmod +x "$base/runtime/bin/"*
+printf 'registry\n' > "$base/prefix/system.reg"
+printf 'registry\n' > "$base/prefix/user.reg"
+printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe"
+# The data home is what makes it ours: the image name resolves to a file we installed.
+printf 'helper\n' > "$base/data/ableton-wine/learnheal.exe"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\learnheal.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+helper_pid=$!
+sleep 0.3
+start_s=$SECONDS
+run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+    ABLETON_LINK_MODE=off ABLETON_POWER=off ABLETON_RT=off ABLETON_THEME_MODE=preserve \
+    ABLETON_DPI_MODE=preserve ABLETON_UI_FONT=preserve ABLETON_TEXT_SMOOTHING=preserve \
+    bash "$here/ableton-live" >"$base/out" 2>"$base/err" || true
+kill -0 "$helper_pid" 2>/dev/null || fail "the launcher ended a helper it installed"
+! grep -q 'unknown processes' "$base/err" \
+    || fail "teardown reports this project's own helper as a holder"
+grep -q 'Ableton Live closed; a background helper' "$base/err" \
+    || fail "teardown leaves a wineserver up without naming the app or saying why"
+ok "a helper we installed keeps running through a session, is not reported, and is explained"
+
+# Timed against the teardown itself, not the launcher around it: the launcher's
+# own observability wait dwarfs the grace period, so a lost early return would
+# not move the total.
+cat > "$base/time-teardown" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/config.sh"
+ableton_config_init
+. "$here/lib/lifecycle.sh"
+start=\$SECONDS
+ableton_session_teardown >/dev/null 2>&1 || true
+printf '%s\n' "\$((SECONDS - start))"
+EOF
+chmod +x "$base/time-teardown"
+helper_only_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/time-teardown")"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\some-daw.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+unknown_pid=$!
+sleep 0.3
+unknown_s="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/time-teardown")"
+kill "$helper_pid" "$unknown_pid" 2>/dev/null || true
+wait "$helper_pid" "$unknown_pid" 2>/dev/null || true
+# Neither case may poll: a look costs a walk of every pid on the machine, so the
+# difference between them is the report, not the wall clock.
+[ "$helper_only_s" -le 10 ] && [ "$unknown_s" -le 10 ] \
+    || fail "teardown polls instead of looking once (${helper_only_s}s, ${unknown_s}s)"
+ok "teardown looks once whoever holds the prefix (${helper_only_s}s, ${unknown_s}s)"
+
+# Every walker takes the prefix, so setup-prefix.sh inside its staging window
+# reports on the prefix it named rather than on the user's.  The wait itself was
+# always right; the /proc walk behind the progress tick was not.
+base="$(new_env named-prefix-walk)"
+mkdir -p "$base/runtime/bin" "$base/prefix" "$base/staging-prefix" "$base/data/ableton-wine" "$base/run"
+cp /bin/sleep "$base/runtime/bin/wine-client"
+chmod +x "$base/runtime/bin/"*
+cat > "$base/name-holders" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$here/lib/config.sh"
+ableton_config_init
+. "$here/lib/lifecycle.sh"
+ableton_prefix_unknown_holders "\$@" | cut -f2 | sort | paste -sd, -
+EOF
+chmod +x "$base/name-holders"
+env WINEPREFIX="$base/prefix" \
+    bash -c 'exec -a "C:\\configured-app.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+configured_pid=$!
+env WINEPREFIX="$base/staging-prefix" \
+    bash -c 'exec -a "C:\\staging-app.exe" "$1" 600' _ "$base/runtime/bin/wine-client" &
+staging_pid=$!
+sleep 0.3
+named_walk="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/name-holders" \
+    "$base/runtime" "$base/staging-prefix")"
+default_walk="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+    ABLETON_WINEPREFIX="$base/prefix" bash "$base/name-holders")"
+kill "$configured_pid" "$staging_pid" 2>/dev/null || true
+wait "$configured_pid" "$staging_pid" 2>/dev/null || true
+[ "$named_walk" = 'staging-app.exe' ] \
+    || fail "a named prefix is walked as the configured one (got '$named_walk')"
+[ "$default_walk" = 'configured-app.exe' ] \
+    || fail "the configured prefix is not walked by default (got '$default_walk')"
+ok "the /proc walk follows the prefix a caller names, not the configured one"
+
+# A refusal must not reach into the prefix: with another session's client still
+# running, a launcher that declines to start ends nothing and reports nothing.  The
+# refusals are checked one per launcher stage, because they are spread through the
+# launcher - the held bring-up lock is among the last, well below every guard.
+# The holder image matters: ableton-live only takes the bring-up lock on a cold
+# start, so a Live-shaped holder sends it down the warm path and past the refusal
+# under test.  Each case names the holder that reaches the stage it means to check.
+refusal_leaves_busy_prefix_alone()
+{
+    local case_name="$1" launcher="$2" expect="$3" holder_image="$4"
+    local install="${5:-}" hold_lock="${6:-0}"
+    local base holder_pid coordinator lock_fd
+    base="$(new_env "$case_name")"
+    mkdir -p "$base/runtime/bin" "$base/prefix"
+    cat > "$base/runtime/bin/wine" <<'EOF'
+#!/bin/sh
+printf 'wine %s\n' "$*" >> "${ABLETON_TEST_LOG:?}"
+EOF
+    printf '#!/bin/sh\nexit 0\n' > "$base/runtime/bin/wineserver"
+    chmod +x "$base/runtime/bin/wine" "$base/runtime/bin/wineserver"
+    printf 'registry\n' > "$base/prefix/system.reg"
+    case "$install" in
+        max)
+            mkdir -p "$base/prefix/drive_c/Program Files/Cycling '74/Max 9"
+            printf 'exe\n' > "$base/prefix/drive_c/Program Files/Cycling '74/Max 9/Max.exe" ;;
+        live)
+            mkdir -p "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program"
+            printf 'exe\n' > "$base/prefix/drive_c/ProgramData/Ableton/Live 12 Suite/Program/Ableton Live 12 Suite.exe" ;;
+    esac
+    cp /bin/sleep "$base/runtime/bin/wine-client"
+    env WINEPREFIX="$base/prefix" bash -c \
+        'exec -a "$2" "$1" 600' _ "$base/runtime/bin/wine-client" "$holder_image" &
+    holder_pid=$!
+    sleep 0.1
+    if [ "$hold_lock" -eq 1 ]; then
+        coordinator="$(run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" \
+            ABLETON_WINEPREFIX="$base/prefix" bash -c \
+            ". \"$here/lib/config.sh\"; ableton_config_init; . \"$here/lib/lifecycle.sh\"; ableton_lifecycle_runtime_dir")"
+        mkdir -p -- "$coordinator"
+        exec {lock_fd}>"$coordinator/bring-up.lock"
+        flock -n "$lock_fd" || fail "$case_name could not hold the bring-up lock"
+    fi
+    : > "$base/wine.log"
+    if run_isolated "$base" env ABLETON_WINE_ROOT="$base/runtime" ABLETON_WINEPREFIX="$base/prefix" \
+        ABLETON_TEST_LOG="$base/wine.log" bash "$here/$launcher" >"$base/out" 2>"$base/err"; then
+        fail "$case_name refuses to start"
+    fi
+    if [ "$hold_lock" -eq 1 ]; then
+        flock -u "$lock_fd" 2>/dev/null || true
+        exec {lock_fd}>&-
+    fi
+    kill -0 "$holder_pid" 2>/dev/null || fail "$case_name ended a process in the prefix"
+    kill "$holder_pid" 2>/dev/null
+    wait "$holder_pid" 2>/dev/null || true
+    grep -q "$expect" "$base/err" || fail "$case_name does not say why it refused"
+    ! grep -q 'taskkill' "$base/wine.log" \
+        || fail "$case_name ends agents in a prefix another session is using"
+    ! grep -q 'unknown processes' "$base/err" \
+        || fail "$case_name reports a teardown it never performed"
+}
+
+live_holder='C:\\ProgramData\\Ableton\\Live 12 Suite\\Program\\Ableton Live 12 Suite.exe'
+other_holder='C:\\some-daw.exe'
+refusal_leaves_busy_prefix_alone refusal-max-absent  max9         'no Max 9 installation'      "$live_holder"
+refusal_leaves_busy_prefix_alone refusal-live-absent ableton-live 'no Ableton Live installation' "$other_holder"
+refusal_leaves_busy_prefix_alone refusal-max-lock    max9         'bringing this prefix up'    "$live_holder" max  1
+refusal_leaves_busy_prefix_alone refusal-live-lock   ableton-live 'bringing this prefix up'    "$other_holder" live 1
+ok "a launcher that refuses to start leaves a busy prefix alone, at every stage"
 
 base="$(new_env foreign-runtime)"
 mkdir -p "$base/runtime/bin"
