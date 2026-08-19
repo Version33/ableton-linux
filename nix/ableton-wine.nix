@@ -90,6 +90,8 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     removeReferencesTo
     pkg-config
+    cabextract
+    unzip
   ];
   buildInputs = [ pipewire ];
 
@@ -274,9 +276,6 @@ stdenv.mkDerivation {
         # setup path as the tarball install; the Live 12 verbs need no network.
         install -m755 ${../vendor/winetricks}       $out/share/ableton-wine/vendor/winetricks
         cp -a ${../vendor/winetricks-cache}         $out/share/ableton-wine/vendor/winetricks-cache
-        # cabextract: winetricks corefonts; unzip: setup-prefix's Live installer step.
-        ln -s ${cabextract}/bin/cabextract   $out/bin/cabextract
-        ln -s ${lib.getBin unzip}/bin/unzip  $out/bin/unzip
 
         # -- Max for Live font fallback (Bitstream Vera) --
         # MaxPlug's fallback chain terminates at the three Vera families, so a
