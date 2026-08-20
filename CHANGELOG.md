@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026.08.19.1
+
+- Fixed a slew of problems introduced by redesigning the new Installer too defensively, therefore **breaking it** for lots of people :( :
+  - Fixed an issue where a Micros*ft installer bundled with Live 12 would hang after installation and be considered a fatal error by our installer. This caused a perceived hang and crashout, despite the install completing successfully. The installer would then 
+    delete the completed install. Even better: on an upgrade it restored the old prefix and
+    discarded the new runtime! **lol, lmao even!** Now the installer hunts the Micros*ft installer by name and **terminates it with extreme prejudice**.
+  - The installer now asks you to confirm you're ok with it stopping everything running in its Ableton prefix (including Live or Max) before an install or upgrade. Use the flag `--yes`
+    to auto-agree in advance.
+  - Following a seriously botched attempt by @shibco to be extremely clever, the installer would fail with a baffling 'out of disk space' error during the Live install. This was because @shibco decided it would be cool to **extract the Live install files into RAM before copying said installer to the target directory**. You can't vibe code this clever act. Now, the installer stages the Live payload beside the zip and reuses a completed
+  extraction, so no more RAM-dump, and subsequent attempts to install don't waste your time by re-extracting over the top of already-ready files.
+  - Updates now replace the Live menu entry the installer manages (#211). Again, too cautious and being concerned that people were **actually editing the desktop file by hand** which is simply not the case.
+- Closing Live or Max now brings the whole session down. Custom cleanup code to get around fun Wine shenanigans. Thanks Lucas Gillingham.
+- If you run Live via the `ableton-live` terminal command, you can use that terminal again  as soon as Live closes.
+- Uninstall keeps a runtime and prefix that a running program still uses, and reports the uninstall as partial.
+- Fixed Live crashing while it loads a set that uses a Max for Live gen~ device. **This marks another first for the project:** we are now actually shipping memory management code, lmao. In this case, a large set exhausts the runtime's reserved memory pool, and the device's compiled code then lands too far from its base address and the app crashes out. Now, the runtime grows the pool in order to accommodate this situation. Thanks Lucas Gillingham.
+- The Live launcher has cool new flags! Including `--version`, `--help` and `--config`. `--config`
+  describes every launcher environment variable and its default, and the launcher warns about unknown arguments. Thanks, Sebastian Thümmel!
+- We updated the troubleshooting guide to account for new quirks in the wild and to mitigate some of our egregiously clever code.
+
 ## 2026.08.14.3
 - **ROLLED OUT THE NEW INPUT SYSTEM ABANDONED IN `2026.08.14.1`!!**
   - Added fine vertical and horizontal scrolling, pinch zoom, and middle-button
@@ -147,7 +166,7 @@
     reporting a device ID that is not on it. Live reads the ID alone when it
     decides, so your card keeps its real name and carries the reported one
     alongside it. For affected machines, this is the first time you can run Live
-    with GPU acceleration, providing a noticable performance boost.
+    with GPU acceleration, providing a noticeable performance boost.
   - Added `WINE_D3D_FORCE_GPU_RENDERING=1` to enable the above GPU denylist
     bypass (Wine patch 0068). In crash logs, we tell Ableton's engineering team
     that the GPU listed in the crash log is substituted, to avoid poisoning
